@@ -1,16 +1,22 @@
-from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import HTMLResponse
-from typing import Optional
+import html
 import os
 import time
-import html
-import requests
 from urllib.parse import urlencode
+
+import requests
+from fastapi import FastAPI, HTTPException, Query
+from fastapi.responses import HTMLResponse
+
+from mcp_server import install_mcp
+from security import install_security
 
 app = FastAPI(
     title="Zakupay MVP",
     description="Рабочая панель поставщика для анализа заявок Закупай",
-    version="0.4"
+    version="0.5.0",
+    docs_url=None,
+    redoc_url=None,
+    openapi_url=None,
 )
 
 ZAKUPAY_API_KEY = os.getenv("ZAKUPAY_API_KEY")
@@ -151,7 +157,7 @@ def filter_orders(
     region: str = "",
     category: str = "",
     min_positions: int = 0,
-    max_competitors_value: Optional[int] = None,
+    max_competitors_value: int | None = None,
     only_without_my_offer: bool = False,
 ):
     result = []
@@ -223,11 +229,17 @@ def compact_order(order):
 @app.get("/")
 def root():
     return {
-        "message": "Zakupay MVP запущен",
-        "version": "0.4",
-        "dashboard": "/dashboard",
-        "analysis_api": "/analysis/orders"
+        "message": "Закрытая панель «Закупай» работает",
+        "version": "0.5.0",
+        "login": "/login",
+        "mcp": "/mcp",
+        "access": "private",
     }
+
+
+@app.get("/health")
+def health():
+    return {"ok": True, "version": "0.5.0"}
 
 
 @app.get("/analysis/orders")
@@ -236,7 +248,7 @@ def analysis_orders(
     region: str = "",
     category: str = "",
     min_positions: int = 0,
-    max_competitors_value: Optional[int] = Query(None, alias="max_competitors"),
+    max_competitors_value: int | None = Query(None, alias="max_competitors"),
     only_without_my_offer: bool = False,
     refresh: bool = False,
 ):
@@ -264,7 +276,7 @@ def dashboard(
     region: str = "",
     category: str = "",
     min_positions: int = 0,
-    max_competitors_value: Optional[int] = Query(None, alias="max_competitors"),
+    max_competitors_value: int | None = Query(None, alias="max_competitors"),
     only_without_my_offer: bool = False,
     page: int = 1,
     page_size: int = 50,
@@ -374,6 +386,7 @@ def dashboard(
         </style>
     </head>
     <body>
+        <div style="float:right"><a href="/logout">Выйти</a></div>
         <h1>Закупай — входящие заявки</h1>
         <div class="sub">Все доступные актуальные заявки из API Синтеки. Данные обновляются не чаще одного раза в минуту.</div>
 
@@ -454,7 +467,7 @@ def dashboard_order(order_id: int):
         th {{ background:#eee; text-align:left; padding:9px; }} td {{ padding:9px; border-bottom:1px solid #eee; vertical-align:top; }}
         .tablewrap {{ overflow:auto; }}
     </style></head><body>
-    <p><a href="/dashboard">← Назад к заявкам</a></p>
+    <p><a href="/dashboard">← Назад к заявкам</a> · <a href="/logout">Выйти</a></p>
     <div class="card"><h1>{esc(order.get('name'))}</h1>
     <div class="grid">
         <div class="label">ID заявки:</div><div>{order_id}</div>
@@ -472,3 +485,8 @@ def dashboard_order(order_id: int):
     </body></html>
     """
     return HTMLResponse(content=page_html)
+
+
+# Install authentication before exposing the same data through the MCP endpoint.
+install_security(app)
+install_mcp(app, fetch_all_orders, filter_orders, compact_order)
