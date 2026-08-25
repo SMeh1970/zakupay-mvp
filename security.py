@@ -26,7 +26,7 @@ from starlette.concurrency import run_in_threadpool
 PANEL_USERNAME = os.getenv("PANEL_USERNAME", "mekhman")
 PANEL_PASSWORD_HASH = os.getenv(
     "PANEL_PASSWORD_HASH",
-    "pbkdf2_sha256$310000$gOewHb9B9fKWTcxvmHVmQNq_MjA$juaSV1rksI9gQNQS_94TudsIpWS3v_WejP7BXioGy6U",
+    "pbkdf2_sha256$310000$yR9yWKYK2U8hvQ7CadoGdQ$S-18T3laREwtBnMD1Cs7MjwpHOwMGqxXWi3n14n_XkY",
 )
 SESSION_COOKIE = "zakupay_session"
 SESSION_TTL_SECONDS = 12 * 60 * 60
