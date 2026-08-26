@@ -3,11 +3,12 @@ from urllib.parse import parse_qsl, urlencode
 
 from main import app, api_filter_dict, compact_order, esc, fetch_all_orders, filter_orders, has_my_offer, max_competitors
 import ai_panel
-from ai_panel import install_ai_panel
+from ai_panel_v2 import install_ai_panel_v2
 from price_estimator import analyze_order_v2
 from supplier_panel import install_supplier_panel
 
-# Replace the first MVP estimator with the v2 estimator.
+# Use v2 price estimator: competitor price when nomenclature matches, then supplier/catalog prices,
+# then cautious fallback estimation for amount filtering.
 ai_panel.analyze_order = analyze_order_v2
 
 _OPTIONAL_NUMERIC_QUERY_FIELDS = {
@@ -31,13 +32,9 @@ def _non_purchase_keywords():
     return [x.strip().lower().replace("ё", "е") for x in raw.split(",") if x.strip()]
 
 
-def _looks_like_non_purchase_request(order):
+def looks_like_non_purchase_request(order):
     title = str(order.get("name") or "").lower().replace("ё", "е")
     return any(keyword.lower().replace("ё", "е") in title for keyword in _non_purchase_keywords())
-
-
-# The checkbox value is passed only for the current request, avoiding global state.
-_filter_context = {"exclude_non_purchase": True}
 
 
 def filter_orders_ai(orders, payment="all", region="", category="", min_positions=0,
@@ -45,75 +42,27 @@ def filter_orders_ai(orders, payment="all", region="", category="", min_position
     normalized_region = (region or "").strip()
     if normalized_region.lower() in {"россия", "рф", "russia", "russian federation"}:
         normalized_region = ""
-    filtered = filter_orders(
+    return filter_orders(
         orders, payment, normalized_region, category, min_positions,
         max_competitors_value, only_without_my_offer,
     )
-    if _filter_context.get("exclude_non_purchase", True):
-        filtered = [o for o in filtered if not _looks_like_non_purchase_request(o)]
-    return filtered
-
-
-# Wrap the AI panel's request flow so a normal query checkbox controls exclusion.
-_original_install = install_ai_panel
-
-
-def install_ai_panel_with_non_purchase_checkbox(app, **kwargs):
-    # ai_panel builds the HTML internally. We pass a filter function that reads
-    # a request-scoped query value populated by middleware below. Middleware also
-    # injects a checked checkbox into the generated analysis form.
-    return _original_install(app, **kwargs)
 
 
 @app.middleware("http")
-async def analysis_filter_middleware(request, call_next):
+async def strip_empty_optional_numeric_filters(request, call_next):
     raw_query = request.scope.get("query_string", b"").decode("utf-8", errors="ignore")
-    pairs = parse_qsl(raw_query, keep_blank_values=True) if raw_query else []
-    query = dict(pairs)
-
-    # Default is ON. Browser sends exclude_non_purchase=0 via hidden input and
-    # exclude_non_purchase=1 when the checkbox is checked.
-    if request.url.path in {"/dashboard/analysis", "/analysis/ranked"}:
-        values = [v for k, v in pairs if k == "exclude_non_purchase"]
-        if values:
-            _filter_context["exclude_non_purchase"] = values[-1].lower() not in {"0", "false", "no", "off", ""}
-        else:
-            _filter_context["exclude_non_purchase"] = True
-
-    cleaned = [
-        (key, value) for key, value in pairs
-        if not (key in _OPTIONAL_NUMERIC_QUERY_FIELDS and value.strip() == "")
-        and key != "exclude_non_purchase"
-    ]
-    if cleaned != pairs:
-        request.scope["query_string"] = urlencode(cleaned, doseq=True).encode("utf-8")
-
-    response = await call_next(request)
-
-    # Add the checkbox to the existing HTML without rewriting the whole panel.
-    if request.url.path == "/dashboard/analysis" and response.headers.get("content-type", "").startswith("text/html"):
-        body = b""
-        async for chunk in response.body_iterator:
-            body += chunk
-        text = body.decode("utf-8")
-        checked = "checked" if _filter_context.get("exclude_non_purchase", True) else ""
-        control = (
-            "<div class='check'>"
-            "<input type='hidden' name='exclude_non_purchase' value='0'>"
-            f"<input type='checkbox' id='exclude_non_purchase' name='exclude_non_purchase' value='1' {checked}>"
-            "<label for='exclude_non_purchase' style='margin:0'>Исключать тендеры, расчёты и сбор оценочных предложений</label>"
-            "</div>"
-        )
-        marker = "<div class='filters'>"
-        text = text.replace(marker, marker + control, 1)
-        from starlette.responses import Response
-        headers = dict(response.headers)
-        headers.pop("content-length", None)
-        return Response(content=text, status_code=response.status_code, headers=headers, media_type="text/html")
-    return response
+    if raw_query:
+        pairs = parse_qsl(raw_query, keep_blank_values=True)
+        cleaned = [
+            (key, value) for key, value in pairs
+            if not (key in _OPTIONAL_NUMERIC_QUERY_FIELDS and value.strip() == "")
+        ]
+        if cleaned != pairs:
+            request.scope["query_string"] = urlencode(cleaned, doseq=True).encode("utf-8")
+    return await call_next(request)
 
 
-install_ai_panel_with_non_purchase_checkbox(
+install_ai_panel_v2(
     app,
     fetch_all_orders=fetch_all_orders,
     compact_order=compact_order,
@@ -122,6 +71,7 @@ install_ai_panel_with_non_purchase_checkbox(
     has_my_offer=has_my_offer,
     max_competitors=max_competitors,
     esc=esc,
+    non_purchase_predicate=looks_like_non_purchase_request,
 )
 install_supplier_panel(app, esc=esc)
 
