@@ -1,3 +1,4 @@
+import os
 from urllib.parse import parse_qsl, urlencode
 
 from main import app, api_filter_dict, compact_order, esc, fetch_all_orders, filter_orders, has_my_offer, max_competitors
@@ -28,6 +29,42 @@ _OPTIONAL_NUMERIC_QUERY_FIELDS = {
     "region_id",
 }
 
+# Titles that usually indicate market sounding / budget estimation rather than
+# an actual purchase. The list is configurable in Render via the environment
+# variable NON_PURCHASE_TITLE_KEYWORDS (comma-separated).
+_DEFAULT_NON_PURCHASE_TITLE_KEYWORDS = [
+    "тендер",
+    "расчет",
+    "расчёт",
+    "для расчета",
+    "для расчёта",
+    "предварительный расчет",
+    "предварительный расчёт",
+    "оценка стоимости",
+    "оценочная стоимость",
+    "сбор предложений",
+    "сбор коммерческих предложений",
+    "запрос коммерческого предложения",
+    "запрос кп",
+    "мониторинг цен",
+    "анализ цен",
+    "исследование рынка",
+    "бюджетирование",
+    "для бюджета",
+]
+
+
+def _non_purchase_keywords():
+    raw = os.getenv("NON_PURCHASE_TITLE_KEYWORDS", "").strip()
+    if not raw:
+        return _DEFAULT_NON_PURCHASE_TITLE_KEYWORDS
+    return [x.strip().lower().replace("ё", "е") for x in raw.split(",") if x.strip()]
+
+
+def _looks_like_non_purchase_request(order):
+    title = str(order.get("name") or "").lower().replace("ё", "е")
+    return any(keyword.lower().replace("ё", "е") in title for keyword in _non_purchase_keywords())
+
 
 def filter_orders_ai(orders, payment="all", region="", category="", min_positions=0, max_competitors_value=None, only_without_my_offer=False):
     # Закупай возвращает в поле region конкретный город/область, а не страну.
@@ -35,7 +72,8 @@ def filter_orders_ai(orders, payment="all", region="", category="", min_position
     normalized_region = (region or "").strip()
     if normalized_region.lower() in {"россия", "рф", "russia", "russian federation"}:
         normalized_region = ""
-    return filter_orders(
+
+    filtered = filter_orders(
         orders,
         payment,
         normalized_region,
@@ -44,6 +82,14 @@ def filter_orders_ai(orders, payment="all", region="", category="", min_position
         max_competitors_value,
         only_without_my_offer,
     )
+
+    # By default exclude requests that look like tender/estimate/market-sounding
+    # exercises. Set EXCLUDE_NON_PURCHASE_TITLES=false in Render to disable.
+    exclude_non_purchase = os.getenv("EXCLUDE_NON_PURCHASE_TITLES", "true").strip().lower() not in {"0", "false", "no", "off"}
+    if exclude_non_purchase:
+        filtered = [order for order in filtered if not _looks_like_non_purchase_request(order)]
+
+    return filtered
 
 
 @app.middleware("http")
