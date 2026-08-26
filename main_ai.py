@@ -1,8 +1,19 @@
 from urllib.parse import parse_qsl, urlencode
 
 from main import app, api_filter_dict, compact_order, esc, fetch_all_orders, filter_orders, has_my_offer, max_competitors
+import ai_panel
 from ai_panel import install_ai_panel
+from price_estimator import analyze_order_v2
 from supplier_panel import install_supplier_panel
+
+# Replace the first MVP estimator with the v2 estimator. The v2 logic:
+# 1) uses a competitor price only when the offered nomenclature sufficiently
+#    matches the requested nomenclature;
+# 2) otherwise tries the supplier/static price catalog;
+# 3) if no direct price exists, estimates by medians from reliable prices in
+#    the same category/order so the request can still participate in amount
+#    filtering, while marking such estimates as low confidence.
+ai_panel.analyze_order = analyze_order_v2
 
 _OPTIONAL_NUMERIC_QUERY_FIELDS = {
     "max_competitors",
@@ -20,8 +31,7 @@ _OPTIONAL_NUMERIC_QUERY_FIELDS = {
 
 def filter_orders_ai(orders, payment="all", region="", category="", min_positions=0, max_competitors_value=None, only_without_my_offer=False):
     # Закупай возвращает в поле region конкретный город/область, а не страну.
-    # Поэтому ввод "Россия" должен означать "все регионы России", а не искать
-    # буквальное слово "Россия" внутри названия региона.
+    # Поэтому ввод "Россия" означает "все регионы России".
     normalized_region = (region or "").strip()
     if normalized_region.lower() in {"россия", "рф", "russia", "russian federation"}:
         normalized_region = ""
