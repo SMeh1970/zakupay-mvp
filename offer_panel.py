@@ -3,7 +3,7 @@ import os
 from datetime import date
 
 import requests
-from fastapi import Form, HTTPException
+from fastapi import HTTPException, Request
 from fastapi.responses import HTMLResponse
 
 OFFER_API_PATH = os.getenv("ZAKUPAY_OFFER_API_PATH", "/api/v1/offers")
@@ -24,14 +24,11 @@ def install_offer_panel(app, fetch_all_orders, zakupay_headers, zakupay_base_url
         items = []
         for item in order.get("orderItems") or []:
             iid = str(item.get("id"))
-            price_raw = form.get(f"price_{iid}")
-            qty_raw = form.get(f"qty_{iid}")
-            enabled = form.get(f"use_{iid}") == "1"
-            if not enabled:
+            if form.get(f"use_{iid}") != "1":
                 continue
             try:
-                price = float(price_raw)
-                qty = float(qty_raw)
+                price = float(form.get(f"price_{iid}"))
+                qty = float(form.get(f"qty_{iid}"))
             except (TypeError, ValueError):
                 raise HTTPException(status_code=400, detail=f"Некорректная цена/количество по позиции {iid}")
             items.append({
@@ -79,19 +76,19 @@ def install_offer_panel(app, fetch_all_orders, zakupay_headers, zakupay_base_url
 <div class='grid'>
 <div><label>Номер счёта/предложения</label><input name='producer_offer_number' required></div>
 <div><label>Дата</label><input type='date' name='producer_offer_date' value='{date.today().isoformat()}' required></div>
-<div><label>НДС, доля</label><select name='vat'><option value='0.2'>20%</option><option value='0'>Без НДС</option></select></div>
+<div><label>НДС</label><select name='vat'><option value='0.2'>20%</option><option value='0'>Без НДС</option></select></div>
 <div><label>Предоплата, %</label><input type='number' name='prepayment_percent' min='0' max='100' value='100'></div>
 <div><label>Отсрочка, дней</label><input type='number' name='delay_days' min='0' value='0'></div>
 <div><label>Доставка включена</label><select name='delivery_included'><option value='1'>Да</option><option value='0'>Нет</option></select></div>
 <div><label>Всё в наличии</label><select name='all_in_stock'><option value='1'>Да</option><option value='0'>Нет</option></select></div>
 </div><p><label>Комментарий</label><textarea name='comment'></textarea></p>
 <h3>Позиции</h3><table><thead><tr><th></th><th>Наименование</th><th>Количество</th><th>Цена за единицу, ₽</th></tr></thead><tbody>{rows}</tbody></table>
-<p style='background:#fff7df;padding:10px'>Отправка выполняется только после нажатия кнопки ниже. Передача идёт в текущий endpoint Закупай <code>{esc(OFFER_API_PATH)}</code>.</p>
+<p style='background:#fff7df;padding:10px'>Отправка выполняется только после нажатия кнопки ниже. Endpoint: <code>{esc(OFFER_API_PATH)}</code>.</p>
 <button type='submit'>Отправить предложение в Закупай</button></form></div></body></html>"""
         return HTMLResponse(html)
 
     @app.post("/dashboard/order/{order_id}/offer/submit", response_class=HTMLResponse)
-    async def submit_offer(order_id: int, request):
+    async def submit_offer(order_id: int, request: Request):
         order = _get_order(order_id)
         form = await request.form()
         payload = _build_payload(order, form)
