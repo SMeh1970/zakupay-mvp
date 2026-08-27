@@ -1,9 +1,13 @@
 import os
 from urllib.parse import parse_qsl, urlencode
 
-from main import app, api_filter_dict, compact_order, esc, fetch_all_orders, filter_orders, has_my_offer, max_competitors
+from main import (
+    app, api_filter_dict, compact_order, esc, fetch_all_orders, filter_orders,
+    has_my_offer, max_competitors, zakupay_headers, ZAKUPAY_BASE_URL,
+)
 import ai_panel
 from ai_panel_v2 import install_ai_panel_v2
+from offer_panel import install_offer_panel
 from price_estimator import analyze_order_v2
 from supplier_panel import install_supplier_panel
 
@@ -74,5 +78,12 @@ install_ai_panel_v2(
     non_purchase_predicate=looks_like_non_purchase_request,
 )
 install_supplier_panel(app, esc=esc)
+install_offer_panel(
+    app,
+    fetch_all_orders=fetch_all_orders,
+    zakupay_headers=zakupay_headers,
+    zakupay_base_url=ZAKUPAY_BASE_URL,
+    esc=esc,
+)
 
 __all__ = ["app"]
