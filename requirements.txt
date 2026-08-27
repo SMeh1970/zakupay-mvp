@@ -3,3 +3,4 @@ uvicorn
 apscheduler
 python-dotenv
 requests
+python-multipart
