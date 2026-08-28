@@ -11,14 +11,47 @@ def install_ai_panel_v2(app, fetch_all_orders, compact_order, filter_orders, api
             return True
         return str(values[-1]).strip().lower() not in {"0", "false", "no", "off", ""}
 
+    def _norm(value):
+        return str(value or "").strip().lower().replace("ё", "е")
+
+    def _matches_local_search(order, keyword="", title="", order_id=None):
+        if order_id is not None and order.get("id") != order_id:
+            return False
+
+        title_q = _norm(title)
+        if title_q and title_q not in _norm(order.get("name")):
+            return False
+
+        keyword_q = _norm(keyword)
+        if keyword_q:
+            customer = order.get("customer") or {}
+            region = order.get("region") or {}
+            parts = [
+                order.get("name"),
+                customer.get("shortName"), customer.get("name"), customer.get("inn"),
+                region.get("name"), order.get("deliveryAddress"),
+            ]
+            for item in order.get("orderItems") or []:
+                parts.extend([
+                    item.get("goodName"), item.get("comment"),
+                    (item.get("category") or {}).get("name"),
+                    (item.get("unit") or {}).get("name"),
+                ])
+            haystack = " | ".join(_norm(x) for x in parts if x not in (None, ""))
+            if keyword_q not in haystack:
+                return False
+        return True
+
     def _ranked(payment="all", region="", category="", min_positions=0, max_competitors_value=None,
                 only_without_my_offer=False, only_not_enough=False, exclude_non_purchase=True,
-                min_score=0, min_estimated_total=0, refresh=False, api_filters=None):
+                min_score=0, min_estimated_total=0, refresh=False, api_filters=None,
+                keyword="", title="", order_id=None):
         orders = fetch_all_orders(force=refresh, api_filters=api_filters or {})
         orders = filter_orders(
             orders, payment, region, category, min_positions,
             max_competitors_value, only_without_my_offer,
         )
+        orders = [o for o in orders if _matches_local_search(o, keyword, title, order_id)]
         if exclude_non_purchase:
             orders = [o for o in orders if not non_purchase_predicate(o)]
 
@@ -38,7 +71,8 @@ def install_ai_panel_v2(app, fetch_all_orders, compact_order, filter_orders, api
     @app.get("/analysis/ranked")
     def ranked_orders(
         payment: str = Query("all", pattern="^(all|prepayment|delay)$"),
-        region: str = "", category: str = "", min_positions: int = 0,
+        region: str = "", category: str = "", keyword: str = "", title: str = "",
+        order_id: int | None = None, inn: str = "", min_positions: int = 0,
         max_competitors_value: int | None = Query(None, alias="max_competitors"),
         only_without_my_offer: bool = False, onlyNotEnough: bool = False,
         exclude_non_purchase: list[str] = Query(default=["true"]),
@@ -53,12 +87,12 @@ def install_ai_panel_v2(app, fetch_all_orders, compact_order, filter_orders, api
             creationDateFrom=creationDateFrom, creationDateTo=creationDateTo,
             finishDateFrom=finishDateFrom, finishDateTo=finishDateTo,
             delayFrom=delayFrom, delayTo=delayTo, offersState=offersState,
-            onlyNotEnough=onlyNotEnough, tookInWork=tookInWork,
+            onlyNotEnough=onlyNotEnough, tookInWork=tookInWork, inn=inn,
         )
         rows = _ranked(
             payment, region, category, min_positions, max_competitors_value,
             only_without_my_offer, onlyNotEnough, exclude_flag,
-            min_score, min_estimated_total, refresh, af,
+            min_score, min_estimated_total, refresh, af, keyword, title, order_id,
         )
         return {
             "count": len(rows), "api_filters": af,
@@ -79,7 +113,8 @@ def install_ai_panel_v2(app, fetch_all_orders, compact_order, filter_orders, api
 
     @app.get("/dashboard/analysis", response_class=HTMLResponse)
     def analysis_dashboard(
-        payment: str = "all", region: str = "", category: str = "", min_positions: int = 0,
+        payment: str = "all", region: str = "", category: str = "", keyword: str = "", title: str = "",
+        order_id: int | None = None, inn: str = "", min_positions: int = 0,
         max_competitors_value: int | None = Query(None, alias="max_competitors"),
         only_without_my_offer: bool = False, onlyNotEnough: bool = False,
         exclude_non_purchase: list[str] = Query(default=["true"]),
@@ -94,12 +129,12 @@ def install_ai_panel_v2(app, fetch_all_orders, compact_order, filter_orders, api
             creationDateFrom=creationDateFrom, creationDateTo=creationDateTo,
             finishDateFrom=finishDateFrom, finishDateTo=finishDateTo,
             delayFrom=delayFrom, delayTo=delayTo, offersState=offersState,
-            onlyNotEnough=onlyNotEnough, tookInWork=tookInWork,
+            onlyNotEnough=onlyNotEnough, tookInWork=tookInWork, inn=inn,
         )
         rows = _ranked(
             payment, region, category, min_positions, max_competitors_value,
             only_without_my_offer, onlyNotEnough, exclude_flag,
-            min_score, min_estimated_total, refresh, af,
+            min_score, min_estimated_total, refresh, af, keyword, title, order_id,
         )
 
         def ck(v): return "checked" if v else ""
@@ -139,9 +174,13 @@ body{{font-family:Arial,sans-serif;margin:24px;background:#f5f5f5;color:#222}}.c
 <p><a href='/dashboard'>← Назад к заявкам</a> · <a href='/logout'>Выйти</a></p><h1>Анализ привлекательности заявок</h1>
 <div class='card'><form method='get'>
 <div class='filters'>
-<div><label>Оплата</label><select name='payment'>{payment_options}</select></div>
+<div><label>Ключевое слово</label><input name='keyword' value='{esc(keyword)}' placeholder='товар, артикул, комментарий...'></div>
+<div><label>Название заявки содержит</label><input name='title' value='{esc(title)}' placeholder='ремонт, расходники...'></div>
+<div><label>ID заявки</label><input type='number' name='order_id' value='{val(order_id)}' placeholder='37088126'></div>
+<div><label>ИНН заказчика</label><input name='inn' value='{esc(inn)}' placeholder='10 или 12 цифр'></div>
+<div><label>Категория содержит</label><input name='category' value='{esc(category)}' placeholder='Метизы'></div>
 <div><label>Регион</label><input name='region' value='{esc(region)}' placeholder='Москва или Россия'></div>
-<div><label>Категория</label><input name='category' value='{esc(category)}' placeholder='Метизы'></div>
+<div><label>Оплата</label><select name='payment'>{payment_options}</select></div>
 <div><label>Мин. позиций</label><input type='number' name='min_positions' value='{min_positions}' min='0'></div>
 <div><label>Макс. конкурентов</label><input type='number' name='max_competitors' value='{val(max_competitors_value)}' min='0'></div>
 <div><label>Оценочная закупка от, ₽</label><input type='number' name='min_estimated_total' value='{min_estimated_total}' min='0'></div>
@@ -160,7 +199,7 @@ body{{font-family:Arial,sans-serif;margin:24px;background:#f5f5f5;color:#222}}.c
 <div><label>Отсрочка до, дней</label><input type='number' name='delayTo' value='{val(delayTo)}'></div>
 <div><label>Статус моего счёта</label><select name='offersState'>{state_options}</select></div>
 <div class='check'><input type='checkbox' name='tookInWork' value='true' {ck(tookInWork)}><span>Взято в работу</span></div>
-</div><div class='note'>Убраны технические ID-фильтры и другие дублирующие поля. Их можно вернуть при необходимости.</div></details>
+</div><div class='note'>ИНН передаётся в API Закупай и может требовать платную лицензию. Ключевое слово, название и ID заявки фильтруются локально.</div></details>
 </form></div>
 <div class='card'><b>Найдено:</b> {len(rows)}</div>
 <div class='card' style='overflow:auto'><table><thead><tr><th>ID</th><th>Заявка</th><th>Заказчик</th><th>Регион</th><th>Оплата</th><th>Позиций</th><th>Конкурентов</th><th>Оценочная закупка</th><th>Балл</th><th>Решение</th><th>ИИ</th></tr></thead><tbody>{table_rows}</tbody></table></div>
