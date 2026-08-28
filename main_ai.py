@@ -1,6 +1,8 @@
 import os
 from urllib.parse import parse_qsl, urlencode
 
+from fastapi.responses import Response
+
 from main import (
     app, api_filter_dict, compact_order, esc, fetch_all_orders, filter_orders,
     has_my_offer, max_competitors, zakupay_headers, ZAKUPAY_BASE_URL,
@@ -53,7 +55,7 @@ def filter_orders_ai(orders, payment="all", region="", category="", min_position
 
 
 @app.middleware("http")
-async def strip_empty_optional_numeric_filters(request, call_next):
+async def panel_request_cleanup(request, call_next):
     raw_query = request.scope.get("query_string", b"").decode("utf-8", errors="ignore")
     if raw_query:
         pairs = parse_qsl(raw_query, keep_blank_values=True)
@@ -63,7 +65,22 @@ async def strip_empty_optional_numeric_filters(request, call_next):
         ]
         if cleaned != pairs:
             request.scope["query_string"] = urlencode(cleaned, doseq=True).encode("utf-8")
-    return await call_next(request)
+
+    response = await call_next(request)
+
+    # The analysis page is expensive to rebuild. Open order cards in a new tab so
+    # the filtered/ranked result remains intact in the original tab.
+    if request.url.path == "/dashboard/analysis" and response.headers.get("content-type", "").startswith("text/html"):
+        body = b""
+        async for chunk in response.body_iterator:
+            body += chunk
+        text = body.decode("utf-8")
+        text = text.replace("<a href='/dashboard/order/", "<a target='_blank' rel='noopener' href='/dashboard/order/")
+        headers = dict(response.headers)
+        headers.pop("content-length", None)
+        return Response(content=text, status_code=response.status_code, headers=headers, media_type="text/html")
+
+    return response
 
 
 install_ai_panel_v2(
