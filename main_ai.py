@@ -1,8 +1,6 @@
 import os
 from urllib.parse import parse_qsl, urlencode
 
-from fastapi.responses import RedirectResponse
-
 from main import (
     app, api_filter_dict, compact_order, esc, fetch_all_orders, filter_orders,
     has_my_offer, max_competitors, zakupay_headers, ZAKUPAY_BASE_URL,
@@ -18,7 +16,7 @@ from supplier_panel import install_supplier_panel
 ai_panel.analyze_order = analyze_order_v2
 
 _OPTIONAL_NUMERIC_QUERY_FIELDS = {
-    "max_competitors", "min_positions", "min_score", "min_estimated_total",
+    "max_competitors", "min_positions", "min_score", "min_estimated_total", "order_id",
     "delayFrom", "delayTo", "senderId", "company", "category_id", "region_id",
 }
 
@@ -66,19 +64,6 @@ async def strip_empty_optional_numeric_filters(request, call_next):
         if cleaned != pairs:
             request.scope["query_string"] = urlencode(cleaned, doseq=True).encode("utf-8")
     return await call_next(request)
-
-
-# main.py still contains the legacy /dashboard route. Remove only that route so
-# the public dashboard URL always opens the current analysis UI.
-app.router.routes[:] = [
-    route for route in app.router.routes
-    if getattr(route, "path", None) != "/dashboard"
-]
-
-
-@app.get("/dashboard", include_in_schema=False)
-def dashboard_redirect():
-    return RedirectResponse(url="/dashboard/analysis", status_code=307)
 
 
 install_ai_panel_v2(
