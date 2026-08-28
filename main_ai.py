@@ -10,6 +10,7 @@ from main import (
 import ai_panel
 from ai_panel_v2 import install_ai_panel_v2
 from offer_panel import install_offer_panel
+from price_debug import install_price_debug
 from price_estimator import analyze_order_v2
 from supplier_panel import install_supplier_panel
 
@@ -68,14 +69,17 @@ async def panel_request_cleanup(request, call_next):
 
     response = await call_next(request)
 
-    # The analysis page is expensive to rebuild. Open order cards in a new tab so
-    # the filtered/ranked result remains intact in the original tab.
+    # The analysis page is expensive to rebuild. Open enriched order details in a new tab
+    # so the filtered/ranked result remains intact in the original tab.
     if request.url.path == "/dashboard/analysis" and response.headers.get("content-type", "").startswith("text/html"):
         body = b""
         async for chunk in response.body_iterator:
             body += chunk
         text = body.decode("utf-8")
-        text = text.replace("<a href='/dashboard/order/", "<a target='_blank' rel='noopener' href='/dashboard/order/")
+        text = text.replace(
+            "<a href='/dashboard/order/",
+            "<a target='_blank' rel='noopener' href='/analysis/order/",
+        )
         headers = dict(response.headers)
         headers.pop("content-length", None)
         return Response(content=text, status_code=response.status_code, headers=headers, media_type="text/html")
@@ -94,6 +98,7 @@ install_ai_panel_v2(
     esc=esc,
     non_purchase_predicate=looks_like_non_purchase_request,
 )
+install_price_debug(app, fetch_all_orders=fetch_all_orders, esc=esc)
 install_supplier_panel(app, esc=esc)
 install_offer_panel(
     app,
