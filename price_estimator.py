@@ -4,6 +4,8 @@ import re
 from difflib import SequenceMatcher
 from statistics import median
 
+from price_debug import extract_best_price
+
 PRICE_CATALOG_PATH = os.getenv("PRICE_CATALOG_PATH", "price_catalog.json")
 
 
@@ -18,8 +20,6 @@ def _tokens(text):
 
 
 def _model_tokens(text):
-    # Model/article-like tokens are very useful for procurement matching:
-    # GA5030R, M6x10, 19-6-401, 2313-011 etc.
     return {
         x for x in _tokens(text)
         if any(ch.isdigit() for ch in x) and len(x) >= 4
@@ -64,6 +64,8 @@ def _walk(obj, prefix=""):
 
 
 def _extract_offer_name(best_offer):
+    if isinstance(best_offer, str) and best_offer.strip():
+        return best_offer.strip()
     if not isinstance(best_offer, dict):
         return None
     preferred = (
@@ -84,7 +86,6 @@ def _extract_offer_name(best_offer):
 def _extract_offer_price(best_offer):
     if not isinstance(best_offer, dict):
         return None
-    # Prefer unit-price looking fields, avoid totals whenever possible.
     preferred = (
         "price", "unitPrice", "pricePerUnit", "offerPrice", "bestPrice",
         "cost", "unitCost"
@@ -151,16 +152,20 @@ def estimate_order(order):
     items = order.get("orderItems") or []
     catalog = _load_catalog()
 
-    # First collect reliable competitor unit prices. They are also the best
-    # source for fallback medians inside the same request/category.
     reliable = []
     category_prices = {}
     preliminary = []
     for item in items:
         req_name = item.get("goodName") or ""
-        offer = item.get("bestOfferItem") or {}
+        offer = item.get("bestOfferItem")
         offer_name = _extract_offer_name(offer)
         offer_price = _extract_offer_price(offer)
+        price_source_path = None
+        if offer_price is None:
+            candidate = extract_best_price(item)
+            if candidate:
+                offer_price = candidate["value"]
+                price_source_path = candidate["path"]
         similarity = name_similarity(req_name, offer_name) if offer_name else 0.0
         competitor_ok = bool(offer_name and offer_price and similarity >= 0.58)
         pre = {
@@ -169,6 +174,7 @@ def estimate_order(order):
             "competitor_price": offer_price,
             "competitor_similarity": similarity,
             "competitor_accepted": competitor_ok,
+            "competitor_price_path": price_source_path,
         }
         preliminary.append(pre)
         if competitor_ok:
@@ -194,14 +200,12 @@ def estimate_order(order):
         source_name = None
         similarity = pre["competitor_similarity"]
 
-        # 1. Competitor price, but only if offered nomenclature matches request.
         if pre["competitor_accepted"]:
             unit_price = float(pre["competitor_price"])
             source = "competitor"
             source_name = pre["competitor_name"]
             confidence = "high" if similarity >= 0.72 else "medium"
 
-        # 2. Connected/static supplier catalog.
         if unit_price is None and catalog:
             cm = _catalog_best(req_name, catalog)
             if cm and cm["similarity"] >= 0.62:
@@ -211,7 +215,6 @@ def estimate_order(order):
                 similarity = cm["similarity"]
                 confidence = "high" if similarity >= 0.75 else "medium"
 
-        # 3. Rough fallback from reliable prices in the same category/request.
         if unit_price is None:
             cat = _category_name(item)
             if cat and cat in category_medians:
@@ -246,6 +249,7 @@ def estimate_order(order):
             "match_score": round(similarity, 3) if similarity else None,
             "competitor_name": pre["competitor_name"],
             "competitor_price": pre["competitor_price"],
+            "competitor_price_path": pre["competitor_price_path"],
             "competitor_accepted": pre["competitor_accepted"],
         })
 
@@ -331,5 +335,5 @@ def analyze_order_v2(order, has_my_offer, max_competitors):
         "priced_positions": estimate["priced_positions"],
         "positions_count": estimate["positions_count"],
         "matches": estimate["items"],
-        "price_estimation_version": 2,
+        "price_estimation_version": 3,
     }
