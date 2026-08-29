@@ -4,6 +4,7 @@ import re
 from difflib import SequenceMatcher
 from statistics import median
 
+from browser_prices import best_price_rows_for_order, best_price_value
 from price_debug import extract_best_price
 
 PRICE_CATALOG_PATH = os.getenv("PRICE_CATALOG_PATH", "price_catalog.json")
@@ -20,10 +21,7 @@ def _tokens(text):
 
 
 def _model_tokens(text):
-    return {
-        x for x in _tokens(text)
-        if any(ch.isdigit() for ch in x) and len(x) >= 4
-    }
+    return {x for x in _tokens(text) if any(ch.isdigit() for ch in x) and len(x) >= 4}
 
 
 def name_similarity(request_name, offered_name):
@@ -68,11 +66,7 @@ def _extract_offer_name(best_offer):
         return best_offer.strip()
     if not isinstance(best_offer, dict):
         return None
-    preferred = (
-        "goodName", "name", "productName", "offerName", "nomenclatureName",
-        "title", "description"
-    )
-    for key in preferred:
+    for key in ("goodName", "name", "productName", "offerName", "nomenclatureName", "title", "description"):
         value = best_offer.get(key)
         if isinstance(value, str) and value.strip():
             return value.strip()
@@ -86,11 +80,7 @@ def _extract_offer_name(best_offer):
 def _extract_offer_price(best_offer):
     if not isinstance(best_offer, dict):
         return None
-    preferred = (
-        "price", "unitPrice", "pricePerUnit", "offerPrice", "bestPrice",
-        "cost", "unitCost"
-    )
-    for key in preferred:
+    for key in ("price", "unitPrice", "pricePerUnit", "offerPrice", "bestPrice", "cost", "unitCost"):
         if key in best_offer:
             n = _to_number(best_offer.get(key))
             if n is not None and n > 0:
@@ -151,6 +141,8 @@ def _category_name(item):
 def estimate_order(order):
     items = order.get("orderItems") or []
     catalog = _load_catalog()
+    browser_result = best_price_rows_for_order(order)
+    browser_prices = browser_result.get("prices") or {}
 
     reliable = []
     category_prices = {}
@@ -159,24 +151,29 @@ def estimate_order(order):
         req_name = item.get("goodName") or ""
         offer = item.get("bestOfferItem")
         offer_name = _extract_offer_name(offer)
-        offer_price = _extract_offer_price(offer)
-        price_source_path = None
+        browser_row = browser_prices.get(int(item.get("id"))) if item.get("id") is not None else None
+        browser_price = best_price_value(browser_row)
+        offer_price = browser_price if browser_price is not None else _extract_offer_price(offer)
+        price_source_path = "browser:getoffersdeviationpercent.bestPrice" if browser_price is not None else None
         if offer_price is None:
             candidate = extract_best_price(item)
             if candidate:
                 offer_price = candidate["value"]
                 price_source_path = candidate["path"]
         similarity = name_similarity(req_name, offer_name) if offer_name else 0.0
-        competitor_ok = bool(offer_name and offer_price and similarity >= 0.58)
-        pre = {
+        # A price returned for this exact orderItemId is already position-bound by Zakupay,
+        # so it does not need fuzzy product-name validation.
+        competitor_ok = bool(browser_price is not None or (offer_name and offer_price and similarity >= 0.58))
+        preliminary.append({
             "request_name": req_name,
             "competitor_name": offer_name,
             "competitor_price": offer_price,
             "competitor_similarity": similarity,
             "competitor_accepted": competitor_ok,
             "competitor_price_path": price_source_path,
-        }
-        preliminary.append(pre)
+            "browser_price": browser_price,
+            "browser_row": browser_row,
+        })
         if competitor_ok:
             reliable.append(float(offer_price))
             cat = _category_name(item)
@@ -202,9 +199,9 @@ def estimate_order(order):
 
         if pre["competitor_accepted"]:
             unit_price = float(pre["competitor_price"])
-            source = "competitor"
-            source_name = pre["competitor_name"]
-            confidence = "high" if similarity >= 0.72 else "medium"
+            source = "zakupay_best_price" if pre["browser_price"] is not None else "competitor"
+            source_name = pre["competitor_name"] or "Лучшая цена Закупай"
+            confidence = "high" if pre["browser_price"] is not None or similarity >= 0.72 else "medium"
 
         if unit_price is None and catalog:
             cm = _catalog_best(req_name, catalog)
@@ -251,6 +248,7 @@ def estimate_order(order):
             "competitor_price": pre["competitor_price"],
             "competitor_price_path": pre["competitor_price_path"],
             "competitor_accepted": pre["competitor_accepted"],
+            "zakupay_price_meta": pre["browser_row"],
         })
 
     count = len(items)
@@ -263,6 +261,12 @@ def estimate_order(order):
         "priced_positions": priced_positions,
         "positions_count": count,
         "items": rows,
+        "browser_price_source": {
+            "enabled": browser_result.get("enabled"),
+            "ok": browser_result.get("ok"),
+            "errors": browser_result.get("errors") or [],
+            "received_positions": len(browser_prices),
+        },
     }
 
 
@@ -335,5 +339,6 @@ def analyze_order_v2(order, has_my_offer, max_competitors):
         "priced_positions": estimate["priced_positions"],
         "positions_count": estimate["positions_count"],
         "matches": estimate["items"],
-        "price_estimation_version": 3,
+        "browser_price_source": estimate["browser_price_source"],
+        "price_estimation_version": 4,
     }
