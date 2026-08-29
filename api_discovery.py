@@ -2,7 +2,7 @@ import io
 import re
 import zipfile
 import xml.etree.ElementTree as ET
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 
 import requests
 import yaml
@@ -56,23 +56,6 @@ def install_api_discovery(app, fetch_all_orders, zakupay_headers, zakupay_base_u
                     if isinstance(p,dict):params.append({'name':p.get('name'),'in':p.get('in'),'required':p.get('required'),'schema':json_safe(p.get('schema')),'description':p.get('description')})
                 found[path][str(method).lower()]={'summary':spec.get('summary'),'description':spec.get('description'),'operationId':spec.get('operationId'),'parameters':params,'requestBody':json_safe(spec.get('requestBody')),'responses':json_safe(spec.get('responses'))}
         return found
-    def extract_schema_urls(text,base_url):
-        found=[]
-        for pattern in [r"\burl\s*:\s*['\"]([^'\"]+)['\"]",r"['\"]([^'\"]*/specs/[^'\"]+\.(?:yaml|yml|json))['\"]"]:
-            for m in re.finditer(pattern,text or '',re.I):
-                value=m.group(1).strip()
-                if not value or value.startswith(('data:','mailto:','http://')):continue
-                absolute=urljoin(base_url,value)
-                if absolute not in found:found.append(absolute)
-        return found
-    def substitute_path(path,order_id,item_id):
-        replacements={'id':str(order_id),'orderid':str(order_id),'order_id':str(order_id),'order':str(order_id),'requestid':str(order_id),'request_id':str(order_id),'orderitemid':str(item_id) if item_id else None,'order_item_id':str(item_id) if item_id else None,'itemid':str(item_id) if item_id else None,'item_id':str(item_id) if item_id else None}
-        unresolved=[]; result=path
-        for name in re.findall(r'{([^{}]+)}',path):
-            value=replacements.get(name.lower().strip())
-            if value is None:unresolved.append(name)
-            else:result=result.replace('{'+name+'}',value)
-        return result,unresolved
     def xlsx_preview(content,max_rows=80):
         try:
             z=zipfile.ZipFile(io.BytesIO(content)); shared=[]
@@ -95,42 +78,78 @@ def install_api_discovery(app, fetch_all_orders, zakupay_headers, zakupay_base_u
                 if len(rows)>=max_rows:break
             return {'rows':rows}
         except Exception as e:return {'error':f'{type(e).__name__}: {e}','size':len(content)}
+    def base_variants(server_hints):
+        vals=[]
+        def add(x):
+            if x and x.rstrip('/') not in vals: vals.append(x.rstrip('/'))
+        add(zakupay_base_url)
+        # Swagger points to the test environment. Probe it read-only as documentation evidence.
+        for hint in server_hints:
+            add(hint)
+            p=urlparse(hint)
+            if p.scheme and p.netloc:
+                add(f'{p.scheme}://{p.netloc}')
+        # Known production host already used successfully for /api/v1/orders.
+        add('https://prodavay.sel-be.ru')
+        return vals
+    def endpoint_urls(base,path):
+        # Swagger server may already end in /api/v1 while documented path also starts /api/v1.
+        out=[]
+        def add(u):
+            if u not in out:out.append(u)
+        add(base.rstrip('/')+'/'+path.lstrip('/'))
+        if base.rstrip('/').endswith('/api/v1') and path.startswith('/api/v1/'):
+            add(base.rstrip('/')+'/'+path[len('/api/v1/'):])
+        return out
+    def probe_get(url,params=None,timeout=30,max_text=12000):
+        try:
+            r=requests.get(url,headers=zakupay_headers(),params=params or None,timeout=timeout)
+            data={'url':r.url,'status':r.status_code,'content_type':r.headers.get('content-type',''),'size':len(r.content)}
+            if r.ok and (r.content[:2]==b'PK' or 'spreadsheet' in data['content_type'].lower() or 'excel' in data['content_type'].lower()):
+                data['xlsx_preview']=xlsx_preview(r.content)
+            else:data['body']=safe_body(r,max_text)
+            return data
+        except requests.RequestException as e:return {'url':url,'error':str(e)}
 
     @app.get('/analysis/api-discovery/{order_id}')
     def discover_price_api(order_id:int):
         try:
             order=get_order(order_id); item_ids=[x.get('id') for x in (order.get('orderItems') or []) if x.get('id')]; item_id=item_ids[0] if item_ids else None
-            swagger_host='https://swagger.cynteka.ru'; schema_urls=[swagger_host+'/specs/swagger-core.yaml']; official_schemas=[]; all_route_specs={}; server_hints=[]
-            for url in schema_urls:
-                try:
-                    r=requests.get(url,timeout=25); entry={'url':url,'status':r.status_code,'content_type':r.headers.get('content-type','')}
-                    if r.ok:
-                        schema,fmt,error=parse_schema_response(r); entry['format']=fmt
-                        if schema:
-                            specs=route_specs(schema); all_route_specs.update(specs)
-                            entry.update({'paths_count':len(schema.get('paths') or {}),'interesting_paths':list(specs.keys()),'servers':json_safe(schema.get('servers')),'title':(schema.get('info') or {}).get('title'),'version':str((schema.get('info') or {}).get('version',''))})
-                            for s in schema.get('servers') or []:
-                                if isinstance(s,dict) and s.get('url'):server_hints.append(str(s['url']))
-                        else:entry['parse_error']=error
-                    official_schemas.append(entry)
-                except Exception as e:official_schemas.append({'url':url,'error':f'{type(e).__name__}: {e}'})
-
-            # The official Swagger exposes exactly the report we need: an XLSX comparison of all invoices for an order.
-            report_path=f'/api/v1/orders/{order_id}/offer-compare-report'; report_url=zakupay_base_url.rstrip('/')+report_path
+            schema_url='https://swagger.cynteka.ru/specs/swagger-core.yaml'; official_schemas=[]; all_route_specs={}; server_hints=[]
             try:
-                rr=requests.get(report_url,headers=zakupay_headers(),timeout=30)
-                ct=rr.headers.get('content-type','')
-                offer_compare_report={'path':report_path,'status':rr.status_code,'content_type':ct,'size':len(rr.content)}
-                if rr.ok and (rr.content[:2]==b'PK' or 'spreadsheet' in ct.lower() or 'excel' in ct.lower()):offer_compare_report['xlsx_preview']=xlsx_preview(rr.content)
-                else:offer_compare_report['body']=safe_body(rr,8000)
-            except requests.RequestException as e:offer_compare_report={'path':report_path,'error':str(e)}
+                r=requests.get(schema_url,timeout=25); entry={'url':schema_url,'status':r.status_code,'content_type':r.headers.get('content-type','')}
+                if r.ok:
+                    schema,fmt,error=parse_schema_response(r); entry['format']=fmt
+                    if schema:
+                        specs=route_specs(schema); all_route_specs.update(specs)
+                        entry.update({'paths_count':len(schema.get('paths') or {}),'interesting_paths':list(specs.keys()),'servers':json_safe(schema.get('servers')),'title':(schema.get('info') or {}).get('title'),'version':str((schema.get('info') or {}).get('version',''))})
+                        for s in schema.get('servers') or []:
+                            if isinstance(s,dict) and s.get('url'):server_hints.append(str(s['url']))
+                    else:entry['parse_error']=error
+                official_schemas.append(entry)
+            except Exception as e:official_schemas.append({'url':schema_url,'error':f'{type(e).__name__}: {e}'})
 
-            # Also test the documented offers filter exactly as Swagger specifies.
-            offers_url=zakupay_base_url.rstrip('/')+'/api/v1/offers'
-            try:
-                ro=requests.get(offers_url,headers=zakupay_headers(),params={'orderId':order_id,'page':1,'pageSize':100,'isoDate':'true'},timeout=25)
-                offers_probe={'url':ro.url,'status':ro.status_code,'content_type':ro.headers.get('content-type',''),'body':safe_body(ro,12000)}
-            except requests.RequestException as e:offers_probe={'error':str(e)}
+            bases=base_variants(server_hints)
+            report_path=f'/api/v1/orders/{order_id}/offer-compare-report'
+            report_probes=[]
+            for base in bases:
+                for url in endpoint_urls(base,report_path):
+                    report_probes.append(probe_get(url,timeout=30,max_text=8000))
 
-            return JSONResponse(json_safe({'order_id':order_id,'first_item_id':item_id,'official_schema_attempts':official_schemas,'official_server_hints':server_hints,'official_interesting_routes':list(all_route_specs.keys()),'offer_compare_report':offer_compare_report,'offers_probe':offers_probe}))
+            offers_probes=[]
+            offers_path='/api/v1/offers'
+            params={'orderId':order_id,'page':1,'pageSize':100,'isoDate':'true'}
+            for base in bases:
+                for url in endpoint_urls(base,offers_path):
+                    offers_probes.append(probe_get(url,params=params,timeout=25,max_text=12000))
+
+            # Verify the one endpoint we already know works, on every base, so host mismatch is obvious.
+            control_order_probes=[]
+            for base in bases:
+                for url in endpoint_urls(base,'/api/v1/orders'):
+                    control_order_probes.append(probe_get(url,params={'page':1,'pageSize':1,'isoDate':'true'},timeout=20,max_text=3000))
+
+            return JSONResponse(json_safe({'order_id':order_id,'first_item_id':item_id,'official_schema_attempts':official_schemas,'official_server_hints':server_hints,
+                'official_interesting_routes':list(all_route_specs.keys()),'base_variants':bases,'control_order_probes':control_order_probes,
+                'offer_compare_report_probes':report_probes,'offers_probes':offers_probes}))
         except Exception as e:return JSONResponse({'order_id':order_id,'discovery_error':f'{type(e).__name__}: {e}'},status_code=200)
