@@ -1,4 +1,7 @@
+import io
 import re
+import zipfile
+import xml.etree.ElementTree as ET
 from urllib.parse import urljoin
 
 import requests
@@ -6,201 +9,128 @@ import yaml
 from fastapi import HTTPException
 from fastapi.responses import JSONResponse
 
-
-PRICE_WORDS = (
-    'offer', 'price', 'corridor', 'orderitem', 'order-item',
-    'invoice', 'producer', 'proposal', 'bestoffer', 'bestprice',
-    'счет', 'счёт', 'предлож', 'цен', 'коридор',
-)
-
+PRICE_WORDS = ('offer','price','corridor','orderitem','order-item','invoice','producer','proposal','bestoffer','bestprice','счет','счёт','предлож','цен','коридор')
 
 def install_api_discovery(app, fetch_all_orders, zakupay_headers, zakupay_base_url):
-    def get_order(order_id: int):
-        orders = fetch_all_orders()
-        order = next((x for x in orders if x.get('id') == order_id), None)
+    def get_order(order_id:int):
+        orders=fetch_all_orders(); order=next((x for x in orders if x.get('id')==order_id),None)
         if not order:
-            orders = fetch_all_orders(force=True)
-            order = next((x for x in orders if x.get('id') == order_id), None)
-        if not order:
-            raise HTTPException(status_code=404, detail='Заявка не найдена среди актуальных')
+            orders=fetch_all_orders(force=True); order=next((x for x in orders if x.get('id')==order_id),None)
+        if not order: raise HTTPException(status_code=404,detail='Заявка не найдена среди актуальных')
         return order
-
     def decode_text(r):
-        raw = r.content
-        try:
-            return raw.decode('utf-8')
-        except UnicodeDecodeError:
-            return raw.decode(r.apparent_encoding or 'utf-8', errors='replace')
-
-    def json_safe(value, depth=0):
-        # YAML permits dates and other Python-native objects that Starlette's JSON
-        # encoder cannot serialize. Convert the diagnostic payload recursively.
-        if depth > 20:
-            return str(value)
-        if value is None or isinstance(value, (str, int, float, bool)):
-            return value
-        if isinstance(value, dict):
-            return {str(k): json_safe(v, depth + 1) for k, v in value.items()}
-        if isinstance(value, (list, tuple, set)):
-            return [json_safe(v, depth + 1) for v in value]
-        return str(value)
-
-    def safe_body(r, max_text=4000):
-        try:
-            return json_safe(r.json())
-        except ValueError:
-            return decode_text(r)[:max_text]
-
+        try:return r.content.decode('utf-8')
+        except UnicodeDecodeError:return r.content.decode(r.apparent_encoding or 'utf-8',errors='replace')
+    def json_safe(v,d=0):
+        if d>20:return str(v)
+        if v is None or isinstance(v,(str,int,float,bool)):return v
+        if isinstance(v,dict):return {str(k):json_safe(x,d+1) for k,x in v.items()}
+        if isinstance(v,(list,tuple,set)):return [json_safe(x,d+1) for x in v]
+        return str(v)
+    def safe_body(r,max_text=4000):
+        try:return json_safe(r.json())
+        except ValueError:return decode_text(r)[:max_text]
     def parse_schema_response(r):
-        text = decode_text(r)
+        text=decode_text(r)
         try:
-            body = r.json()
-            if isinstance(body, dict):
-                return body, 'json', None
-        except ValueError:
-            pass
+            b=r.json()
+            if isinstance(b,dict):return b,'json',None
+        except ValueError:pass
         try:
-            body = yaml.safe_load(text)
-            if isinstance(body, dict):
-                return body, 'yaml', None
-        except yaml.YAMLError as exc:
-            return None, None, str(exc)
-        return None, None, 'response is neither JSON nor YAML OpenAPI object'
-
-    def is_interesting(path, methods):
-        blob = (path + ' ' + str(methods)).lower()
-        return any(k in blob for k in PRICE_WORDS)
-
+            b=yaml.safe_load(text)
+            if isinstance(b,dict):return b,'yaml',None
+        except yaml.YAMLError as e:return None,None,str(e)
+        return None,None,'response is neither JSON nor YAML OpenAPI object'
+    def is_interesting(path,methods):
+        blob=(path+' '+str(methods)).lower(); return any(k in blob for k in PRICE_WORDS)
     def route_specs(schema):
-        found = {}
-        if not isinstance(schema, dict):
-            return found
-        for path, methods in (schema.get('paths') or {}).items():
-            if not isinstance(methods, dict) or not is_interesting(path, methods):
-                continue
-            found[path] = {}
-            for method, spec in methods.items():
-                if str(method).lower() not in {'get', 'post', 'put', 'patch', 'delete'}:
-                    continue
-                spec = spec if isinstance(spec, dict) else {}
-                params = []
+        found={}
+        if not isinstance(schema,dict):return found
+        for path,methods in (schema.get('paths') or {}).items():
+            if not isinstance(methods,dict) or not is_interesting(path,methods):continue
+            found[path]={}
+            for method,spec in methods.items():
+                if str(method).lower() not in {'get','post','put','patch','delete'}:continue
+                spec=spec if isinstance(spec,dict) else {}; params=[]
                 for p in spec.get('parameters') or []:
-                    if not isinstance(p, dict):
-                        continue
-                    params.append({
-                        'name': p.get('name'), 'in': p.get('in'), 'required': p.get('required'),
-                        'schema': json_safe(p.get('schema')), 'description': p.get('description'),
-                    })
-                found[path][str(method).lower()] = {
-                    'summary': spec.get('summary'), 'description': spec.get('description'),
-                    'operationId': spec.get('operationId'), 'parameters': params,
-                    'requestBody': json_safe(spec.get('requestBody')),
-                    'responses': json_safe(spec.get('responses')),
-                }
+                    if isinstance(p,dict):params.append({'name':p.get('name'),'in':p.get('in'),'required':p.get('required'),'schema':json_safe(p.get('schema')),'description':p.get('description')})
+                found[path][str(method).lower()]={'summary':spec.get('summary'),'description':spec.get('description'),'operationId':spec.get('operationId'),'parameters':params,'requestBody':json_safe(spec.get('requestBody')),'responses':json_safe(spec.get('responses'))}
         return found
-
-    def extract_schema_urls(text, base_url):
-        found = []
-        patterns = [
-            r"\burl\s*:\s*['\"]([^'\"]+)['\"]", r"\burl\s*=\s*['\"]([^'\"]+)['\"]",
-            r"['\"]([^'\"]*(?:swagger|openapi)[^'\"]*\.(?:json|yaml|yml)[^'\"]*)['\"]",
-            r"['\"]([^'\"]*/specs/[^'\"]+\.(?:yaml|yml|json))['\"]",
-        ]
-        for pattern in patterns:
-            for match in re.finditer(pattern, text or '', re.I):
-                value = match.group(1).strip()
-                if not value or value.startswith('data:'):
-                    continue
-                absolute = urljoin(base_url, value)
-                if absolute not in found:
-                    found.append(absolute)
+    def extract_schema_urls(text,base_url):
+        found=[]
+        for pattern in [r"\burl\s*:\s*['\"]([^'\"]+)['\"]",r"['\"]([^'\"]*/specs/[^'\"]+\.(?:yaml|yml|json))['\"]"]:
+            for m in re.finditer(pattern,text or '',re.I):
+                value=m.group(1).strip()
+                if not value or value.startswith(('data:','mailto:','http://')):continue
+                absolute=urljoin(base_url,value)
+                if absolute not in found:found.append(absolute)
         return found
-
-    def substitute_path(path, order_id, item_id):
-        replacements = {'orderid': str(order_id), 'order_id': str(order_id), 'order': str(order_id), 'requestid': str(order_id), 'request_id': str(order_id),
-                        'orderitemid': str(item_id) if item_id else None, 'order_item_id': str(item_id) if item_id else None,
-                        'itemid': str(item_id) if item_id else None, 'item_id': str(item_id) if item_id else None}
-        unresolved, result = [], path
-        for name in re.findall(r'{([^{}]+)}', path):
-            value = replacements.get(name.lower().strip())
-            if value is None:
-                unresolved.append(name)
-            else:
-                result = result.replace('{' + name + '}', value)
-        return result, unresolved
+    def substitute_path(path,order_id,item_id):
+        replacements={'id':str(order_id),'orderid':str(order_id),'order_id':str(order_id),'order':str(order_id),'requestid':str(order_id),'request_id':str(order_id),'orderitemid':str(item_id) if item_id else None,'order_item_id':str(item_id) if item_id else None,'itemid':str(item_id) if item_id else None,'item_id':str(item_id) if item_id else None}
+        unresolved=[]; result=path
+        for name in re.findall(r'{([^{}]+)}',path):
+            value=replacements.get(name.lower().strip())
+            if value is None:unresolved.append(name)
+            else:result=result.replace('{'+name+'}',value)
+        return result,unresolved
+    def xlsx_preview(content,max_rows=80):
+        try:
+            z=zipfile.ZipFile(io.BytesIO(content)); shared=[]
+            if 'xl/sharedStrings.xml' in z.namelist():
+                root=ET.fromstring(z.read('xl/sharedStrings.xml'))
+                shared=[''.join(t.text or '' for t in si.iter() if t.tag.endswith('}t')) for si in root]
+            sheet=next((n for n in z.namelist() if n.startswith('xl/worksheets/sheet') and n.endswith('.xml')),None)
+            if not sheet:return {'error':'xlsx has no worksheet'}
+            root=ET.fromstring(z.read(sheet)); rows=[]
+            for row in root.iter():
+                if not row.tag.endswith('}row'):continue
+                vals=[]
+                for c in row:
+                    if not c.tag.endswith('}c'):continue
+                    typ=c.attrib.get('t'); v=next((x for x in c if x.tag.endswith('}v')),None)
+                    value='' if v is None else (v.text or '')
+                    if typ=='s' and value.isdigit() and int(value)<len(shared):value=shared[int(value)]
+                    vals.append(value)
+                if any(str(x).strip() for x in vals):rows.append(vals)
+                if len(rows)>=max_rows:break
+            return {'rows':rows}
+        except Exception as e:return {'error':f'{type(e).__name__}: {e}','size':len(content)}
 
     @app.get('/analysis/api-discovery/{order_id}')
-    def discover_price_api(order_id: int):
+    def discover_price_api(order_id:int):
         try:
-            order = get_order(order_id)
-            item_ids = [x.get('id') for x in (order.get('orderItems') or []) if x.get('id')]
-            item_id = item_ids[0] if item_ids else None
-            swagger_host = 'https://swagger.cynteka.ru'
-            swagger_root, asset_urls, schema_urls = [], [], []
-
-            try:
-                r = requests.get(swagger_host + '/', timeout=20)
-                root_html = decode_text(r) if r.ok else ''
-                swagger_root.append({'url': swagger_host + '/', 'status': r.status_code, 'content_type': r.headers.get('content-type', ''), 'preview': root_html[:2500]})
-                schema_urls.extend(extract_schema_urls(root_html, swagger_host + '/'))
-                for m in re.finditer(r"<script[^>]+src=['\"]([^'\"]+)['\"]", root_html, re.I):
-                    asset = urljoin(swagger_host + '/', m.group(1))
-                    if asset not in asset_urls:
-                        asset_urls.append(asset)
-            except requests.RequestException as exc:
-                swagger_root.append({'url': swagger_host + '/', 'error': str(exc)})
-
-            swagger_assets = []
-            for asset in asset_urls:
+            order=get_order(order_id); item_ids=[x.get('id') for x in (order.get('orderItems') or []) if x.get('id')]; item_id=item_ids[0] if item_ids else None
+            swagger_host='https://swagger.cynteka.ru'; schema_urls=[swagger_host+'/specs/swagger-core.yaml']; official_schemas=[]; all_route_specs={}; server_hints=[]
+            for url in schema_urls:
                 try:
-                    r = requests.get(asset, timeout=20); text = decode_text(r)
-                    urls = extract_schema_urls(text, asset) if r.ok else []; schema_urls.extend(urls)
-                    swagger_assets.append({'url': asset, 'status': r.status_code, 'content_type': r.headers.get('content-type', ''), 'discovered_schema_urls': urls, 'preview': text[:3000]})
-                except requests.RequestException as exc:
-                    swagger_assets.append({'url': asset, 'error': str(exc)})
-
-            for url in [swagger_host + '/specs/swagger-core.yaml', swagger_host + '/specs/swagger-edi.yaml']:
-                if url not in schema_urls: schema_urls.append(url)
-
-            official_schemas, all_route_specs, server_hints = [], {}, []
-            for url in list(dict.fromkeys(schema_urls)):
-                try:
-                    r = requests.get(url, timeout=25)
-                    entry = {'url': url, 'status': r.status_code, 'content_type': r.headers.get('content-type', '')}
+                    r=requests.get(url,timeout=25); entry={'url':url,'status':r.status_code,'content_type':r.headers.get('content-type','')}
                     if r.ok:
-                        schema, fmt, error = parse_schema_response(r); entry['format'] = fmt
+                        schema,fmt,error=parse_schema_response(r); entry['format']=fmt
                         if schema:
-                            specs = route_specs(schema)
-                            entry.update({'paths_count': len(schema.get('paths') or {}), 'interesting_paths': list(specs.keys()),
-                                          'servers': json_safe(schema.get('servers')), 'title': (schema.get('info') or {}).get('title'), 'version': str((schema.get('info') or {}).get('version', ''))})
-                            all_route_specs.update(specs)
+                            specs=route_specs(schema); all_route_specs.update(specs)
+                            entry.update({'paths_count':len(schema.get('paths') or {}),'interesting_paths':list(specs.keys()),'servers':json_safe(schema.get('servers')),'title':(schema.get('info') or {}).get('title'),'version':str((schema.get('info') or {}).get('version',''))})
                             for s in schema.get('servers') or []:
-                                if isinstance(s, dict) and s.get('url'): server_hints.append(str(s.get('url')))
-                        else:
-                            entry['parse_error'] = error; entry['preview'] = decode_text(r)[:5000]
-                    else: entry['preview'] = decode_text(r)[:1500]
+                                if isinstance(s,dict) and s.get('url'):server_hints.append(str(s['url']))
+                        else:entry['parse_error']=error
                     official_schemas.append(entry)
-                except Exception as exc:
-                    official_schemas.append({'url': url, 'error': f'{type(exc).__name__}: {exc}'})
+                except Exception as e:official_schemas.append({'url':url,'error':f'{type(e).__name__}: {e}'})
 
-            documented_get_probes = []
-            for path, methods in all_route_specs.items():
-                if 'get' not in methods: continue
-                resolved, unresolved = substitute_path(path, order_id, item_id)
-                if unresolved:
-                    documented_get_probes.append({'path': path, 'method': 'get', 'skipped': 'unresolved path parameters', 'unresolved': unresolved}); continue
-                url = zakupay_base_url.rstrip('/') + '/' + resolved.lstrip('/')
-                try:
-                    r = requests.get(url, headers=zakupay_headers(), timeout=20)
-                    documented_get_probes.append({'path': path, 'resolved_path': resolved, 'status': r.status_code, 'body': safe_body(r, 8000)})
-                except requests.RequestException as exc:
-                    documented_get_probes.append({'path': path, 'resolved_path': resolved, 'error': str(exc)})
+            # The official Swagger exposes exactly the report we need: an XLSX comparison of all invoices for an order.
+            report_path=f'/api/v1/orders/{order_id}/offer-compare-report'; report_url=zakupay_base_url.rstrip('/')+report_path
+            try:
+                rr=requests.get(report_url,headers=zakupay_headers(),timeout=30)
+                ct=rr.headers.get('content-type','')
+                offer_compare_report={'path':report_path,'status':rr.status_code,'content_type':ct,'size':len(rr.content)}
+                if rr.ok and (rr.content[:2]==b'PK' or 'spreadsheet' in ct.lower() or 'excel' in ct.lower()):offer_compare_report['xlsx_preview']=xlsx_preview(rr.content)
+                else:offer_compare_report['body']=safe_body(rr,8000)
+            except requests.RequestException as e:offer_compare_report={'path':report_path,'error':str(e)}
 
-            payload = {'order_id': order_id, 'first_item_id': item_id, 'official_swagger_host': swagger_host, 'swagger_root': swagger_root,
-                       'swagger_assets': swagger_assets, 'discovered_schema_urls': list(dict.fromkeys(schema_urls)), 'official_schema_attempts': official_schemas,
-                       'official_server_hints': list(dict.fromkeys(server_hints)), 'official_interesting_routes': list(all_route_specs.keys()),
-                       'official_interesting_route_specs': all_route_specs, 'documented_get_probes': documented_get_probes}
-            return JSONResponse(json_safe(payload))
-        except Exception as exc:
-            # Diagnostics must diagnose themselves instead of returning an opaque HTTP 500.
-            return JSONResponse({'order_id': order_id, 'discovery_error': f'{type(exc).__name__}: {exc}'}, status_code=200)
+            # Also test the documented offers filter exactly as Swagger specifies.
+            offers_url=zakupay_base_url.rstrip('/')+'/api/v1/offers'
+            try:
+                ro=requests.get(offers_url,headers=zakupay_headers(),params={'orderId':order_id,'page':1,'pageSize':100,'isoDate':'true'},timeout=25)
+                offers_probe={'url':ro.url,'status':ro.status_code,'content_type':ro.headers.get('content-type',''),'body':safe_body(ro,12000)}
+            except requests.RequestException as e:offers_probe={'error':str(e)}
+
+            return JSONResponse(json_safe({'order_id':order_id,'first_item_id':item_id,'official_schema_attempts':official_schemas,'official_server_hints':server_hints,'official_interesting_routes':list(all_route_specs.keys()),'offer_compare_report':offer_compare_report,'offers_probe':offers_probe}))
+        except Exception as e:return JSONResponse({'order_id':order_id,'discovery_error':f'{type(e).__name__}: {e}'},status_code=200)
