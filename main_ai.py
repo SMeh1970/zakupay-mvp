@@ -9,8 +9,8 @@ from main import (
 )
 import ai_panel
 from ai_panel_v2 import install_ai_panel_v2
+from analysis_detail import install_analysis_detail
 from offer_panel import install_offer_panel
-from price_debug import install_price_debug
 from price_estimator import analyze_order_v2
 from supplier_panel import install_supplier_panel
 
@@ -69,8 +69,8 @@ async def panel_request_cleanup(request, call_next):
 
     response = await call_next(request)
 
-    # The analysis page is expensive to rebuild. Open enriched order details in a new tab
-    # so the filtered/ranked result remains intact in the original tab.
+    # Keep the expensive ranked list open and make both the ID and request title
+    # open the human-readable detail page in a new tab.
     if request.url.path == "/dashboard/analysis" and response.headers.get("content-type", "").startswith("text/html"):
         body = b""
         async for chunk in response.body_iterator:
@@ -78,8 +78,33 @@ async def panel_request_cleanup(request, call_next):
         text = body.decode("utf-8")
         text = text.replace(
             "<a href='/dashboard/order/",
-            "<a target='_blank' rel='noopener' href='/analysis/order/",
+            "<a target='_blank' rel='noopener' href='/dashboard/analysis/order/",
         )
+        script = """
+<script>
+document.querySelectorAll('tbody tr').forEach(function(row) {
+  const idLink = row.querySelector('td:first-child a');
+  const titleCell = row.cells && row.cells.length > 1 ? row.cells[1] : null;
+  if (!idLink || !titleCell) return;
+  let href = idLink.getAttribute('href') || '';
+  href = href.replace('/dashboard/order/', '/dashboard/analysis/order/');
+  idLink.setAttribute('href', href);
+  idLink.setAttribute('target', '_blank');
+  idLink.setAttribute('rel', 'noopener');
+  if (!titleCell.querySelector('a')) {
+    const title = titleCell.textContent;
+    titleCell.textContent = '';
+    const a = document.createElement('a');
+    a.href = href;
+    a.target = '_blank';
+    a.rel = 'noopener';
+    a.textContent = title;
+    titleCell.appendChild(a);
+  }
+});
+</script>
+"""
+        text = text.replace("</body>", script + "</body>")
         headers = dict(response.headers)
         headers.pop("content-length", None)
         return Response(content=text, status_code=response.status_code, headers=headers, media_type="text/html")
@@ -98,7 +123,13 @@ install_ai_panel_v2(
     esc=esc,
     non_purchase_predicate=looks_like_non_purchase_request,
 )
-install_price_debug(app, fetch_all_orders=fetch_all_orders, esc=esc)
+install_analysis_detail(
+    app,
+    fetch_all_orders=fetch_all_orders,
+    zakupay_headers=zakupay_headers,
+    zakupay_base_url=ZAKUPAY_BASE_URL,
+    esc=esc,
+)
 install_supplier_panel(app, esc=esc)
 install_offer_panel(
     app,
