@@ -3,6 +3,8 @@ import requests
 from fastapi import HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse
 
+from browser_prices import best_price_rows_for_order, best_price_value
+
 
 def _num(v):
     if isinstance(v, bool):
@@ -94,10 +96,18 @@ def install_analysis_detail(app, fetch_all_orders, zakupay_headers, zakupay_base
         order = _get_order(fetch_all_orders, order_id)
         customer = order.get('customer') or {}
         region = order.get('region') or {}
+        browser_result = best_price_rows_for_order(order)
+        browser_prices = browser_result.get('prices') or {}
         rows = ''
         for n, item in enumerate(order.get('orderItems') or [], 1):
-            pc = extract_best_price(item)
-            price = pc['value'] if pc else None
+            browser_row = browser_prices.get(int(item.get('id'))) if item.get('id') is not None else None
+            price = best_price_value(browser_row)
+            source = 'Закупай' if price is not None else '—'
+            if price is None:
+                pc = extract_best_price(item)
+                price = pc['value'] if pc else None
+                if price is not None:
+                    source = 'API заявки'
             qty = _num(item.get('count')) or 0
             total = round(price * qty, 2) if price is not None else None
             rows += (
@@ -106,15 +116,19 @@ def install_analysis_detail(app, fetch_all_orders, zakupay_headers, zakupay_base
                 f"<td>{esc(item.get('count'))}</td><td>{esc((item.get('unit') or {}).get('name'))}</td>"
                 f"<td>{esc(item.get('companiesWithOffersCount'))}</td>"
                 f"<td>{esc(_best_offer_name(item))}</td>"
-                f"<td><b>{('—' if price is None else f'{price:,.2f} ₽'.replace(',', ' '))}</b></td>"
+                f"<td><b>{('—' if price is None else f'{price:,.2f} ₽'.replace(',', ' '))}</b><div style='font-size:11px;color:#777'>{source}</div></td>"
                 f"<td>{('—' if total is None else f'{total:,.2f} ₽'.replace(',', ' '))}</td></tr>"
             )
         delay = order.get('delay')
         payment = 'Предоплата / без отсрочки' if delay == 0 else (f'{delay} дней' if delay is not None else '—')
+        source_state = browser_result.get('errors') or []
+        source_note = 'Цены Закупай подключены.' if browser_result.get('ok') else (
+            'Источник цен Закупай не настроен.' if not browser_result.get('enabled') else f'Ошибка источника цен: {esc(source_state)}'
+        )
         html = f"""<!doctype html><html lang='ru'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>
-<title>Заявка {order_id}</title><style>body{{font-family:Arial;margin:24px;background:#f5f5f5;color:#222}}.card{{background:#fff;border-radius:12px;padding:18px;margin-bottom:18px}}table{{width:100%;border-collapse:collapse;font-size:13px}}th{{background:#eee;text-align:left;padding:9px}}td{{padding:9px;border-bottom:1px solid #eee;vertical-align:top}}a{{color:#4c39d4;font-weight:bold;text-decoration:none}}.meta{{display:grid;grid-template-columns:170px 1fr;gap:7px}}</style></head><body>
-<p><a href='/dashboard/analysis'>← Анализ заявок</a> · <a target='_blank' href='/analysis/raw-order/{order_id}'>Сырой JSON позиции</a> · <a target='_blank' href='/analysis/price-source/{order_id}'>Проверить API цен</a></p>
-<div class='card'><h1>{esc(order.get('name'))}</h1><div class='meta'><b>ID</b><div>{order_id}</div><b>Заказчик</b><div>{esc(customer.get('shortName') or customer.get('name'))}</div><b>Регион</b><div>{esc(region.get('name'))}</div><b>Оплата</b><div>{esc(payment)}</div><b>Срок поставки</b><div>{esc(order.get('finishDate'))}</div><b>Адрес</b><div>{esc(order.get('deliveryAddress'))}</div></div></div>
+<title>Заявка {order_id}</title><style>body{{font-family:Arial;margin:24px;background:#f5f5f5;color:#222}}.card{{background:#fff;border-radius:12px;padding:18px;margin-bottom:18px}}table{{width:100%;border-collapse:collapse;font-size:13px}}th{{background:#eee;text-align:left;padding:9px}}td{{padding:9px;border-bottom:1px solid #eee;vertical-align:top}}a{{color:#4c39d4;font-weight:bold;text-decoration:none}}.meta{{display:grid;grid-template-columns:170px 1fr;gap:7px}}.note{{font-size:12px;color:#666}}</style></head><body>
+<p><a href='/dashboard/analysis'>← Анализ заявок</a> · <a target='_blank' href='/analysis/raw-order/{order_id}'>Сырой JSON позиции</a> · <a target='_blank' href='/analysis/api-discovery/{order_id}'>Диагностика API</a></p>
+<div class='card'><h1>{esc(order.get('name'))}</h1><div class='meta'><b>ID</b><div>{order_id}</div><b>Заказчик</b><div>{esc(customer.get('shortName') or customer.get('name'))}</div><b>Регион</b><div>{esc(region.get('name'))}</div><b>Оплата</b><div>{esc(payment)}</div><b>Срок поставки</b><div>{esc(order.get('finishDate'))}</div><b>Адрес</b><div>{esc(order.get('deliveryAddress'))}</div></div><p class='note'>{source_note}</p></div>
 <div class='card'><table><thead><tr><th>№</th><th>Наименование</th><th>Категория</th><th>Кол-во</th><th>Ед.</th><th>Конкурентов</th><th>Лучшее предложение</th><th>Лучшая цена</th><th>Сумма</th></tr></thead><tbody>{rows}</tbody></table></div>
 </body></html>"""
         return HTMLResponse(html)
@@ -122,36 +136,39 @@ def install_analysis_detail(app, fetch_all_orders, zakupay_headers, zakupay_base
     @app.get('/analysis/raw-order/{order_id}')
     def raw_order_price_fields(order_id: int):
         order = _get_order(fetch_all_orders, order_id)
+        browser_result = best_price_rows_for_order(order)
+        browser_prices = browser_result.get('prices') or {}
         items = []
         for item in order.get('orderItems') or []:
+            browser_row = browser_prices.get(int(item.get('id'))) if item.get('id') is not None else None
             items.append({
                 'id': item.get('id'), 'goodName': item.get('goodName'),
                 'bestOfferItem': item.get('bestOfferItem'),
                 'companiesWithOffersCount': item.get('companiesWithOffersCount'),
-                'best_price': extract_best_price(item),
+                'zakupay_best_price': best_price_value(browser_row),
+                'zakupay_price_meta': browser_row,
+                'best_price_from_order_json': extract_best_price(item),
                 'price_candidates': price_candidates(item), 'raw': item,
             })
-        return JSONResponse({'order_id': order_id, 'items': items})
+        return JSONResponse({'order_id': order_id, 'browser_price_source': browser_result, 'items': items})
 
     @app.get('/analysis/price-source/{order_id}')
     def probe_price_source(order_id: int):
-        _get_order(fetch_all_orders, order_id)
-        url = f"{zakupay_base_url}/api/v1/offers"
-        probes = [
-            {'orderId': order_id, 'page': 1, 'pageSize': 100},
-            {'order': order_id, 'page': 1, 'pageSize': 100},
-            {'order_id': order_id, 'page': 1, 'pageSize': 100},
-            {'requestId': order_id, 'page': 1, 'pageSize': 100},
-        ]
-        results = []
-        for params in probes:
-            try:
-                r = requests.get(url, headers=zakupay_headers(), params=params, timeout=20)
-                try:
-                    body = r.json()
-                except ValueError:
-                    body = r.text[:2000]
-                results.append({'params': params, 'status': r.status_code, 'body': body})
-            except requests.RequestException as exc:
-                results.append({'params': params, 'error': str(exc)})
-        return JSONResponse({'order_id': order_id, 'endpoint': '/api/v1/offers', 'probes': results})
+        order = _get_order(fetch_all_orders, order_id)
+        result = best_price_rows_for_order(order, force=True)
+        safe_prices = {}
+        for item_id, row in (result.get('prices') or {}).items():
+            safe_prices[str(item_id)] = {
+                'best_price': best_price_value(row),
+                'offerDeviation': row.get('offerDeviation') if isinstance(row, dict) else None,
+                'secondPrice': row.get('secondPrice') if isinstance(row, dict) else None,
+                'deliveryPositionPrice': row.get('deliveryPositionPrice') if isinstance(row, dict) else None,
+            }
+        return JSONResponse({
+            'order_id': order_id,
+            'endpoint': '/core/supplier/getoffersdeviationpercent',
+            'enabled': result.get('enabled'),
+            'ok': result.get('ok'),
+            'errors': result.get('errors') or [],
+            'prices': safe_prices,
+        })
