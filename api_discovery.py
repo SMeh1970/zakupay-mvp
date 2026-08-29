@@ -2,7 +2,7 @@ import io
 import re
 import zipfile
 import xml.etree.ElementTree as ET
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urlparse
 
 import requests
 import yaml
@@ -83,17 +83,13 @@ def install_api_discovery(app, fetch_all_orders, zakupay_headers, zakupay_base_u
         def add(x):
             if x and x.rstrip('/') not in vals: vals.append(x.rstrip('/'))
         add(zakupay_base_url)
-        # Swagger points to the test environment. Probe it read-only as documentation evidence.
         for hint in server_hints:
             add(hint)
             p=urlparse(hint)
-            if p.scheme and p.netloc:
-                add(f'{p.scheme}://{p.netloc}')
-        # Known production host already used successfully for /api/v1/orders.
+            if p.scheme and p.netloc:add(f'{p.scheme}://{p.netloc}')
         add('https://prodavay.sel-be.ru')
         return vals
     def endpoint_urls(base,path):
-        # Swagger server may already end in /api/v1 while documented path also starts /api/v1.
         out=[]
         def add(u):
             if u not in out:out.append(u)
@@ -105,11 +101,23 @@ def install_api_discovery(app, fetch_all_orders, zakupay_headers, zakupay_base_u
         try:
             r=requests.get(url,headers=zakupay_headers(),params=params or None,timeout=timeout)
             data={'url':r.url,'status':r.status_code,'content_type':r.headers.get('content-type',''),'size':len(r.content)}
-            if r.ok and (r.content[:2]==b'PK' or 'spreadsheet' in data['content_type'].lower() or 'excel' in data['content_type'].lower()):
-                data['xlsx_preview']=xlsx_preview(r.content)
+            if r.ok and (r.content[:2]==b'PK' or 'spreadsheet' in data['content_type'].lower() or 'excel' in data['content_type'].lower()):data['xlsx_preview']=xlsx_preview(r.content)
             else:data['body']=safe_body(r,max_text)
             return data
         except requests.RequestException as e:return {'url':url,'error':str(e)}
+    def probe_best_prices(item_ids):
+        url='https://prodavay.sel-be.ru/core/supplier/getoffersdeviationpercent'
+        headers=dict(zakupay_headers())
+        headers.update({'Content-Type':'application/json','X-Requested-With':'XMLHttpRequest','Accept':'application/json, text/javascript, */*; q=0.01'})
+        try:
+            r=requests.post(url,headers=headers,json=item_ids,timeout=25)
+            data={'url':url,'status':r.status_code,'content_type':r.headers.get('content-type',''),'size':len(r.content),'request_item_ids':item_ids}
+            body=safe_body(r,20000)
+            data['body']=body
+            if r.ok and isinstance(body,list):
+                data['price_map']={str(x.get('orderItemId')):((x.get('bestPrice') or {}).get('price')) for x in body if isinstance(x,dict) and x.get('orderItemId') is not None}
+            return data
+        except requests.RequestException as e:return {'url':url,'request_item_ids':item_ids,'error':str(e)}
 
     @app.get('/analysis/api-discovery/{order_id}')
     def discover_price_api(order_id:int):
@@ -129,27 +137,22 @@ def install_api_discovery(app, fetch_all_orders, zakupay_headers, zakupay_base_u
                 official_schemas.append(entry)
             except Exception as e:official_schemas.append({'url':schema_url,'error':f'{type(e).__name__}: {e}'})
 
+            # Exact production endpoint observed in Chrome DevTools. The browser POSTs an array of order item IDs
+            # and receives bestPrice/secondPrice/deliveryPositionPrice per orderItemId.
+            browser_price_probe=probe_best_prices(item_ids)
+
             bases=base_variants(server_hints)
-            report_path=f'/api/v1/orders/{order_id}/offer-compare-report'
-            report_probes=[]
+            report_path=f'/api/v1/orders/{order_id}/offer-compare-report'; report_probes=[]
             for base in bases:
-                for url in endpoint_urls(base,report_path):
-                    report_probes.append(probe_get(url,timeout=30,max_text=8000))
-
-            offers_probes=[]
-            offers_path='/api/v1/offers'
-            params={'orderId':order_id,'page':1,'pageSize':100,'isoDate':'true'}
+                for url in endpoint_urls(base,report_path):report_probes.append(probe_get(url,timeout=30,max_text=8000))
+            offers_probes=[]; offers_path='/api/v1/offers'; params={'orderId':order_id,'page':1,'pageSize':100,'isoDate':'true'}
             for base in bases:
-                for url in endpoint_urls(base,offers_path):
-                    offers_probes.append(probe_get(url,params=params,timeout=25,max_text=12000))
-
-            # Verify the one endpoint we already know works, on every base, so host mismatch is obvious.
+                for url in endpoint_urls(base,offers_path):offers_probes.append(probe_get(url,params=params,timeout=25,max_text=12000))
             control_order_probes=[]
             for base in bases:
-                for url in endpoint_urls(base,'/api/v1/orders'):
-                    control_order_probes.append(probe_get(url,params={'page':1,'pageSize':1,'isoDate':'true'},timeout=20,max_text=3000))
+                for url in endpoint_urls(base,'/api/v1/orders'):control_order_probes.append(probe_get(url,params={'page':1,'pageSize':1,'isoDate':'true'},timeout=20,max_text=3000))
 
-            return JSONResponse(json_safe({'order_id':order_id,'first_item_id':item_id,'official_schema_attempts':official_schemas,'official_server_hints':server_hints,
-                'official_interesting_routes':list(all_route_specs.keys()),'base_variants':bases,'control_order_probes':control_order_probes,
-                'offer_compare_report_probes':report_probes,'offers_probes':offers_probes}))
+            return JSONResponse(json_safe({'order_id':order_id,'first_item_id':item_id,'item_ids':item_ids,'browser_discovered_best_price_endpoint':browser_price_probe,
+                'official_schema_attempts':official_schemas,'official_server_hints':server_hints,'official_interesting_routes':list(all_route_specs.keys()),
+                'base_variants':bases,'control_order_probes':control_order_probes,'offer_compare_report_probes':report_probes,'offers_probes':offers_probes}))
         except Exception as e:return JSONResponse({'order_id':order_id,'discovery_error':f'{type(e).__name__}: {e}'},status_code=200)
