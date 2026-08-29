@@ -26,16 +26,28 @@ def install_api_discovery(app, fetch_all_orders, zakupay_headers, zakupay_base_u
         return order
 
     def decode_text(r):
-        # Cynteka serves YAML as text/plain and may omit charset.
         raw = r.content
         try:
             return raw.decode('utf-8')
         except UnicodeDecodeError:
             return raw.decode(r.apparent_encoding or 'utf-8', errors='replace')
 
+    def json_safe(value, depth=0):
+        # YAML permits dates and other Python-native objects that Starlette's JSON
+        # encoder cannot serialize. Convert the diagnostic payload recursively.
+        if depth > 20:
+            return str(value)
+        if value is None or isinstance(value, (str, int, float, bool)):
+            return value
+        if isinstance(value, dict):
+            return {str(k): json_safe(v, depth + 1) for k, v in value.items()}
+        if isinstance(value, (list, tuple, set)):
+            return [json_safe(v, depth + 1) for v in value]
+        return str(value)
+
     def safe_body(r, max_text=4000):
         try:
-            return r.json()
+            return json_safe(r.json())
         except ValueError:
             return decode_text(r)[:max_text]
 
@@ -76,27 +88,21 @@ def install_api_discovery(app, fetch_all_orders, zakupay_headers, zakupay_base_u
                     if not isinstance(p, dict):
                         continue
                     params.append({
-                        'name': p.get('name'),
-                        'in': p.get('in'),
-                        'required': p.get('required'),
-                        'schema': p.get('schema'),
-                        'description': p.get('description'),
+                        'name': p.get('name'), 'in': p.get('in'), 'required': p.get('required'),
+                        'schema': json_safe(p.get('schema')), 'description': p.get('description'),
                     })
                 found[path][str(method).lower()] = {
-                    'summary': spec.get('summary'),
-                    'description': spec.get('description'),
-                    'operationId': spec.get('operationId'),
-                    'parameters': params,
-                    'requestBody': spec.get('requestBody'),
-                    'responses': spec.get('responses'),
+                    'summary': spec.get('summary'), 'description': spec.get('description'),
+                    'operationId': spec.get('operationId'), 'parameters': params,
+                    'requestBody': json_safe(spec.get('requestBody')),
+                    'responses': json_safe(spec.get('responses')),
                 }
         return found
 
     def extract_schema_urls(text, base_url):
         found = []
         patterns = [
-            r"\burl\s*:\s*['\"]([^'\"]+)['\"]",
-            r"\burl\s*=\s*['\"]([^'\"]+)['\"]",
+            r"\burl\s*:\s*['\"]([^'\"]+)['\"]", r"\burl\s*=\s*['\"]([^'\"]+)['\"]",
             r"['\"]([^'\"]*(?:swagger|openapi)[^'\"]*\.(?:json|yaml|yml)[^'\"]*)['\"]",
             r"['\"]([^'\"]*/specs/[^'\"]+\.(?:yaml|yml|json))['\"]",
         ]
@@ -111,19 +117,12 @@ def install_api_discovery(app, fetch_all_orders, zakupay_headers, zakupay_base_u
         return found
 
     def substitute_path(path, order_id, item_id):
-        replacements = {
-            'orderid': str(order_id), 'order_id': str(order_id), 'order': str(order_id),
-            'requestid': str(order_id), 'request_id': str(order_id),
-            'orderitemid': str(item_id) if item_id else None,
-            'order_item_id': str(item_id) if item_id else None,
-            'itemid': str(item_id) if item_id else None,
-            'item_id': str(item_id) if item_id else None,
-        }
-        unresolved = []
-        result = path
+        replacements = {'orderid': str(order_id), 'order_id': str(order_id), 'order': str(order_id), 'requestid': str(order_id), 'request_id': str(order_id),
+                        'orderitemid': str(item_id) if item_id else None, 'order_item_id': str(item_id) if item_id else None,
+                        'itemid': str(item_id) if item_id else None, 'item_id': str(item_id) if item_id else None}
+        unresolved, result = [], path
         for name in re.findall(r'{([^{}]+)}', path):
-            key = name.lower().strip()
-            value = replacements.get(key)
+            value = replacements.get(name.lower().strip())
             if value is None:
                 unresolved.append(name)
             else:
@@ -132,104 +131,76 @@ def install_api_discovery(app, fetch_all_orders, zakupay_headers, zakupay_base_u
 
     @app.get('/analysis/api-discovery/{order_id}')
     def discover_price_api(order_id: int):
-        order = get_order(order_id)
-        item_ids = [x.get('id') for x in (order.get('orderItems') or []) if x.get('id')]
-        item_id = item_ids[0] if item_ids else None
-
-        swagger_host = 'https://swagger.cynteka.ru'
-        swagger_root = []
-        asset_urls = []
-        schema_urls = []
-
         try:
-            r = requests.get(swagger_host + '/', timeout=20)
-            root_html = decode_text(r) if r.ok else ''
-            swagger_root.append({'url': swagger_host + '/', 'status': r.status_code, 'content_type': r.headers.get('content-type', ''), 'preview': root_html[:2500]})
-            schema_urls.extend(extract_schema_urls(root_html, swagger_host + '/'))
-            for m in re.finditer(r"<script[^>]+src=['\"]([^'\"]+)['\"]", root_html, re.I):
-                asset = urljoin(swagger_host + '/', m.group(1))
-                if asset not in asset_urls:
-                    asset_urls.append(asset)
-        except requests.RequestException as exc:
-            swagger_root.append({'url': swagger_host + '/', 'error': str(exc)})
+            order = get_order(order_id)
+            item_ids = [x.get('id') for x in (order.get('orderItems') or []) if x.get('id')]
+            item_id = item_ids[0] if item_ids else None
+            swagger_host = 'https://swagger.cynteka.ru'
+            swagger_root, asset_urls, schema_urls = [], [], []
 
-        swagger_assets = []
-        for asset in asset_urls:
             try:
-                r = requests.get(asset, timeout=20)
-                text = decode_text(r)
-                urls = extract_schema_urls(text, asset) if r.ok else []
-                schema_urls.extend(urls)
-                swagger_assets.append({'url': asset, 'status': r.status_code, 'content_type': r.headers.get('content-type', ''), 'discovered_schema_urls': urls, 'preview': text[:3000]})
+                r = requests.get(swagger_host + '/', timeout=20)
+                root_html = decode_text(r) if r.ok else ''
+                swagger_root.append({'url': swagger_host + '/', 'status': r.status_code, 'content_type': r.headers.get('content-type', ''), 'preview': root_html[:2500]})
+                schema_urls.extend(extract_schema_urls(root_html, swagger_host + '/'))
+                for m in re.finditer(r"<script[^>]+src=['\"]([^'\"]+)['\"]", root_html, re.I):
+                    asset = urljoin(swagger_host + '/', m.group(1))
+                    if asset not in asset_urls:
+                        asset_urls.append(asset)
             except requests.RequestException as exc:
-                swagger_assets.append({'url': asset, 'error': str(exc)})
+                swagger_root.append({'url': swagger_host + '/', 'error': str(exc)})
 
-        # Known URLs discovered from Cynteka's own Swagger initializer.
-        for url in [
-            swagger_host + '/specs/swagger-core.yaml',
-            swagger_host + '/specs/swagger-edi.yaml',
-        ]:
-            if url not in schema_urls:
-                schema_urls.append(url)
+            swagger_assets = []
+            for asset in asset_urls:
+                try:
+                    r = requests.get(asset, timeout=20); text = decode_text(r)
+                    urls = extract_schema_urls(text, asset) if r.ok else []; schema_urls.extend(urls)
+                    swagger_assets.append({'url': asset, 'status': r.status_code, 'content_type': r.headers.get('content-type', ''), 'discovered_schema_urls': urls, 'preview': text[:3000]})
+                except requests.RequestException as exc:
+                    swagger_assets.append({'url': asset, 'error': str(exc)})
 
-        official_schemas = []
-        all_route_specs = {}
-        server_hints = []
-        for url in list(dict.fromkeys(schema_urls)):
-            try:
-                r = requests.get(url, timeout=25)
-                entry = {'url': url, 'status': r.status_code, 'content_type': r.headers.get('content-type', '')}
-                if r.ok:
-                    schema, fmt, error = parse_schema_response(r)
-                    entry['format'] = fmt
-                    if schema:
-                        paths = schema.get('paths') or {}
-                        specs = route_specs(schema)
-                        entry['paths_count'] = len(paths)
-                        entry['interesting_paths'] = list(specs.keys())
-                        entry['servers'] = schema.get('servers')
-                        entry['title'] = (schema.get('info') or {}).get('title')
-                        entry['version'] = (schema.get('info') or {}).get('version')
-                        all_route_specs.update(specs)
-                        for s in schema.get('servers') or []:
-                            if isinstance(s, dict) and s.get('url'):
-                                server_hints.append(s.get('url'))
-                    else:
-                        entry['parse_error'] = error
-                        entry['preview'] = decode_text(r)[:5000]
-                else:
-                    entry['preview'] = decode_text(r)[:1500]
-                official_schemas.append(entry)
-            except requests.RequestException as exc:
-                official_schemas.append({'url': url, 'error': str(exc)})
+            for url in [swagger_host + '/specs/swagger-core.yaml', swagger_host + '/specs/swagger-edi.yaml']:
+                if url not in schema_urls: schema_urls.append(url)
 
-        # Probe only GET routes explicitly documented in the official schema.
-        documented_get_probes = []
-        for path, methods in all_route_specs.items():
-            if 'get' not in methods:
-                continue
-            resolved, unresolved = substitute_path(path, order_id, item_id)
-            if unresolved:
-                documented_get_probes.append({'path': path, 'method': 'get', 'skipped': 'unresolved path parameters', 'unresolved': unresolved})
-                continue
-            # Swagger paths may already contain /api/v1; supplier base URL is the actual host.
-            url = zakupay_base_url.rstrip('/') + '/' + resolved.lstrip('/')
-            try:
-                r = requests.get(url, headers=zakupay_headers(), timeout=20)
-                documented_get_probes.append({'path': path, 'resolved_path': resolved, 'status': r.status_code, 'body': safe_body(r, 8000)})
-            except requests.RequestException as exc:
-                documented_get_probes.append({'path': path, 'resolved_path': resolved, 'error': str(exc)})
+            official_schemas, all_route_specs, server_hints = [], {}, []
+            for url in list(dict.fromkeys(schema_urls)):
+                try:
+                    r = requests.get(url, timeout=25)
+                    entry = {'url': url, 'status': r.status_code, 'content_type': r.headers.get('content-type', '')}
+                    if r.ok:
+                        schema, fmt, error = parse_schema_response(r); entry['format'] = fmt
+                        if schema:
+                            specs = route_specs(schema)
+                            entry.update({'paths_count': len(schema.get('paths') or {}), 'interesting_paths': list(specs.keys()),
+                                          'servers': json_safe(schema.get('servers')), 'title': (schema.get('info') or {}).get('title'), 'version': str((schema.get('info') or {}).get('version', ''))})
+                            all_route_specs.update(specs)
+                            for s in schema.get('servers') or []:
+                                if isinstance(s, dict) and s.get('url'): server_hints.append(str(s.get('url')))
+                        else:
+                            entry['parse_error'] = error; entry['preview'] = decode_text(r)[:5000]
+                    else: entry['preview'] = decode_text(r)[:1500]
+                    official_schemas.append(entry)
+                except Exception as exc:
+                    official_schemas.append({'url': url, 'error': f'{type(exc).__name__}: {exc}'})
 
-        return JSONResponse({
-            'order_id': order_id,
-            'first_item_id': item_id,
-            'official_swagger_host': swagger_host,
-            'swagger_root': swagger_root,
-            'swagger_assets': swagger_assets,
-            'discovered_schema_urls': list(dict.fromkeys(schema_urls)),
-            'official_schema_attempts': official_schemas,
-            'official_server_hints': list(dict.fromkeys(server_hints)),
-            'official_interesting_routes': list(all_route_specs.keys()),
-            'official_interesting_route_specs': all_route_specs,
-            'documented_get_probes': documented_get_probes,
-        })
+            documented_get_probes = []
+            for path, methods in all_route_specs.items():
+                if 'get' not in methods: continue
+                resolved, unresolved = substitute_path(path, order_id, item_id)
+                if unresolved:
+                    documented_get_probes.append({'path': path, 'method': 'get', 'skipped': 'unresolved path parameters', 'unresolved': unresolved}); continue
+                url = zakupay_base_url.rstrip('/') + '/' + resolved.lstrip('/')
+                try:
+                    r = requests.get(url, headers=zakupay_headers(), timeout=20)
+                    documented_get_probes.append({'path': path, 'resolved_path': resolved, 'status': r.status_code, 'body': safe_body(r, 8000)})
+                except requests.RequestException as exc:
+                    documented_get_probes.append({'path': path, 'resolved_path': resolved, 'error': str(exc)})
+
+            payload = {'order_id': order_id, 'first_item_id': item_id, 'official_swagger_host': swagger_host, 'swagger_root': swagger_root,
+                       'swagger_assets': swagger_assets, 'discovered_schema_urls': list(dict.fromkeys(schema_urls)), 'official_schema_attempts': official_schemas,
+                       'official_server_hints': list(dict.fromkeys(server_hints)), 'official_interesting_routes': list(all_route_specs.keys()),
+                       'official_interesting_route_specs': all_route_specs, 'documented_get_probes': documented_get_probes}
+            return JSONResponse(json_safe(payload))
+        except Exception as exc:
+            # Diagnostics must diagnose themselves instead of returning an opaque HTTP 500.
+            return JSONResponse({'order_id': order_id, 'discovery_error': f'{type(exc).__name__}: {exc}'}, status_code=200)
