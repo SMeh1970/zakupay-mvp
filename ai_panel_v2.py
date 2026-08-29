@@ -2,6 +2,7 @@ from fastapi import HTTPException, Query
 from fastapi.responses import HTMLResponse
 
 import ai_panel
+from browser_prices import prefetch_best_prices
 
 
 def install_ai_panel_v2(app, fetch_all_orders, compact_order, filter_orders, api_filter_dict,
@@ -55,6 +56,10 @@ def install_ai_panel_v2(app, fetch_all_orders, compact_order, filter_orders, api
         if exclude_non_purchase:
             orders = [o for o in orders if not non_purchase_predicate(o)]
 
+        # One batched browser-session request populates the cache before per-order scoring.
+        # This avoids one network round-trip for every order on the analysis dashboard.
+        prefetch_best_prices(orders, force=refresh)
+
         rows = []
         for order in orders:
             analysis = ai_panel.analyze_order(order, has_my_offer, max_competitors)
@@ -105,6 +110,7 @@ def install_ai_panel_v2(app, fetch_all_orders, compact_order, filter_orders, api
         order = next((o for o in orders if o.get("id") == order_id), None)
         if not order:
             raise HTTPException(status_code=404, detail="Заявка не найдена")
+        prefetch_best_prices([order], force=refresh)
         heuristic = ai_panel.analyze_order(order, has_my_offer, max_competitors)
         result = {"order": compact_order(order), "analysis": heuristic}
         if ai:
@@ -155,7 +161,7 @@ def install_ai_panel_v2(app, fetch_all_orders, compact_order, filter_orders, api
             est = a.get("estimated_purchase_total")
             est_text = f"{est:,.0f} ₽".replace(",", " ") if est else "—"
             payment_text = "Предоплата" if order.get("delay_days") == 0 else (
-                f"{order.get('delay_days')} дней" if order.get("delay_days") is not None else "—"
+                f"{order.get('delay_days')} дней" if order.get('delay_days') is not None else "—"
             )
             table_rows += (
                 f"<tr><td><a href='/dashboard/order/{order['id']}'>{order['id']}</a></td>"
