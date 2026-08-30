@@ -1,7 +1,7 @@
 import os
 from urllib.parse import parse_qsl, urlencode
 
-from fastapi.responses import Response
+from fastapi.responses import RedirectResponse, Response
 
 from main import (
     app, api_filter_dict, compact_order, esc, fetch_all_orders, filter_orders,
@@ -56,6 +56,15 @@ def filter_orders_ai(orders, payment="all", region="", category="", min_position
 
 @app.middleware("http")
 async def panel_request_cleanup(request, call_next):
+    path = request.url.path
+    if path.startswith("/dashboard/order/"):
+        order_id = path.rsplit("/", 1)[-1]
+        if order_id.isdigit():
+            target = f"/dashboard/analysis/order/{order_id}"
+            if request.url.query:
+                target += f"?{request.url.query}"
+            return RedirectResponse(url=target, status_code=307)
+
     raw_query = request.scope.get("query_string", b"").decode("utf-8", errors="ignore")
     if raw_query:
         pairs = parse_qsl(raw_query, keep_blank_values=True)
