@@ -79,6 +79,13 @@ def _best_offer_name(item):
     return '—'
 
 
+def _unit_name(item):
+    unit = item.get('unit') or item.get('unitName')
+    if isinstance(unit, dict):
+        return unit.get('name') or unit.get('shortName') or unit.get('id') or ''
+    return unit or ''
+
+
 def _get_order(fetch_all_orders, order_id):
     orders = fetch_all_orders()
     order = next((x for x in orders if x.get('id') == order_id), None)
@@ -113,7 +120,7 @@ def install_analysis_detail(app, fetch_all_orders, zakupay_headers, zakupay_base
             rows += (
                 f"<tr><td>{n}</td><td>{esc(item.get('goodName'))}</td>"
                 f"<td>{esc((item.get('category') or {}).get('name'))}</td>"
-                f"<td>{esc(item.get('count'))}</td><td>{esc((item.get('unit') or {}).get('name'))}</td>"
+                f"<td>{esc(item.get('count'))}</td><td>{esc(_unit_name(item))}</td>"
                 f"<td>{esc(item.get('companiesWithOffersCount'))}</td>"
                 f"<td>{esc(_best_offer_name(item))}</td>"
                 f"<td><b>{('—' if price is None else f'{price:,.2f} ₽'.replace(',', ' '))}</b><div style='font-size:11px;color:#777'>{source}</div></td>"
@@ -126,8 +133,8 @@ def install_analysis_detail(app, fetch_all_orders, zakupay_headers, zakupay_base
             'Источник цен Закупай не настроен.' if not browser_result.get('enabled') else f'Ошибка источника цен: {esc(source_state)}'
         )
         html = f"""<!doctype html><html lang='ru'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>
-<title>Заявка {order_id}</title><style>body{{font-family:Arial;margin:24px;background:#f5f5f5;color:#222}}.card{{background:#fff;border-radius:12px;padding:18px;margin-bottom:18px}}table{{width:100%;border-collapse:collapse;font-size:13px}}th{{background:#eee;text-align:left;padding:9px}}td{{padding:9px;border-bottom:1px solid #eee;vertical-align:top}}a{{color:#4c39d4;font-weight:bold;text-decoration:none}}.meta{{display:grid;grid-template-columns:170px 1fr;gap:7px}}.note{{font-size:12px;color:#666}}</style></head><body>
-<p><a href='/dashboard/analysis'>← Анализ заявок</a> · <a target='_blank' href='/analysis/raw-order/{order_id}'>Сырой JSON позиции</a> · <a target='_blank' href='/analysis/api-discovery/{order_id}'>Диагностика API</a></p>
+<title>Заявка {order_id}</title><style>body{{font-family:Arial;margin:24px;background:#f5f5f5;color:#222}}.card{{background:#fff;border-radius:12px;padding:18px;margin-bottom:18px}}table{{width:100%;border-collapse:collapse;font-size:13px}}th{{background:#eee;text-align:left;padding:9px}}td{{padding:9px;border-bottom:1px solid #eee;vertical-align:top}}a{{color:#4c39d4;font-weight:bold;text-decoration:none}}.meta{{display:grid;grid-template-columns:170px 1fr;gap:7px}}.note{{font-size:12px;color:#666}}.offer-btn{{display:inline-block;background:#1677ff;color:#fff;padding:10px 14px;border-radius:8px;margin-left:8px}}</style></head><body>
+<p><a href='/dashboard/analysis'>← Анализ заявок</a> · <a target='_blank' href='/analysis/raw-order/{order_id}'>Сырой JSON позиции</a> · <a target='_blank' href='/analysis/api-discovery/{order_id}'>Диагностика API</a> <a class='offer-btn' href='/dashboard/order/{order_id}/offer'>Создать предложение</a></p>
 <div class='card'><h1>{esc(order.get('name'))}</h1><div class='meta'><b>ID</b><div>{order_id}</div><b>Заказчик</b><div>{esc(customer.get('shortName') or customer.get('name'))}</div><b>Регион</b><div>{esc(region.get('name'))}</div><b>Оплата</b><div>{esc(payment)}</div><b>Срок поставки</b><div>{esc(order.get('finishDate'))}</div><b>Адрес</b><div>{esc(order.get('deliveryAddress'))}</div></div><p class='note'>{source_note}</p></div>
 <div class='card'><table><thead><tr><th>№</th><th>Наименование</th><th>Категория</th><th>Кол-во</th><th>Ед.</th><th>Конкурентов</th><th>Лучшее предложение</th><th>Лучшая цена</th><th>Сумма</th></tr></thead><tbody>{rows}</tbody></table></div>
 </body></html>"""
