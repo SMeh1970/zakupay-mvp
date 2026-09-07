@@ -17,6 +17,14 @@ from supplier_panel import install_supplier_panel
 
 ai_panel.analyze_order = analyze_order_v2
 
+DEPLOY_MARKER = "offer-mvp-2026-09-07-01"
+
+
+@app.get("/version")
+def version_marker():
+    return {"deploy": DEPLOY_MARKER, "offer_panel": True}
+
+
 _OPTIONAL_NUMERIC_QUERY_FIELDS = {
     "max_competitors", "min_positions", "min_score", "min_estimated_total", "order_id",
     "delayFrom", "delayTo", "senderId", "company", "category_id", "region_id",
