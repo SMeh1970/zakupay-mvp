@@ -113,8 +113,26 @@ def fetch_best_prices(item_ids, force=False):
 
 
 def prefetch_best_prices(orders, force=False):
+    orders = list(orders or [])
+    # The analysis dashboard may contain hundreds/thousands of active orders.
+    # Bulk-prefetching every item's browser-session price before rendering makes
+    # the whole page wait on many external HTTP calls. The dashboard currently
+    # does not use these prefetched prices for its heuristic score, so skip this
+    # expensive warm-up for large result sets. Detailed order pages still pass a
+    # single order and therefore keep exact best-price loading unchanged.
+    max_prefetch_orders = int(os.getenv("ZAKUPAY_BROWSER_PRICE_PREFETCH_MAX_ORDERS", "20"))
+    if len(orders) > max_prefetch_orders:
+        return {
+            "ok": True,
+            "enabled": browser_price_source_enabled(),
+            "prices": {},
+            "errors": [],
+            "skipped": True,
+            "reason": f"too_many_orders:{len(orders)}",
+        }
+
     item_ids = []
-    for order in orders or []:
+    for order in orders:
         for item in order.get("orderItems") or []:
             if item.get("id") is not None:
                 item_ids.append(item.get("id"))
