@@ -11,13 +11,13 @@ import ai_panel
 from ai_panel_v2 import install_ai_panel_v2
 from analysis_detail import install_analysis_detail
 from api_discovery import install_api_discovery
-from offer_panel import install_offer_panel
+from offer_panel_safe import install_offer_panel
 from price_estimator import analyze_order_v2
 from supplier_panel import install_supplier_panel
 
 ai_panel.analyze_order = analyze_order_v2
 
-DEPLOY_MARKER = "offer-mvp-2026-09-07-01"
+DEPLOY_MARKER = "offer-mvp-2026-09-08-02"
 
 
 @app.get("/version")
