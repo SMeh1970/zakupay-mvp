@@ -18,15 +18,16 @@ from offer_panel_safe import install_offer_panel
 from price_estimator import analyze_order_v2
 from supplier_panel import install_supplier_panel
 from security import OAUTH_SCOPE, PANEL_USERNAME, _origin, _sign_payload, current_mcp_resource
+from abacus_mcp import install_abacus_mcp
 
 ai_panel.analyze_order = analyze_order_v2
 
-DEPLOY_MARKER = "offer-mvp-2026-09-08-03"
+DEPLOY_MARKER = "offer-mvp-2026-09-08-04"
 
 
 @app.get("/version")
 def version_marker():
-    return {"deploy": DEPLOY_MARKER, "offer_panel": True}
+    return {"deploy": DEPLOY_MARKER, "offer_panel": True, "abacus_mcp": True}
 
 
 _OPTIONAL_NUMERIC_QUERY_FIELDS = {
@@ -101,9 +102,7 @@ def _mint_abacus_access_token(request) -> str:
 async def panel_request_cleanup(request, call_next):
     path = request.url.path
 
-    # Abacus supports a static Authorization header for remote MCP servers.
-    # Keep that external token only in Render env and translate it server-side
-    # into the same short-lived signed token already accepted by the MCP layer.
+    # Legacy compatibility for clients using the OAuth-protected /mcp endpoint.
     if path == "/mcp":
         configured = os.getenv("ABACUS_MCP_TOKEN", "").strip()
         authorization = request.headers.get("authorization", "")
@@ -215,6 +214,12 @@ install_offer_panel(
     zakupay_headers=zakupay_headers,
     zakupay_base_url=ZAKUPAY_BASE_URL,
     esc=esc,
+)
+install_abacus_mcp(
+    app,
+    fetch_all_orders=fetch_all_orders,
+    filter_orders=filter_orders_ai,
+    compact_order=compact_order,
 )
 
 __all__ = ["app"]
