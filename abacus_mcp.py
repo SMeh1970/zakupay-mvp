@@ -1,0 +1,296 @@
+"""Stateless MCP endpoint for Abacus using a static bearer token.
+
+This endpoint intentionally does not advertise OAuth metadata/security schemes.
+The shared secret lives only in Render as ABACUS_MCP_TOKEN.
+"""
+
+from __future__ import annotations
+
+import hmac
+import json
+import os
+from collections.abc import Callable
+from typing import Any
+
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse, Response
+from starlette.concurrency import run_in_threadpool
+
+MCP_PROTOCOL_VERSION = "2025-06-18"
+MAX_BODY_BYTES = 1_048_576
+
+
+def _authorized(request: Request) -> bool:
+    configured = os.getenv("ABACUS_MCP_TOKEN", "").strip()
+    if not configured:
+        return False
+    authorization = request.headers.get("authorization", "")
+    scheme, _, supplied = authorization.partition(" ")
+    return bool(
+        scheme.lower() == "bearer"
+        and supplied
+        and hmac.compare_digest(supplied.strip(), configured)
+    )
+
+
+def _unauthorized() -> JSONResponse:
+    # Deliberately no WWW-Authenticate OAuth resource metadata here.
+    return JSONResponse(
+        {"jsonrpc": "2.0", "error": {"code": -32001, "message": "Unauthorized"}, "id": None},
+        status_code=401,
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+def _tools() -> list[dict[str, Any]]:
+    read_only = {
+        "readOnlyHint": True,
+        "destructiveHint": False,
+        "idempotentHint": True,
+        "openWorldHint": True,
+    }
+    return [
+        {
+            "name": "list_zakupay_orders",
+            "title": "Список заявок Закупай",
+            "description": "Возвращает актуальные заявки Закупай с фильтрами. Только чтение.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "payment": {"type": "string", "enum": ["all", "prepayment", "delay"], "default": "all"},
+                    "region": {"type": "string", "default": ""},
+                    "category": {"type": "string", "default": ""},
+                    "min_positions": {"type": "integer", "minimum": 0, "default": 0},
+                    "max_competitors": {"type": "integer", "minimum": 0},
+                    "only_without_my_offer": {"type": "boolean", "default": False},
+                    "offset": {"type": "integer", "minimum": 0, "default": 0},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 50, "default": 20},
+                    "refresh": {"type": "boolean", "default": False},
+                },
+                "additionalProperties": False,
+            },
+            "annotations": read_only,
+        },
+        {
+            "name": "get_zakupay_order",
+            "title": "Одна заявка Закупай",
+            "description": "Возвращает актуальную заявку по ID. Только чтение.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "order_id": {"type": "integer", "minimum": 1},
+                    "refresh": {"type": "boolean", "default": False},
+                },
+                "required": ["order_id"],
+                "additionalProperties": False,
+            },
+            "annotations": read_only,
+        },
+        {
+            "name": "get_zakupay_connection_status",
+            "title": "Статус подключения Закупай",
+            "description": "Проверяет серверное подключение к Закупай без раскрытия секретов.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {"refresh": {"type": "boolean", "default": True}},
+                "additionalProperties": False,
+            },
+            "annotations": read_only,
+        },
+    ]
+
+
+def _rpc_error(request_id: Any, code: int, message: str) -> dict[str, Any]:
+    return {"jsonrpc": "2.0", "id": request_id, "error": {"code": code, "message": message}}
+
+
+def _tool_success(data: dict[str, Any], message: str) -> dict[str, Any]:
+    return {
+        "content": [{"type": "text", "text": message}],
+        "structuredContent": data,
+        "isError": False,
+    }
+
+
+def _validated_int(arguments: dict[str, Any], name: str, default: int | None = None,
+                   minimum: int = 0, maximum: int | None = None) -> int | None:
+    value = arguments.get(name, default)
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"Параметр {name} должен быть целым числом.")
+    if value < minimum or (maximum is not None and value > maximum):
+        raise ValueError(f"Параметр {name} вне допустимого диапазона.")
+    return value
+
+
+def install_abacus_mcp(
+    app: FastAPI,
+    fetch_all_orders: Callable[..., list[dict[str, Any]]],
+    filter_orders: Callable[..., list[dict[str, Any]]],
+    compact_order: Callable[[dict[str, Any]], dict[str, Any]],
+) -> None:
+    async def call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        if name == "list_zakupay_orders":
+            allowed = {"payment", "region", "category", "min_positions", "max_competitors",
+                       "only_without_my_offer", "offset", "limit", "refresh"}
+            unknown = set(arguments) - allowed
+            if unknown:
+                raise ValueError("Неизвестные параметры: " + ", ".join(sorted(unknown)))
+            payment = arguments.get("payment", "all")
+            if payment not in {"all", "prepayment", "delay"}:
+                raise ValueError("Параметр payment недействителен.")
+            for field in ("region", "category"):
+                if not isinstance(arguments.get(field, ""), str):
+                    raise TypeError(f"Параметр {field} должен быть строкой.")
+            for field in ("only_without_my_offer", "refresh"):
+                if not isinstance(arguments.get(field, False), bool):
+                    raise TypeError(f"Параметр {field} должен быть логическим.")
+            min_positions = _validated_int(arguments, "min_positions", 0, 0)
+            max_competitors = _validated_int(arguments, "max_competitors", None, 0)
+            offset = _validated_int(arguments, "offset", 0, 0)
+            limit = _validated_int(arguments, "limit", 20, 1, 50)
+            orders = await run_in_threadpool(fetch_all_orders, force=arguments.get("refresh", False))
+            filtered = filter_orders(
+                orders,
+                payment=payment,
+                region=arguments.get("region", ""),
+                category=arguments.get("category", ""),
+                min_positions=min_positions,
+                max_competitors_value=max_competitors,
+                only_without_my_offer=arguments.get("only_without_my_offer", False),
+            )
+            visible = filtered[offset: offset + limit]
+            data = {
+                "source": "REAL_ZAKUPAY",
+                "read_only": True,
+                "total_actual": len(orders),
+                "filtered_count": len(filtered),
+                "offset": offset,
+                "returned": len(visible),
+                "has_more": offset + len(visible) < len(filtered),
+                "orders": [compact_order(order) for order in visible],
+            }
+            return _tool_success(data, f"Найдено {len(filtered)} заявок; возвращено {len(visible)}.")
+
+        if name == "get_zakupay_order":
+            unknown = set(arguments) - {"order_id", "refresh"}
+            if unknown:
+                raise ValueError("Неизвестные параметры: " + ", ".join(sorted(unknown)))
+            order_id = _validated_int(arguments, "order_id", None, 1)
+            if order_id is None:
+                raise ValueError("Параметр order_id обязателен.")
+            if not isinstance(arguments.get("refresh", False), bool):
+                raise TypeError("Параметр refresh должен быть логическим.")
+            orders = await run_in_threadpool(fetch_all_orders, force=arguments.get("refresh", False))
+            order = next((item for item in orders if item.get("id") == order_id), None)
+            if order is None and not arguments.get("refresh", False):
+                orders = await run_in_threadpool(fetch_all_orders, force=True)
+                order = next((item for item in orders if item.get("id") == order_id), None)
+            if order is None:
+                return {"content": [{"type": "text", "text": f"Заявка {order_id} не найдена."}], "isError": True}
+            return _tool_success({"source": "REAL_ZAKUPAY", "read_only": True, "order": compact_order(order)},
+                                 f"Получена заявка {order_id}.")
+
+        if name == "get_zakupay_connection_status":
+            if set(arguments) - {"refresh"}:
+                raise ValueError("Переданы неизвестные параметры.")
+            if not isinstance(arguments.get("refresh", True), bool):
+                raise TypeError("Параметр refresh должен быть логическим.")
+            orders = await run_in_threadpool(fetch_all_orders, force=arguments.get("refresh", True))
+            return _tool_success(
+                {"connected": True, "source": "REAL_ZAKUPAY", "read_only": True,
+                 "actual_orders_count": len(orders), "api_key_exposed": False},
+                f"Подключение работает. Актуальных заявок: {len(orders)}.",
+            )
+
+        raise LookupError("Неизвестный MCP-инструмент.")
+
+    async def handle_rpc(message: Any) -> dict[str, Any] | None:
+        if not isinstance(message, dict):
+            return _rpc_error(None, -32600, "Некорректный JSON-RPC запрос.")
+        request_id = message.get("id")
+        if message.get("jsonrpc") != "2.0" or not isinstance(message.get("method"), str):
+            return _rpc_error(request_id, -32600, "Некорректный JSON-RPC запрос.")
+        method = message["method"]
+        if request_id is None and method.startswith("notifications/"):
+            return None
+        if method == "initialize":
+            return {
+                "jsonrpc": "2.0", "id": request_id,
+                "result": {
+                    "protocolVersion": MCP_PROTOCOL_VERSION,
+                    "capabilities": {"tools": {"listChanged": False}},
+                    "serverInfo": {"name": "sinteka-abacus", "version": "1.0.0"},
+                    "instructions": "Инструменты только читают и анализируют заявки Закупай.",
+                },
+            }
+        if method == "ping":
+            return {"jsonrpc": "2.0", "id": request_id, "result": {}}
+        if method == "tools/list":
+            return {"jsonrpc": "2.0", "id": request_id, "result": {"tools": _tools()}}
+        if method == "tools/call":
+            params = message.get("params")
+            if not isinstance(params, dict) or not isinstance(params.get("name"), str):
+                return _rpc_error(request_id, -32602, "Некорректные параметры инструмента.")
+            arguments = params.get("arguments", {})
+            if not isinstance(arguments, dict):
+                return _rpc_error(request_id, -32602, "arguments должен быть объектом.")
+            try:
+                result = await call_tool(params["name"], arguments)
+            except LookupError as exc:
+                return _rpc_error(request_id, -32601, str(exc))
+            except (TypeError, ValueError) as exc:
+                return _rpc_error(request_id, -32602, str(exc))
+            except HTTPException as exc:
+                return {"jsonrpc": "2.0", "id": request_id,
+                        "result": {"content": [{"type": "text", "text": f"Закупай API: HTTP {exc.status_code}"}], "isError": True}}
+            except Exception:  # noqa: BLE001
+                return {"jsonrpc": "2.0", "id": request_id,
+                        "result": {"content": [{"type": "text", "text": "Не удалось получить данные Закупай."}], "isError": True}}
+            return {"jsonrpc": "2.0", "id": request_id, "result": result}
+        return _rpc_error(request_id, -32601, "Метод не найден.")
+
+    async def process(request: Request) -> Response:
+        content_length = request.headers.get("content-length")
+        try:
+            if content_length and int(content_length) > MAX_BODY_BYTES:
+                return JSONResponse({"detail": "Запрос слишком большой."}, status_code=413)
+        except ValueError:
+            return JSONResponse({"detail": "Некорректный Content-Length."}, status_code=400)
+        body = await request.body()
+        if len(body) > MAX_BODY_BYTES:
+            return JSONResponse({"detail": "Запрос слишком большой."}, status_code=413)
+        try:
+            payload = json.loads(body)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            return JSONResponse(_rpc_error(None, -32700, "Ошибка разбора JSON."), status_code=400)
+        if isinstance(payload, list):
+            if not payload:
+                return JSONResponse(_rpc_error(None, -32600, "Пустой batch-запрос."), status_code=400)
+            results = []
+            for message in payload:
+                result = await handle_rpc(message)
+                if result is not None:
+                    results.append(result)
+            if not results:
+                return Response(status_code=202)
+            response_data: Any = results
+        else:
+            response_data = await handle_rpc(payload)
+            if response_data is None:
+                return Response(status_code=202)
+        return JSONResponse(response_data, headers={"MCP-Protocol-Version": MCP_PROTOCOL_VERSION, "Cache-Control": "no-store"})
+
+    @app.get("/mcp-abacus")
+    async def abacus_mcp_get(request: Request):
+        if not _authorized(request):
+            return _unauthorized()
+        return JSONResponse({"detail": "Используйте POST для stateless MCP."}, status_code=405,
+                            headers={"Allow": "POST", "Cache-Control": "no-store"})
+
+    @app.post("/mcp-abacus")
+    async def abacus_mcp_post(request: Request):
+        if not _authorized(request):
+            return _unauthorized()
+        return await process(request)
