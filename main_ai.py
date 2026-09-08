@@ -1,4 +1,7 @@
 import os
+import hmac
+import secrets
+import time
 from urllib.parse import parse_qsl, urlencode
 
 from fastapi.responses import RedirectResponse, Response
@@ -14,10 +17,11 @@ from api_discovery import install_api_discovery
 from offer_panel_safe import install_offer_panel
 from price_estimator import analyze_order_v2
 from supplier_panel import install_supplier_panel
+from security import OAUTH_SCOPE, PANEL_USERNAME, _origin, _sign_payload, current_mcp_resource
 
 ai_panel.analyze_order = analyze_order_v2
 
-DEPLOY_MARKER = "offer-mvp-2026-09-08-02"
+DEPLOY_MARKER = "offer-mvp-2026-09-08-03"
 
 
 @app.get("/version")
@@ -62,9 +66,57 @@ def filter_orders_ai(orders, payment="all", region="", category="", min_position
     )
 
 
+def _replace_authorization_header(request, value: str) -> None:
+    headers = []
+    replaced = False
+    for key, existing in request.scope.get("headers", []):
+        if key.lower() == b"authorization":
+            headers.append((key, value.encode("latin-1")))
+            replaced = True
+        else:
+            headers.append((key, existing))
+    if not replaced:
+        headers.append((b"authorization", value.encode("latin-1")))
+    request.scope["headers"] = headers
+
+
+def _mint_abacus_access_token(request) -> str:
+    now = int(time.time())
+    resource = current_mcp_resource(request)
+    payload = {
+        "sub": PANEL_USERNAME,
+        "client_id": "abacus-static",
+        "aud": resource,
+        "iss": _origin(request),
+        "scope": OAUTH_SCOPE,
+        "iat": now,
+        "nbf": now - 5,
+        "exp": now + 300,
+        "jti": secrets.token_urlsafe(12),
+    }
+    return _sign_payload(payload, "oauth-access", "za_at")
+
+
 @app.middleware("http")
 async def panel_request_cleanup(request, call_next):
     path = request.url.path
+
+    # Abacus supports a static Authorization header for remote MCP servers.
+    # Keep that external token only in Render env and translate it server-side
+    # into the same short-lived signed token already accepted by the MCP layer.
+    if path == "/mcp":
+        configured = os.getenv("ABACUS_MCP_TOKEN", "").strip()
+        authorization = request.headers.get("authorization", "")
+        scheme, _, supplied = authorization.partition(" ")
+        if (
+            configured
+            and scheme.lower() == "bearer"
+            and supplied
+            and hmac.compare_digest(supplied.strip(), configured)
+        ):
+            internal_token = _mint_abacus_access_token(request)
+            _replace_authorization_header(request, f"Bearer {internal_token}")
+
     if path.startswith("/dashboard/order/"):
         order_id = path.rsplit("/", 1)[-1]
         if order_id.isdigit():
