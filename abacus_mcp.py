@@ -321,17 +321,7 @@ def install_abacus_mcp(
             },
         )
 
-    @app.post("/mcp-abacus")
+   @app.post("/mcp-abacus")
     async def abacus_mcp_post(request: Request):
-        auth_ok, auth_reason = _auth_state(request)
-        if not auth_ok:
-            logger.warning(
-                "MCP POST unauthorized reason=%s content_type=%s accept=%s user_agent=%s",
-                auth_reason,
-                request.headers.get("content-type", "")[:120],
-                request.headers.get("accept", "")[:120],
-                request.headers.get("user-agent", "")[:120],
-            )
-            return _unauthorized()
-        logger.info("MCP POST authorized")
+        logger.info("MCP POST received")
         return await process(request)
