@@ -64,8 +64,8 @@ def _tools() -> list[dict[str, Any]]:
     return [
         {
             "name": "list_zakupay_orders",
-            "title": "Список заявок Закупай",
-            "description": "Возвращает актуальные заявки Закупай с фильтрами. Только чтение.",
+            "title": "List Zakupay orders",
+            "description": "Returns current Zakupay orders with filters. Read-only.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -85,8 +85,8 @@ def _tools() -> list[dict[str, Any]]:
         },
         {
             "name": "get_zakupay_order",
-            "title": "Одна заявка Закупай",
-            "description": "Возвращает актуальную заявку по ID. Только чтение.",
+            "title": "Get a single Zakupay order",
+            "description": "Returns the current order by ID. Read-only.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -100,8 +100,8 @@ def _tools() -> list[dict[str, Any]]:
         },
         {
             "name": "get_zakupay_connection_status",
-            "title": "Статус подключения Закупай",
-            "description": "Проверяет серверное подключение к Закупай без раскрытия секретов.",
+            "title": "Zakupay connection status",
+            "description": "Checks the server connection to Zakupay without exposing secrets.",
             "inputSchema": {
                 "type": "object",
                 "properties": {"refresh": {"type": "boolean", "default": True}},
@@ -130,9 +130,9 @@ def _validated_int(arguments: dict[str, Any], name: str, default: int | None = N
     if value is None:
         return None
     if isinstance(value, bool) or not isinstance(value, int):
-        raise TypeError(f"Параметр {name} должен быть целым числом.")
+        raise TypeError(f"Parameter {name} must be an integer.")
     if value < minimum or (maximum is not None and value > maximum):
-        raise ValueError(f"Параметр {name} вне допустимого диапазона.")
+        raise ValueError(f"Parameter {name} is out of the allowed range.")
     return value
 
 
@@ -148,16 +148,16 @@ def install_abacus_mcp(
                        "only_without_my_offer", "offset", "limit", "refresh"}
             unknown = set(arguments) - allowed
             if unknown:
-                raise ValueError("Неизвестные параметры: " + ", ".join(sorted(unknown)))
+                raise ValueError("Unknown parameters: " + ", ".join(sorted(unknown)))
             payment = arguments.get("payment", "all")
             if payment not in {"all", "prepayment", "delay"}:
-                raise ValueError("Параметр payment недействителен.")
+                raise ValueError("Parameter payment is invalid.")
             for field in ("region", "category"):
                 if not isinstance(arguments.get(field, ""), str):
-                    raise TypeError(f"Параметр {field} должен быть строкой.")
+                    raise TypeError(f"Parameter {field} must be a string.")
             for field in ("only_without_my_offer", "refresh"):
                 if not isinstance(arguments.get(field, False), bool):
-                    raise TypeError(f"Параметр {field} должен быть логическим.")
+                    raise TypeError(f"Parameter {field} must be a boolean.")
             min_positions = _validated_int(arguments, "min_positions", 0, 0)
             max_competitors = _validated_int(arguments, "max_competitors", None, 0)
             offset = _validated_int(arguments, "offset", 0, 0)
@@ -183,47 +183,47 @@ def install_abacus_mcp(
                 "has_more": offset + len(visible) < len(filtered),
                 "orders": [compact_order(order) for order in visible],
             }
-            return _tool_success(data, f"Найдено {len(filtered)} заявок; возвращено {len(visible)}.")
+            return _tool_success(data, f"Found {len(filtered)} orders; returned {len(visible)}.")
 
         if name == "get_zakupay_order":
             unknown = set(arguments) - {"order_id", "refresh"}
             if unknown:
-                raise ValueError("Неизвестные параметры: " + ", ".join(sorted(unknown)))
+                raise ValueError("Unknown parameters: " + ", ".join(sorted(unknown)))
             order_id = _validated_int(arguments, "order_id", None, 1)
             if order_id is None:
-                raise ValueError("Параметр order_id обязателен.")
+                raise ValueError("Parameter order_id is required.")
             if not isinstance(arguments.get("refresh", False), bool):
-                raise TypeError("Параметр refresh должен быть логическим.")
+                raise TypeError("Parameter refresh must be a boolean.")
             orders = await run_in_threadpool(fetch_all_orders, force=arguments.get("refresh", False))
             order = next((item for item in orders if item.get("id") == order_id), None)
             if order is None and not arguments.get("refresh", False):
                 orders = await run_in_threadpool(fetch_all_orders, force=True)
                 order = next((item for item in orders if item.get("id") == order_id), None)
             if order is None:
-                return {"content": [{"type": "text", "text": f"Заявка {order_id} не найдена."}], "isError": True}
+                return {"content": [{"type": "text", "text": f"Order {order_id} not found."}], "isError": True}
             return _tool_success({"source": "REAL_ZAKUPAY", "read_only": True, "order": compact_order(order)},
-                                 f"Получена заявка {order_id}.")
+                                 f"Order {order_id} retrieved.")
 
         if name == "get_zakupay_connection_status":
             if set(arguments) - {"refresh"}:
-                raise ValueError("Переданы неизвестные параметры.")
+                raise ValueError("Unknown parameters provided.")
             if not isinstance(arguments.get("refresh", True), bool):
-                raise TypeError("Параметр refresh должен быть логическим.")
+                raise TypeError("Parameter refresh must be a boolean.")
             orders = await run_in_threadpool(fetch_all_orders, force=arguments.get("refresh", True))
             return _tool_success(
                 {"connected": True, "source": "REAL_ZAKUPAY", "read_only": True,
                  "actual_orders_count": len(orders), "api_key_exposed": False},
-                f"Подключение работает. Актуальных заявок: {len(orders)}.",
+                f"Connection is working. Current orders: {len(orders)}.",
             )
 
-        raise LookupError("Неизвестный MCP-инструмент.")
+        raise LookupError("Unknown MCP tool.")
 
     async def handle_rpc(message: Any) -> dict[str, Any] | None:
         if not isinstance(message, dict):
-            return _rpc_error(None, -32600, "Некорректный JSON-RPC запрос.")
+            return _rpc_error(None, -32600, "Invalid JSON-RPC request.")
         request_id = message.get("id")
         if message.get("jsonrpc") != "2.0" or not isinstance(message.get("method"), str):
-            return _rpc_error(request_id, -32600, "Некорректный JSON-RPC запрос.")
+            return _rpc_error(request_id, -32600, "Invalid JSON-RPC request.")
         method = message["method"]
         if request_id is None and method.startswith("notifications/"):
             return None
@@ -234,7 +234,7 @@ def install_abacus_mcp(
                     "protocolVersion": MCP_PROTOCOL_VERSION,
                     "capabilities": {"tools": {"listChanged": False}},
                     "serverInfo": {"name": "sinteka-abacus", "version": "1.0.1"},
-                    "instructions": "Инструменты только читают и анализируют заявки Закупай.",
+                    "instructions": "These tools only read and analyze Zakupay orders.",
                 },
             }
         if method == "ping":
@@ -244,10 +244,10 @@ def install_abacus_mcp(
         if method == "tools/call":
             params = message.get("params")
             if not isinstance(params, dict) or not isinstance(params.get("name"), str):
-                return _rpc_error(request_id, -32602, "Некорректные параметры инструмента.")
+                return _rpc_error(request_id, -32602, "Invalid tool parameters.")
             arguments = params.get("arguments", {})
             if not isinstance(arguments, dict):
-                return _rpc_error(request_id, -32602, "arguments должен быть объектом.")
+                return _rpc_error(request_id, -32602, "arguments must be an object.")
             try:
                 result = await call_tool(params["name"], arguments)
             except LookupError as exc:
@@ -256,30 +256,30 @@ def install_abacus_mcp(
                 return _rpc_error(request_id, -32602, str(exc))
             except HTTPException as exc:
                 return {"jsonrpc": "2.0", "id": request_id,
-                        "result": {"content": [{"type": "text", "text": f"Закупай API: HTTP {exc.status_code}"}], "isError": True}}
+                        "result": {"content": [{"type": "text", "text": f"Zakupay API: HTTP {exc.status_code}"}], "isError": True}}
             except Exception:  # noqa: BLE001
                 return {"jsonrpc": "2.0", "id": request_id,
-                        "result": {"content": [{"type": "text", "text": "Не удалось получить данные Закупай."}], "isError": True}}
+                        "result": {"content": [{"type": "text", "text": "Failed to retrieve Zakupay data."}], "isError": True}}
             return {"jsonrpc": "2.0", "id": request_id, "result": result}
-        return _rpc_error(request_id, -32601, "Метод не найден.")
+        return _rpc_error(request_id, -32601, "Method not found.")
 
     async def process(request: Request) -> Response:
         content_length = request.headers.get("content-length")
         try:
             if content_length and int(content_length) > MAX_BODY_BYTES:
-                return JSONResponse({"detail": "Запрос слишком большой."}, status_code=413)
+                return JSONResponse({"detail": "Request too large."}, status_code=413)
         except ValueError:
-            return JSONResponse({"detail": "Некорректный Content-Length."}, status_code=400)
+            return JSONResponse({"detail": "Invalid Content-Length."}, status_code=400)
         body = await request.body()
         if len(body) > MAX_BODY_BYTES:
-            return JSONResponse({"detail": "Запрос слишком большой."}, status_code=413)
+            return JSONResponse({"detail": "Request too large."}, status_code=413)
         try:
             payload = json.loads(body)
         except (json.JSONDecodeError, UnicodeDecodeError):
-            return JSONResponse(_rpc_error(None, -32700, "Ошибка разбора JSON."), status_code=400)
+            return JSONResponse(_rpc_error(None, -32700, "JSON parse error."), status_code=400)
         if isinstance(payload, list):
             if not payload:
-                return JSONResponse(_rpc_error(None, -32600, "Пустой batch-запрос."), status_code=400)
+                return JSONResponse(_rpc_error(None, -32600, "Empty batch request."), status_code=400)
             results = []
             for message in payload:
                 result = await handle_rpc(message)
