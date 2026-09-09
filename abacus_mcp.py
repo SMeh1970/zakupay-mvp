@@ -324,4 +324,4 @@ def install_abacus_mcp(
    @app.post("/mcp-abacus")
     async def abacus_mcp_post(request: Request):
         logger.info("MCP POST received")
-        return await process(request)
+        return await process(request) 
