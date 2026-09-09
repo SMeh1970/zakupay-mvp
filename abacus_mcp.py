@@ -1,13 +1,14 @@
 """Stateless MCP endpoint for Abacus using a static bearer token.
 
-This endpoint intentionally does not advertise OAuth metadata/security schemes.
-The shared secret lives only in Render as ABACUS_MCP_TOKEN.
+The endpoint supports unauthenticated GET probing (no data or tools are exposed)
+while all JSON-RPC POST requests remain protected by ABACUS_MCP_TOKEN.
 """
 
 from __future__ import annotations
 
 import hmac
 import json
+import logging
 import os
 from collections.abc import Callable
 from typing import Any
@@ -18,23 +19,34 @@ from starlette.concurrency import run_in_threadpool
 
 MCP_PROTOCOL_VERSION = "2025-06-18"
 MAX_BODY_BYTES = 1_048_576
+logger = logging.getLogger("abacus_mcp")
+
+
+def _auth_state(request: Request) -> tuple[bool, str]:
+    """Return auth result plus a secret-safe diagnostic reason."""
+    configured = os.getenv("ABACUS_MCP_TOKEN", "").strip()
+    if not configured:
+        return False, "server_token_missing"
+    authorization = request.headers.get("authorization", "")
+    if not authorization:
+        return False, "authorization_header_missing"
+    scheme, _, supplied = authorization.partition(" ")
+    if scheme.lower() != "bearer":
+        return False, f"unexpected_scheme:{scheme[:16]}"
+    supplied = supplied.strip()
+    if not supplied:
+        return False, "bearer_token_empty"
+    if not hmac.compare_digest(supplied, configured):
+        return False, f"token_mismatch:received_len={len(supplied)}:expected_len={len(configured)}"
+    return True, "ok"
 
 
 def _authorized(request: Request) -> bool:
-    configured = os.getenv("ABACUS_MCP_TOKEN", "").strip()
-    if not configured:
-        return False
-    authorization = request.headers.get("authorization", "")
-    scheme, _, supplied = authorization.partition(" ")
-    return bool(
-        scheme.lower() == "bearer"
-        and supplied
-        and hmac.compare_digest(supplied.strip(), configured)
-    )
+    return _auth_state(request)[0]
 
 
 def _unauthorized() -> JSONResponse:
-    # Deliberately no WWW-Authenticate OAuth resource metadata here.
+    # No OAuth metadata is advertised; this endpoint uses a static Bearer token.
     return JSONResponse(
         {"jsonrpc": "2.0", "error": {"code": -32001, "message": "Unauthorized"}, "id": None},
         status_code=401,
@@ -221,7 +233,7 @@ def install_abacus_mcp(
                 "result": {
                     "protocolVersion": MCP_PROTOCOL_VERSION,
                     "capabilities": {"tools": {"listChanged": False}},
-                    "serverInfo": {"name": "sinteka-abacus", "version": "1.0.0"},
+                    "serverInfo": {"name": "sinteka-abacus", "version": "1.0.1"},
                     "instructions": "Инструменты только читают и анализируют заявки Закупай.",
                 },
             }
@@ -284,13 +296,42 @@ def install_abacus_mcp(
 
     @app.get("/mcp-abacus")
     async def abacus_mcp_get(request: Request):
-        if not _authorized(request):
-            return _unauthorized()
-        return JSONResponse({"detail": "Используйте POST для stateless MCP."}, status_code=405,
-                            headers={"Allow": "POST", "Cache-Control": "no-store"})
+        # Abacus may probe a remote MCP URL with GET before it sends JSON-RPC POST.
+        # Do not require credentials for this probe; it exposes no tools or business data.
+        auth_ok, auth_reason = _auth_state(request)
+        logger.info(
+            "MCP GET probe auth=%s reason=%s accept=%s user_agent=%s",
+            auth_ok,
+            auth_reason,
+            request.headers.get("accept", "")[:120],
+            request.headers.get("user-agent", "")[:120],
+        )
+        return JSONResponse(
+            {
+                "service": "sinteka-abacus-mcp",
+                "transport": "streamable-http",
+                "protocolVersion": MCP_PROTOCOL_VERSION,
+                "message": "Use POST for MCP JSON-RPC.",
+            },
+            status_code=405,
+            headers={
+                "Allow": "POST",
+                "MCP-Protocol-Version": MCP_PROTOCOL_VERSION,
+                "Cache-Control": "no-store",
+            },
+        )
 
     @app.post("/mcp-abacus")
     async def abacus_mcp_post(request: Request):
-        if not _authorized(request):
+        auth_ok, auth_reason = _auth_state(request)
+        if not auth_ok:
+            logger.warning(
+                "MCP POST unauthorized reason=%s content_type=%s accept=%s user_agent=%s",
+                auth_reason,
+                request.headers.get("content-type", "")[:120],
+                request.headers.get("accept", "")[:120],
+                request.headers.get("user-agent", "")[:120],
+            )
             return _unauthorized()
+        logger.info("MCP POST authorized")
         return await process(request)
