@@ -1,7 +1,7 @@
 from fastapi import Query
 from fastapi.responses import HTMLResponse
 
-from supplier_adapters import compare_suppliers, supplier_statuses
+from supplier_adapters import compare_suppliers, supplier_statuses, vseinstrumenti_diagnostic
 
 
 def install_supplier_panel(app, esc):
@@ -12,6 +12,10 @@ def install_supplier_panel(app, esc):
     @app.get("/suppliers/search")
     def suppliers_search(q: str = Query(..., min_length=2), limit: int = 5):
         return compare_suppliers(q, limit_per_supplier=limit)
+
+    @app.get("/suppliers/debug/vseinstrumenti")
+    def suppliers_debug_vseinstrumenti(q: str = Query(..., min_length=2), limit: int = 5):
+        return vseinstrumenti_diagnostic(q, limit=limit)
 
     @app.get("/dashboard/suppliers", response_class=HTMLResponse)
     def suppliers_dashboard(q: str = "", limit: int = 5):
