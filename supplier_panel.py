@@ -1,7 +1,9 @@
 from fastapi import Query
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 
 from supplier_adapters import compare_suppliers, supplier_statuses, vseinstrumenti_diagnostic
+from vi_order_match import match_order
+from main import fetch_all_orders
 
 
 def install_supplier_panel(app, esc):
@@ -16,6 +18,37 @@ def install_supplier_panel(app, esc):
     @app.get("/suppliers/debug/vseinstrumenti")
     def suppliers_debug_vseinstrumenti(q: str = Query(..., min_length=2), limit: int = 5):
         return vseinstrumenti_diagnostic(q, limit=limit)
+
+    @app.get("/analysis/order/{order_id}/vseinstrumenti")
+    def vi_order_match_json(order_id: int, limit: int = 5):
+        return JSONResponse(match_order(fetch_all_orders, order_id, max(1, min(limit, 10))))
+
+    @app.get("/dashboard/analysis/order/{order_id}/vseinstrumenti", response_class=HTMLResponse)
+    def vi_order_match_html(order_id: int, limit: int = 5):
+        data = match_order(fetch_all_orders, order_id, max(1, min(limit, 10)))
+        rows = ""
+        for item in data["items"]:
+            best = item.get("best_candidate") or {}
+            price = best.get("price")
+            stock = best.get("stock")
+            delivery = best.get("courier_date") or best.get("pickup_date") or "—"
+            score = best.get("match_score")
+            level = best.get("match_level") or "—"
+            product = best.get("name") or "—"
+            sku = best.get("sku") or "—"
+            article = best.get("article") or "—"
+            link = best.get("url")
+            product_html = f"<a target='_blank' href='{esc(link)}'>{esc(product)}</a>" if link else esc(product)
+            rows += (
+                f"<tr><td>{item['position']}</td><td>{esc(item['requested_name'])}</td>"
+                f"<td>{esc(item['quantity'])} {esc(item['unit'])}</td><td>{product_html}</td>"
+                f"<td>{esc(sku)}</td><td>{esc(article)}</td><td>{level} ({score if score is not None else '—'})</td>"
+                f"<td><b>{f'{price:,.2f} ₽'.replace(',', ' ') if isinstance(price,(int,float)) else '—'}</b></td>"
+                f"<td>{esc(stock) if stock is not None else '—'}</td><td>{esc(delivery)}</td></tr>"
+            )
+        html = f"""<!doctype html><html lang='ru'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>
+<title>ВИ — заявка {order_id}</title><style>body{{font-family:Arial;margin:24px;background:#f5f5f5;color:#222}}.card{{background:#fff;border-radius:12px;padding:18px;overflow:auto}}table{{width:100%;border-collapse:collapse;font-size:13px}}th{{background:#eee;text-align:left;padding:9px}}td{{padding:9px;border-bottom:1px solid #eee;vertical-align:top}}a{{color:#4c39d4;font-weight:bold;text-decoration:none}}.note{{color:#666;font-size:12px}}</style></head><body><p><a href='/dashboard/analysis/order/{order_id}'>← К заявке</a> · <a target='_blank' href='/analysis/order/{order_id}/vseinstrumenti'>JSON со всеми кандидатами</a></p><h1>ВсеИнструменты — заявка {order_id}</h1><p class='note'>Автопоиск по полному наименованию. Совпадение — предварительная оценка; неоднозначные позиции требуют проверки оператором.</p><div class='card'><table><thead><tr><th>№</th><th>Позиция заявки</th><th>Кол-во</th><th>Товар ВИ</th><th>SKU</th><th>Артикул</th><th>Соответствие</th><th>ОПТ цена</th><th>Остаток</th><th>Доставка</th></tr></thead><tbody>{rows}</tbody></table></div></body></html>"""
+        return HTMLResponse(html)
 
     @app.get("/dashboard/suppliers", response_class=HTMLResponse)
     def suppliers_dashboard(q: str = "", limit: int = 5):
