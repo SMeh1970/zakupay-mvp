@@ -19,6 +19,16 @@ class SupplierQuote:
     pickup_date: str | None = None
     courier_date: str | None = None
     url: str | None = None
+    image_url: str | None = None
+    country: str | None = None
+    keyword: str | None = None
+    breadcrumbs: list[str] | None = None
+    technical_specifications: Any = None
+    weight: float | None = None
+    length: float | None = None
+    width: float | None = None
+    height: float | None = None
+    price_type: str | None = None
     score: float | None = None
     error: str | None = None
 
@@ -47,7 +57,10 @@ class VseinstrumentiAdapter(SupplierAdapter):
 
     def __init__(self):
         self.token = os.getenv("VSEINSTRUMENTI_API_TOKEN", "").strip()
-        self.base_url = os.getenv("VSEINSTRUMENTI_API_BASE_URL", "https://api.vseinstrumenti.ru/open-api").rstrip("/")
+        self.base_url = os.getenv(
+            "VSEINSTRUMENTI_API_BASE_URL",
+            "https://api.vseinstrumenti.ru/open-api",
+        ).rstrip("/")
         self.region_id = os.getenv(
             "VSEINSTRUMENTI_REGION_ID",
             "0c5b2444-70a0-4932-980c-b4dc0d3f02b5",
@@ -63,13 +76,55 @@ class VseinstrumentiAdapter(SupplierAdapter):
             "region_id": self.region_id,
             "configured_token": bool(self.token),
             "base_url": self.base_url,
+            "auth": "Bearer",
+            "price_field": "prices.price",
+            "price_semantics": "Цена ОПТ контрагента",
         })
         return data
 
-    def search(self, query: str, limit: int = 5) -> list[SupplierQuote]:
-        if not self.enabled:
-            return [SupplierQuote(supplier=self.name, name=query, error="Не настроен VSEINSTRUMENTI_API_TOKEN")]
+    @staticmethod
+    def _num(value):
+        if value is None or value == "":
+            return None
+        try:
+            return float(str(value).replace(" ", "").replace(",", "."))
+        except (TypeError, ValueError):
+            return None
 
+    @staticmethod
+    def _error_text(response: requests.Response) -> str:
+        try:
+            payload = response.json()
+        except Exception:
+            payload = None
+        if isinstance(payload, dict):
+            message = payload.get("message") or payload.get("error")
+            details = payload.get("details")
+            if isinstance(details, dict):
+                detail_message = details.get("message")
+                field = details.get("field")
+                detail_bits = [str(x) for x in (field, detail_message) if x]
+                if detail_bits:
+                    return f"{message or 'Ошибка API'}: {'; '.join(detail_bits)}"
+            if message:
+                return str(message)
+            return str(payload)
+        text = (response.text or "").strip()
+        return text[:1000] if text else "Пустой ответ API"
+
+    def search(self, query: str, limit: int = 5) -> list[SupplierQuote]:
+        query = (query or "").strip()
+        if not query:
+            return [SupplierQuote(supplier=self.name, name="", error="Пустой поисковый запрос")]
+        if not self.enabled:
+            return [SupplierQuote(
+                supplier=self.name,
+                name=query,
+                error="Не настроен VSEINSTRUMENTI_API_TOKEN или VSEINSTRUMENTI_REGION_ID",
+            )]
+
+        # Official OpenAPI v1.0: limit <= 40, offset starts from 0,
+        # sorting by price requires orderBy=price and sort=asc/desc.
         limit = min(max(int(limit), 1), 40)
         url = f"{self.base_url}/v1/products"
         params = {
@@ -84,30 +139,41 @@ class VseinstrumentiAdapter(SupplierAdapter):
             response = requests.get(
                 url,
                 params=params,
-                headers={"Authorization": f"Bearer {self.token}", "Accept": "application/json"},
+                headers={
+                    "Authorization": f"Bearer {self.token}",
+                    "Accept": "application/json",
+                },
                 timeout=25,
             )
-            data = response.json()
-        except Exception as exc:
-            return [SupplierQuote(supplier=self.name, name=query, error=f"Ошибка API: {exc}")]
+        except requests.RequestException as exc:
+            return [SupplierQuote(supplier=self.name, name=query, error=f"Ошибка сети API ВИ: {exc}")]
 
         if not response.ok:
-            return [SupplierQuote(supplier=self.name, name=query, error=f"HTTP {response.status_code}: {data}")]
+            return [SupplierQuote(
+                supplier=self.name,
+                name=query,
+                error=f"HTTP {response.status_code}: {self._error_text(response)}",
+            )]
+
+        try:
+            data = response.json()
+        except ValueError:
+            return [SupplierQuote(
+                supplier=self.name,
+                name=query,
+                error="API ВИ вернул не-JSON ответ",
+            )]
 
         products = ((data or {}).get("result") or {}).get("products") or []
-        result = []
+        result: list[SupplierQuote] = []
         for product in products[:limit]:
             prices = product.get("prices") or {}
             stock = product.get("stock") or {}
             delivery = product.get("deliveryDates") or {}
-
-            def num(value):
-                if value is None or value == "":
-                    return None
-                try:
-                    return float(str(value).replace(" ", "").replace(",", "."))
-                except (TypeError, ValueError):
-                    return None
+            dimensions = product.get("weightAndDimensions") or {}
+            breadcrumbs = product.get("breadcrumbs") or []
+            if not isinstance(breadcrumbs, list):
+                breadcrumbs = [str(breadcrumbs)]
 
             result.append(SupplierQuote(
                 supplier=self.name,
@@ -116,12 +182,24 @@ class VseinstrumentiAdapter(SupplierAdapter):
                 article=product.get("productCode"),
                 brand=product.get("brandName"),
                 unit=product.get("unit"),
-                price=num(prices.get("price")),
-                base_price=num(prices.get("basePrice")),
-                stock=num(stock.get("atWarehouse")),
+                # Official spec: prices.price = contractor wholesale price;
+                # prices.basePrice = retail/sale price.
+                price=self._num(prices.get("price")),
+                base_price=self._num(prices.get("basePrice")),
+                stock=self._num(stock.get("atWarehouse")),
                 pickup_date=delivery.get("pickup"),
                 courier_date=delivery.get("courier"),
                 url=product.get("siteUrl"),
+                image_url=product.get("ImageUrl") or product.get("imageUrl"),
+                country=product.get("madeInCountry"),
+                keyword=product.get("keyword"),
+                breadcrumbs=[str(x) for x in breadcrumbs],
+                technical_specifications=product.get("technicalSpecifications"),
+                weight=self._num(dimensions.get("weight")),
+                length=self._num(dimensions.get("length")),
+                width=self._num(dimensions.get("width")),
+                height=self._num(dimensions.get("height")),
+                price_type="contractor_wholesale",
             ))
         return result
 
