@@ -112,6 +112,80 @@ class VseinstrumentiAdapter(SupplierAdapter):
         text = (response.text or "").strip()
         return text[:1000] if text else "Пустой ответ API"
 
+    def _request_products(self, query: str, limit: int = 5) -> requests.Response:
+        limit = min(max(int(limit), 1), 40)
+        url = f"{self.base_url}/v1/products"
+        params = {
+            "search": query,
+            "regionId": self.region_id,
+            "limit": limit,
+            "offset": 0,
+            "orderBy": "price",
+            "sort": "asc",
+        }
+        return requests.get(
+            url,
+            params=params,
+            headers={
+                "Authorization": f"Bearer {self.token}",
+                "Accept": "application/json",
+            },
+            timeout=25,
+        )
+
+    def diagnose(self, query: str, limit: int = 5) -> dict[str, Any]:
+        """Safe OpenAPI diagnostics. Never returns Authorization/token contents."""
+        query = (query or "").strip()
+        base = {
+            "supplier": self.name,
+            "query": query,
+            "configured_token": bool(self.token),
+            "region_id": self.region_id,
+            "base_url": self.base_url,
+        }
+        if not query:
+            return {**base, "ok": False, "error": "Пустой поисковый запрос"}
+        if not self.enabled:
+            return {**base, "ok": False, "error": "Токен или regionId не настроен"}
+
+        try:
+            response = self._request_products(query, limit)
+        except requests.RequestException as exc:
+            return {**base, "ok": False, "error": f"Ошибка сети API ВИ: {exc}"}
+
+        diagnostic: dict[str, Any] = {
+            **base,
+            "http_status": response.status_code,
+            "content_type": response.headers.get("content-type"),
+            "ok": response.ok,
+        }
+        try:
+            payload = response.json()
+        except ValueError:
+            diagnostic["body_type"] = "non_json"
+            diagnostic["body_preview"] = (response.text or "")[:2000]
+            return diagnostic
+
+        diagnostic["body_type"] = type(payload).__name__
+        if isinstance(payload, dict):
+            diagnostic["top_level_keys"] = sorted(payload.keys())
+            result = payload.get("result")
+            diagnostic["result_type"] = type(result).__name__ if result is not None else None
+            if isinstance(result, dict):
+                diagnostic["result_keys"] = sorted(result.keys())
+                products = result.get("products")
+                diagnostic["products_type"] = type(products).__name__ if products is not None else None
+                diagnostic["products_count"] = len(products) if isinstance(products, list) else None
+                if isinstance(products, list):
+                    diagnostic["products_preview"] = products[: min(len(products), 3)]
+            else:
+                diagnostic["result_preview"] = result
+            if not response.ok:
+                diagnostic["api_error"] = self._error_text(response)
+        else:
+            diagnostic["payload_preview"] = payload
+        return diagnostic
+
     def search(self, query: str, limit: int = 5) -> list[SupplierQuote]:
         query = (query or "").strip()
         if not query:
@@ -123,28 +197,9 @@ class VseinstrumentiAdapter(SupplierAdapter):
                 error="Не настроен VSEINSTRUMENTI_API_TOKEN или VSEINSTRUMENTI_REGION_ID",
             )]
 
-        # Official OpenAPI v1.0: limit <= 40, offset starts from 0,
-        # sorting by price requires orderBy=price and sort=asc/desc.
         limit = min(max(int(limit), 1), 40)
-        url = f"{self.base_url}/v1/products"
-        params = {
-            "search": query,
-            "regionId": self.region_id,
-            "limit": limit,
-            "offset": 0,
-            "orderBy": "price",
-            "sort": "asc",
-        }
         try:
-            response = requests.get(
-                url,
-                params=params,
-                headers={
-                    "Authorization": f"Bearer {self.token}",
-                    "Accept": "application/json",
-                },
-                timeout=25,
-            )
+            response = self._request_products(query, limit)
         except requests.RequestException as exc:
             return [SupplierQuote(supplier=self.name, name=query, error=f"Ошибка сети API ВИ: {exc}")]
 
@@ -182,8 +237,6 @@ class VseinstrumentiAdapter(SupplierAdapter):
                 article=product.get("productCode"),
                 brand=product.get("brandName"),
                 unit=product.get("unit"),
-                # Official spec: prices.price = contractor wholesale price;
-                # prices.basePrice = retail/sale price.
                 price=self._num(prices.get("price")),
                 base_price=self._num(prices.get("basePrice")),
                 stock=self._num(stock.get("atWarehouse")),
@@ -236,6 +289,10 @@ def enabled_adapters() -> list[SupplierAdapter]:
 
 def supplier_statuses() -> list[dict[str, Any]]:
     return [a.status() for a in get_supplier_adapters()]
+
+
+def vseinstrumenti_diagnostic(query: str, limit: int = 5) -> dict[str, Any]:
+    return VseinstrumentiAdapter().diagnose(query, limit)
 
 
 def compare_suppliers(query: str, limit_per_supplier: int = 5) -> dict[str, Any]:
