@@ -112,6 +112,21 @@ class VseinstrumentiAdapter(SupplierAdapter):
         text = (response.text or "").strip()
         return text[:1000] if text else "Пустой ответ API"
 
+    @staticmethod
+    def _extract_products(data: Any) -> list[dict[str, Any]]:
+        """Support both the documented nested shape and the actual PROD top-level shape."""
+        if not isinstance(data, dict):
+            return []
+        products = data.get("products")
+        if isinstance(products, list):
+            return products
+        result = data.get("result")
+        if isinstance(result, dict):
+            products = result.get("products")
+            if isinstance(products, list):
+                return products
+        return []
+
     def _request_products(self, query: str, limit: int = 5) -> requests.Response:
         limit = min(max(int(limit), 1), 40)
         url = f"{self.base_url}/v1/products"
@@ -169,17 +184,14 @@ class VseinstrumentiAdapter(SupplierAdapter):
         diagnostic["body_type"] = type(payload).__name__
         if isinstance(payload, dict):
             diagnostic["top_level_keys"] = sorted(payload.keys())
+            products = self._extract_products(payload)
+            diagnostic["products_type"] = "list" if isinstance(products, list) else type(products).__name__
+            diagnostic["products_count"] = len(products)
+            diagnostic["products_preview"] = products[: min(len(products), 3)]
             result = payload.get("result")
             diagnostic["result_type"] = type(result).__name__ if result is not None else None
             if isinstance(result, dict):
                 diagnostic["result_keys"] = sorted(result.keys())
-                products = result.get("products")
-                diagnostic["products_type"] = type(products).__name__ if products is not None else None
-                diagnostic["products_count"] = len(products) if isinstance(products, list) else None
-                if isinstance(products, list):
-                    diagnostic["products_preview"] = products[: min(len(products), 3)]
-            else:
-                diagnostic["result_preview"] = result
             if not response.ok:
                 diagnostic["api_error"] = self._error_text(response)
         else:
@@ -219,7 +231,7 @@ class VseinstrumentiAdapter(SupplierAdapter):
                 error="API ВИ вернул не-JSON ответ",
             )]
 
-        products = ((data or {}).get("result") or {}).get("products") or []
+        products = self._extract_products(data)
         result: list[SupplierQuote] = []
         for product in products[:limit]:
             prices = product.get("prices") or {}
