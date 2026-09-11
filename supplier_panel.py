@@ -34,6 +34,7 @@ def install_supplier_panel(app, esc):
             delivery = best.get("courier_date") or best.get("pickup_date") or "—"
             score = best.get("match_score")
             level = best.get("match_level") or "—"
+            reasons = "; ".join(best.get("match_reasons") or [])
             product = best.get("name") or "—"
             sku = best.get("sku") or "—"
             article = best.get("article") or "—"
@@ -42,7 +43,7 @@ def install_supplier_panel(app, esc):
             rows += (
                 f"<tr><td>{item['position']}</td><td>{esc(item['requested_name'])}</td>"
                 f"<td>{esc(item['quantity'])} {esc(item['unit'])}</td><td>{product_html}</td>"
-                f"<td>{esc(sku)}</td><td>{esc(article)}</td><td>{level} ({score if score is not None else '—'})</td>"
+                f"<td>{esc(sku)}</td><td>{esc(article)}</td><td>{level} ({score if score is not None else '—'})<div class='note'>{esc(reasons)}</div></td>"
                 f"<td><b>{f'{price:,.2f} ₽'.replace(',', ' ') if isinstance(price,(int,float)) else '—'}</b></td>"
                 f"<td>{esc(stock) if stock is not None else '—'}</td><td>{esc(delivery)}</td></tr>"
             )

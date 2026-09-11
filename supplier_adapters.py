@@ -135,9 +135,15 @@ class VseinstrumentiAdapter(SupplierAdapter):
             "regionId": self.region_id,
             "limit": limit,
             "offset": 0,
-            "orderBy": "price",
-            "sort": "asc",
         }
+        # Matching must use the API's relevance order. Sorting the search by
+        # price before matching caused cheap, unrelated products to occupy the
+        # limited candidate window. An explicit ordering can still be enabled
+        # for diagnostics if the API account requires it.
+        order_by = os.getenv("VSEINSTRUMENTI_SEARCH_ORDER_BY", "").strip()
+        if order_by:
+            params["orderBy"] = order_by
+            params["sort"] = os.getenv("VSEINSTRUMENTI_SEARCH_SORT", "asc").strip() or "asc"
         return requests.get(
             url,
             params=params,
