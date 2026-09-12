@@ -91,6 +91,24 @@ def fetch_order_by_id(order_id, force=False):
         "allRegions": "true", "showAllCategories": "true", "allCategories": "true",
     }
 
+    # This is the endpoint used by Zakupay's own supplier registry page.
+    # It often contains orders omitted by the public collection API.
+    try:
+        response = requests.post(
+            f"{ZAKUPAY_BASE_URL}/core/supplier/getorders",
+            headers=dict(zakupay_headers(), **{"Content-Type": "application/json"}),
+            json={"status": "actual", "size": 1000}, timeout=8,
+        )
+        candidates = response.json() if response.ok else []
+        if not isinstance(candidates, list):
+            candidates = []
+        order = next((o for o in candidates if isinstance(o, dict) and int(o.get("id") or 0) == order_id), None)
+        logger.warning("order lookup id=%s method=registry status=%s candidates=%s found=%s", order_id, response.status_code, len(candidates), bool(order))
+        if order:
+            return order
+    except (requests.RequestException, ValueError, TypeError) as exc:
+        logger.warning("order lookup id=%s method=registry failed=%s", order_id, type(exc).__name__)
+
     # Cynteka installations differ: some expose a resource URL, while others
     # only allow lookup through the collection filters.
     attempts = [(url, common)]
@@ -100,7 +118,7 @@ def fetch_order_by_id(order_id, force=False):
 
     for attempt_url, params in attempts:
         try:
-            response = requests.get(attempt_url, headers=zakupay_headers(), params=params, timeout=30)
+            response = requests.get(attempt_url, headers=zakupay_headers(), params=params, timeout=8)
             if not response.ok:
                 logger.warning("order lookup id=%s method=%s status=%s", order_id, next((k for k in ("senderId", "orderId", "zakupayIds") if k in params), "path"), response.status_code)
                 continue
