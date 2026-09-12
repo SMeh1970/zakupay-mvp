@@ -1,4 +1,6 @@
 import re
+import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from difflib import SequenceMatcher
 from fastapi import HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -124,12 +126,39 @@ def _unit_name(item):
 def match_order(fetch_all_orders, order_id, limit=5):
     order = _get_order(fetch_all_orders, order_id)
     vi = VseinstrumentiAdapter()
+    order_items = list(order.get("orderItems") or [])
+
+    # A large order used to make one external VI request after another. For 38
+    # positions that could keep the HTTP request open for minutes. Search a
+    # conservative number in parallel: fast enough for the UI without flooding
+    # the supplier API.
+    try:
+        configured_workers = int(os.getenv("VI_MATCH_WORKERS", "8"))
+    except ValueError:
+        configured_workers = 8
+    workers = max(1, min(configured_workers, 12, len(order_items) or 1))
+    quotes_by_position = {}
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = {
+            pool.submit(vi.search, item.get("goodName") or "", limit): pos
+            for pos, item in enumerate(order_items, 1)
+        }
+        for future in as_completed(futures):
+            pos = futures[future]
+            try:
+                quotes_by_position[pos] = future.result()
+            except Exception as exc:
+                quotes_by_position[pos] = [{"error": f"Ошибка поиска ВИ: {type(exc).__name__}: {exc}"}]
+
     items = []
-    for pos, item in enumerate(order.get("orderItems") or [], 1):
+    for pos, item in enumerate(order_items, 1):
         name = item.get("goodName") or ""
-        quotes = vi.search(name, limit=limit)
+        quotes = quotes_by_position.get(pos) or []
         candidates = []
         for q in quotes:
+            if isinstance(q, dict) and q.get("error"):
+                candidates.append(q)
+                continue
             if q.error:
                 candidates.append({"error": q.error})
                 continue

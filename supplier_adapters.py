@@ -151,7 +151,7 @@ class VseinstrumentiAdapter(SupplierAdapter):
                 "Authorization": f"Bearer {self.token}",
                 "Accept": "application/json",
             },
-            timeout=25,
+            timeout=float(os.getenv("VSEINSTRUMENTI_API_TIMEOUT", "12")),
         )
 
     def diagnose(self, query: str, limit: int = 5) -> dict[str, Any]:
