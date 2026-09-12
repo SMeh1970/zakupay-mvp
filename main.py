@@ -1,4 +1,5 @@
 import html
+import logging
 import os
 import time
 from urllib.parse import urlencode
@@ -23,6 +24,7 @@ ZAKUPAY_API_KEY = os.getenv("ZAKUPAY_API_KEY")
 ZAKUPAY_BASE_URL = os.getenv("ZAKUPAY_BASE_URL", "https://prodavay.sel-be.ru")
 CACHE_TTL_SECONDS = 60
 _orders_cache = {"ts": 0.0, "key": "", "orders": []}
+logger = logging.getLogger("zakupay.orders")
 
 
 def esc(value):
@@ -56,6 +58,9 @@ def request_orders_page(page=1, page_size=100, api_filters=None):
     params = {
         "format": "json", "isoDate": "true", "totalCount": "true",
         "count": page_size, "page": page, "pageSize": page_size,
+        "ignoreKeywordFilter": "true", "showNotInteresting": "true",
+        "showAllRegions": "true", "allRegions": "true",
+        "showAllCategories": "true", "allCategories": "true",
     }
     if api_filters:
         params.update(clean_params(api_filters))
@@ -80,20 +85,42 @@ def fetch_order_by_id(order_id, force=False):
     """Return one order, preferring the API's resource endpoint over a list scan."""
     order_id = int(order_id)
     url = f"{ZAKUPAY_BASE_URL}/api/v1/orders/{order_id}"
-    try:
-        response = requests.get(
-            url, headers=zakupay_headers(),
-            params={"format": "json", "isoDate": "true"}, timeout=30,
-        )
-        if response.ok:
+    common = {
+        "format": "json", "isoDate": "true", "ignoreKeywordFilter": "true",
+        "showNotInteresting": "true", "showAllRegions": "true",
+        "allRegions": "true", "showAllCategories": "true", "allCategories": "true",
+    }
+
+    # Cynteka installations differ: some expose a resource URL, while others
+    # only allow lookup through the collection filters.
+    attempts = [(url, common)]
+    list_url = f"{ZAKUPAY_BASE_URL}/api/v1/orders"
+    for key in ("senderId", "orderId", "zakupayIds"):
+        attempts.append((list_url, dict(common, **{key: order_id}, count=100, totalCount="true")))
+
+    for attempt_url, params in attempts:
+        try:
+            response = requests.get(attempt_url, headers=zakupay_headers(), params=params, timeout=30)
+            if not response.ok:
+                logger.info("order lookup id=%s method=%s status=%s", order_id, next((k for k in ("senderId", "orderId", "zakupayIds") if k in params), "path"), response.status_code)
+                continue
             data = response.json()
-            order = data.get("order") if isinstance(data, dict) else None
-            if order is None and isinstance(data, dict) and data.get("id") is not None:
-                order = data
-            if isinstance(order, dict) and int(order.get("id") or 0) == order_id:
+            candidates = []
+            if isinstance(data, list):
+                candidates = data
+            elif isinstance(data, dict):
+                if isinstance(data.get("orders"), list):
+                    candidates = data["orders"]
+                elif isinstance(data.get("order"), dict):
+                    candidates = [data["order"]]
+                elif data.get("id") is not None:
+                    candidates = [data]
+            order = next((o for o in candidates if isinstance(o, dict) and int(o.get("id") or 0) == order_id), None)
+            logger.info("order lookup id=%s method=%s status=%s candidates=%s found=%s", order_id, next((k for k in ("senderId", "orderId", "zakupayIds") if k in params), "path"), response.status_code, len(candidates), bool(order))
+            if order:
                 return order
-    except (requests.RequestException, ValueError, TypeError):
-        pass
+        except (requests.RequestException, ValueError, TypeError) as exc:
+            logger.info("order lookup id=%s failed=%s", order_id, type(exc).__name__)
 
     orders = fetch_all_orders(force=force)
     return next((o for o in orders if int(o.get("id") or 0) == order_id), None)
