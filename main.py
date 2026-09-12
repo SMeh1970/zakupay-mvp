@@ -102,7 +102,7 @@ def fetch_order_by_id(order_id, force=False):
         try:
             response = requests.get(attempt_url, headers=zakupay_headers(), params=params, timeout=30)
             if not response.ok:
-                logger.info("order lookup id=%s method=%s status=%s", order_id, next((k for k in ("senderId", "orderId", "zakupayIds") if k in params), "path"), response.status_code)
+                logger.warning("order lookup id=%s method=%s status=%s", order_id, next((k for k in ("senderId", "orderId", "zakupayIds") if k in params), "path"), response.status_code)
                 continue
             data = response.json()
             candidates = []
@@ -116,11 +116,11 @@ def fetch_order_by_id(order_id, force=False):
                 elif data.get("id") is not None:
                     candidates = [data]
             order = next((o for o in candidates if isinstance(o, dict) and int(o.get("id") or 0) == order_id), None)
-            logger.info("order lookup id=%s method=%s status=%s candidates=%s found=%s", order_id, next((k for k in ("senderId", "orderId", "zakupayIds") if k in params), "path"), response.status_code, len(candidates), bool(order))
+            logger.warning("order lookup id=%s method=%s status=%s candidates=%s found=%s", order_id, next((k for k in ("senderId", "orderId", "zakupayIds") if k in params), "path"), response.status_code, len(candidates), bool(order))
             if order:
                 return order
         except (requests.RequestException, ValueError, TypeError) as exc:
-            logger.info("order lookup id=%s failed=%s", order_id, type(exc).__name__)
+            logger.warning("order lookup id=%s failed=%s", order_id, type(exc).__name__)
 
     orders = fetch_all_orders(force=force)
     return next((o for o in orders if int(o.get("id") or 0) == order_id), None)
