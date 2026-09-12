@@ -49,7 +49,14 @@ def clean_params(params):
 
 def request_orders_page(page=1, page_size=100, api_filters=None):
     url = f"{ZAKUPAY_BASE_URL}/api/v1/orders"
-    params = {"status": "actual", "isoDate": "true", "page": page, "pageSize": page_size}
+    # The supplier API exposes active orders by default.  `status=actual` is not
+    # an orders API parameter and made valid orders disappear for some accounts.
+    # `count` is the documented limit; page/pageSize are kept for compatible
+    # installations of the same API.
+    params = {
+        "format": "json", "isoDate": "true", "totalCount": "true",
+        "count": page_size, "page": page, "pageSize": page_size,
+    }
     if api_filters:
         params.update(clean_params(api_filters))
     try:
@@ -67,6 +74,29 @@ def request_orders_page(page=1, page_size=100, api_filters=None):
     if not response.ok:
         raise HTTPException(status_code=response.status_code, detail=data)
     return data
+
+
+def fetch_order_by_id(order_id, force=False):
+    """Return one order, preferring the API's resource endpoint over a list scan."""
+    order_id = int(order_id)
+    url = f"{ZAKUPAY_BASE_URL}/api/v1/orders/{order_id}"
+    try:
+        response = requests.get(
+            url, headers=zakupay_headers(),
+            params={"format": "json", "isoDate": "true"}, timeout=30,
+        )
+        if response.ok:
+            data = response.json()
+            order = data.get("order") if isinstance(data, dict) else None
+            if order is None and isinstance(data, dict) and data.get("id") is not None:
+                order = data
+            if isinstance(order, dict) and int(order.get("id") or 0) == order_id:
+                return order
+    except (requests.RequestException, ValueError, TypeError):
+        pass
+
+    orders = fetch_all_orders(force=force)
+    return next((o for o in orders if int(o.get("id") or 0) == order_id), None)
 
 
 def fetch_all_orders(force=False, api_filters=None):

@@ -3,7 +3,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 
 from supplier_adapters import compare_suppliers, supplier_statuses, vseinstrumenti_diagnostic
 from vi_order_match import match_order
-from main import fetch_all_orders
+from main import fetch_order_by_id
 
 
 def install_supplier_panel(app, esc):
@@ -21,11 +21,11 @@ def install_supplier_panel(app, esc):
 
     @app.get("/analysis/order/{order_id}/vseinstrumenti")
     def vi_order_match_json(order_id: int, limit: int = 5):
-        return JSONResponse(match_order(fetch_all_orders, order_id, max(1, min(limit, 10))))
+        return JSONResponse(match_order(lambda force=False, order_id=None: fetch_order_by_id(order_id, force), order_id, max(1, min(limit, 10))))
 
     @app.get("/dashboard/analysis/order/{order_id}/vseinstrumenti", response_class=HTMLResponse)
     def vi_order_match_html(order_id: int, limit: int = 5):
-        data = match_order(fetch_all_orders, order_id, max(1, min(limit, 10)))
+        data = match_order(lambda force=False, order_id=None: fetch_order_by_id(order_id, force), order_id, max(1, min(limit, 10)))
         rows = ""
         for item in data["items"]:
             best = item.get("best_candidate") or {}

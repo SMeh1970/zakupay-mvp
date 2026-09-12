@@ -108,11 +108,9 @@ def _label(score):
 
 
 def _get_order(fetch_all_orders, order_id):
-    orders = fetch_all_orders()
-    order = next((x for x in orders if x.get("id") == order_id), None)
+    order = fetch_all_orders(order_id=order_id)
     if not order:
-        orders = fetch_all_orders(force=True)
-        order = next((x for x in orders if x.get("id") == order_id), None)
+        order = fetch_all_orders(order_id=order_id, force=True)
     if not order:
         raise HTTPException(status_code=404, detail="Заявка не найдена среди актуальных")
     return order

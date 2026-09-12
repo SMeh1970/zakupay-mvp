@@ -86,21 +86,20 @@ def _unit_name(item):
     return unit or ''
 
 
-def _get_order(fetch_all_orders, order_id):
-    orders = fetch_all_orders()
-    order = next((x for x in orders if x.get('id') == order_id), None)
+def _get_order(fetch_order_by_id, order_id):
+    order = fetch_order_by_id(order_id)
     if not order:
-        orders = fetch_all_orders(force=True)
-        order = next((x for x in orders if x.get('id') == order_id), None)
+        order = fetch_order_by_id(order_id, force=True)
     if not order:
         raise HTTPException(status_code=404, detail='Заявка не найдена среди актуальных')
     return order
 
 
-def install_analysis_detail(app, fetch_all_orders, zakupay_headers, zakupay_base_url, esc):
+def install_analysis_detail(app, fetch_all_orders, zakupay_headers, zakupay_base_url, esc, fetch_order_by_id=None):
+    fetch_order_by_id = fetch_order_by_id or (lambda order_id, force=False: next((x for x in fetch_all_orders(force=force) if int(x.get('id') or 0) == order_id), None))
     @app.get('/dashboard/analysis/order/{order_id}', response_class=HTMLResponse)
     def analysis_order_detail(order_id: int):
-        order = _get_order(fetch_all_orders, order_id)
+        order = _get_order(fetch_order_by_id, order_id)
         customer = order.get('customer') or {}
         region = order.get('region') or {}
         browser_result = best_price_rows_for_order(order)
@@ -142,7 +141,7 @@ def install_analysis_detail(app, fetch_all_orders, zakupay_headers, zakupay_base
 
     @app.get('/analysis/raw-order/{order_id}')
     def raw_order_price_fields(order_id: int):
-        order = _get_order(fetch_all_orders, order_id)
+        order = _get_order(fetch_order_by_id, order_id)
         browser_result = best_price_rows_for_order(order)
         browser_prices = browser_result.get('prices') or {}
         items = []
@@ -161,7 +160,7 @@ def install_analysis_detail(app, fetch_all_orders, zakupay_headers, zakupay_base
 
     @app.get('/analysis/price-source/{order_id}')
     def probe_price_source(order_id: int):
-        order = _get_order(fetch_all_orders, order_id)
+        order = _get_order(fetch_order_by_id, order_id)
         result = best_price_rows_for_order(order, force=True)
         safe_prices = {}
         for item_id, row in (result.get('prices') or {}).items():

@@ -17,13 +17,11 @@ MODULE_VERSION = os.getenv("ZAKUPAY_MODULE_VERSION", "zakupay-mvp-0.2")
 DEFAULT_CURRENCY_ID = os.getenv("ZAKUPAY_CURRENCY_ID", "643")
 
 
-def install_offer_panel(app, fetch_all_orders, zakupay_headers, zakupay_base_url, esc):
+def install_offer_panel(app, fetch_all_orders, zakupay_headers, zakupay_base_url, esc, fetch_order_by_id=None):
     def _get_order(order_id: int):
-        orders = fetch_all_orders()
-        order = next((o for o in orders if int(o.get("id") or 0) == order_id), None)
+        order = fetch_order_by_id(order_id) if fetch_order_by_id else next((o for o in fetch_all_orders() if int(o.get("id") or 0) == order_id), None)
         if not order:
-            orders = fetch_all_orders(force=True)
-            order = next((o for o in orders if int(o.get("id") or 0) == order_id), None)
+            order = fetch_order_by_id(order_id, force=True) if fetch_order_by_id else next((o for o in fetch_all_orders(force=True) if int(o.get("id") or 0) == order_id), None)
         if not order:
             raise HTTPException(status_code=404, detail="Заявка не найдена")
         return order

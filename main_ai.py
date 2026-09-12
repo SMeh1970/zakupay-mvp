@@ -7,7 +7,7 @@ from urllib.parse import parse_qsl, urlencode
 from fastapi.responses import RedirectResponse, Response
 
 from main import (
-    app, api_filter_dict, compact_order, esc, fetch_all_orders, filter_orders,
+    app, api_filter_dict, compact_order, esc, fetch_all_orders, fetch_order_by_id, filter_orders,
     has_my_offer, max_competitors, zakupay_headers, ZAKUPAY_BASE_URL,
 )
 import ai_panel
@@ -200,6 +200,7 @@ install_analysis_detail(
     zakupay_headers=zakupay_headers,
     zakupay_base_url=ZAKUPAY_BASE_URL,
     esc=esc,
+    fetch_order_by_id=fetch_order_by_id,
 )
 install_api_discovery(
     app,
@@ -214,6 +215,7 @@ install_offer_panel(
     zakupay_headers=zakupay_headers,
     zakupay_base_url=ZAKUPAY_BASE_URL,
     esc=esc,
+    fetch_order_by_id=fetch_order_by_id,
 )
 install_abacus_mcp(
     app,
