@@ -7,7 +7,9 @@ behind the existing confirmed offer form.
 
 from __future__ import annotations
 
+import base64
 import hashlib
+import html
 import json
 import os
 import sqlite3
@@ -38,6 +40,7 @@ DEFAULT_DELIVERY_INCLUDED = os.getenv("AUTO_OFFER_DELIVERY_INCLUDED", "true").lo
 }
 INVOICE_NUMBER_START = int(os.getenv("AUTO_INVOICE_NUMBER_START", "240"))
 VI_CANDIDATE_LIMIT = int(os.getenv("AUTO_VI_CANDIDATE_LIMIT", "8"))
+APP_PUBLIC_URL = os.getenv("APP_PUBLIC_URL", "https://zakupay-mvp.onrender.com").rstrip("/")
 
 _lock = threading.Lock()
 
@@ -194,6 +197,44 @@ def build_vi_draft(order: dict, invoice_number: int | None = None) -> dict:
     }
 
 
+
+def _gmail_draft_payload(result: dict, job_id: int) -> dict:
+    summary = result.get("summary") or {}
+    lines = [
+        f"Заявка Закупай № {result.get('order_id')}",
+        f"Счёт ООО «АВИОР» № {result.get('invoice_number')}",
+        "",
+        f"Позиций: {summary.get('positions', 0)}",
+        f"Готово автоматически: {summary.get('auto_ready', 0)}",
+        f"Требует проверки: {summary.get('review', 0)}",
+        f"Ручной подбор: {summary.get('manual', 0)}",
+        "",
+    ]
+    for row in result.get("items") or []:
+        selected = row.get("selected") or {}
+        lines.append(
+            f"{row.get('position')}. {row.get('requested_name')} — "
+            f"{row.get('quantity')} {row.get('unit')}; "
+            f"подбор: {selected.get('name') or 'не найден'}; "
+            f"цена продажи: {row.get('proposed_unit_price') or '—'} руб.; "
+            f"решение: {row.get('decision')}"
+        )
+    review_url = f"{APP_PUBLIC_URL}/dashboard/automation/jobs/{job_id}/review"
+    lines.extend(["", "Проверить заявку и продолжить:", review_url])
+    payload = {
+        "to": os.getenv("GMAIL_REVIEW_RECIPIENT", "1043324@gmail.com"),
+        "subject": f"Проверка заявки Закупай № {result.get('order_id')} / счёт № {result.get('invoice_number')}",
+        "body": "\n".join(lines),
+        "review_url": review_url,
+    }
+    if result.get("status") == "ready_for_review":
+        invoice = build_invoice_xlsx(result)
+        payload["attachment_name"] = (
+            f"AVIOR_invoice_{result.get('invoice_number')}_order_{result.get('order_id')}.xlsx"
+        )
+        payload["attachment_base64"] = base64.b64encode(invoice).decode("ascii")
+    return payload
+
 def process_email(raw_email: bytes, fetch_order_by_id) -> dict:
     event = parse_zakupay_email(raw_email)
     if event.event_type != "new_order":
@@ -207,13 +248,16 @@ def process_email(raw_email: bytes, fetch_order_by_id) -> dict:
         ).fetchone()
         if existing and existing["status"] != "failed":
             result = json.loads(existing["result_json"]) if existing["result_json"] else None
-            return {
+            response = {
                 "duplicate": True,
                 "job_id": existing["id"],
                 "status": existing["status"],
                 "error": existing["error"],
                 "result": result,
             }
+            if result:
+                response["gmail_draft"] = _gmail_draft_payload(result, existing["id"])
+            return response
         if existing:
             job_id = existing["id"]
             invoice_number = existing["invoice_number"]
@@ -267,7 +311,13 @@ def process_email(raw_email: bytes, fetch_order_by_id) -> dict:
         )
     if error:
         raise RuntimeError(error)
-    return {"duplicate": False, "job_id": job_id, "status": status, "result": result}
+    return {
+        "duplicate": False,
+        "job_id": job_id,
+        "status": status,
+        "result": result,
+        "gmail_draft": _gmail_draft_payload(result, job_id),
+    }
 
 
 def install_automation_pipeline(app, fetch_order_by_id):
@@ -299,6 +349,63 @@ def install_automation_pipeline(app, fetch_order_by_id):
                    FROM automation_jobs ORDER BY id DESC LIMIT ?""", (limit,)
             ).fetchall()
         return {"count": len(rows), "jobs": [dict(row) for row in rows]}
+
+    @app.get("/dashboard/automation/jobs/{job_id}/review")
+    def automation_review(job_id: int):
+        with _connect() as conn:
+            row = conn.execute("SELECT * FROM automation_jobs WHERE id=?", (job_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Задание не найдено")
+        result = json.loads(row["result_json"]) if row["result_json"] else None
+        if not result:
+            raise HTTPException(status_code=409, detail=row["error"] or "Расчёт ещё не готов")
+        table_rows = []
+        for item in result.get("items") or []:
+            selected = item.get("selected") or {}
+            table_rows.append(
+                "<tr>"
+                f"<td>{item.get('position')}</td>"
+                f"<td>{html.escape(str(item.get('requested_name') or ''))}</td>"
+                f"<td>{html.escape(str(selected.get('name') or 'Не найден'))}</td>"
+                f"<td>{html.escape(str(item.get('quantity') or ''))} {html.escape(str(item.get('unit') or ''))}</td>"
+                f"<td>{html.escape(str(item.get('proposed_unit_price') or '—'))}</td>"
+                f"<td>{html.escape(str(item.get('decision') or ''))}</td>"
+                "</tr>"
+            )
+        invoice_link = (
+            f"<p><a href='/dashboard/automation/jobs/{job_id}/invoice.xlsx'>Скачать сформированный счёт</a></p>"
+            if result.get("status") == "ready_for_review" else
+            "<p><b>Счёт пока не сформирован: имеются позиции для проверки.</b></p>"
+        )
+        offer_link = (
+            f"<p><a href='/dashboard/order/{row['order_id']}/offer'>Перейти к подтверждению предложения в Закупай</a></p>"
+        )
+        return Response(
+            content=(
+                "<!doctype html><html lang='ru'><meta charset='utf-8'>"
+                "<title>Проверка заявки</title><style>body{font-family:Arial;margin:24px}"
+                "table{border-collapse:collapse;width:100%}td,th{border:1px solid #ccc;padding:8px}"
+                "th{background:#eee}</style><body>"
+                f"<h1>Заявка Закупай № {row['order_id']}</h1>"
+                f"<p>Счёт № {row['invoice_number']} · статус: {html.escape(str(row['status']))}</p>"
+                "<table><tr><th>№</th><th>Заявка</th><th>Подбор ВИ</th><th>Количество</th><th>Цена</th><th>Решение</th></tr>"
+                + "".join(table_rows) + "</table>" + invoice_link + offer_link + "</body></html>"
+            ),
+            media_type="text/html",
+        )
+
+    @app.get("/dashboard/automation/jobs/{job_id}/invoice.xlsx")
+    def dashboard_automation_invoice(job_id: int):
+        with _connect() as conn:
+            row = conn.execute("SELECT * FROM automation_jobs WHERE id=?", (job_id,)).fetchone()
+        if not row or not row["result_json"]:
+            raise HTTPException(status_code=404, detail="Готовый счёт не найден")
+        try:
+            content = build_invoice_xlsx(json.loads(row["result_json"]))
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+        filename = f"AVIOR_invoice_{row['invoice_number']}_order_{row['order_id']}.xlsx"
+        return Response(content=content, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", headers={"Content-Disposition": f'attachment; filename="{filename}"'})
 
     @app.get("/automation/jobs/{job_id}/invoice.xlsx")
     def automation_invoice(job_id: int):
