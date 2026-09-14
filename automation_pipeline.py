@@ -203,7 +203,7 @@ def process_email(raw_email: bytes, fetch_order_by_id) -> dict:
         existing = conn.execute(
             "SELECT * FROM automation_jobs WHERE dedupe_key = ?", (key,)
         ).fetchone()
-        if existing:
+        if existing and existing["status"] != "failed":
             result = json.loads(existing["result_json"]) if existing["result_json"] else None
             return {
                 "duplicate": True,
@@ -212,23 +212,42 @@ def process_email(raw_email: bytes, fetch_order_by_id) -> dict:
                 "error": existing["error"],
                 "result": result,
             }
-        last_number = conn.execute(
-            "SELECT MAX(invoice_number) FROM automation_jobs"
-        ).fetchone()[0]
-        invoice_number = max(INVOICE_NUMBER_START, (last_number or INVOICE_NUMBER_START - 1) + 1)
-        cursor = conn.execute(
-            """INSERT INTO automation_jobs
-               (dedupe_key,message_id,order_id,event_type,subject,sender,status,created_at,updated_at,invoice_number)
-               VALUES (?,?,?,?,?,?,?,?,?,?)""",
-            (key, message_id, event.order_id, event.event_type, event.subject, event.sender,
-             "processing", now, now, invoice_number),
-        )
-        job_id = cursor.lastrowid
+        if existing:
+            job_id = existing["id"]
+            invoice_number = existing["invoice_number"]
+            conn.execute(
+                "UPDATE automation_jobs SET status='processing', error=NULL, updated_at=? WHERE id=?",
+                (now, job_id),
+            )
+        else:
+            last_number = conn.execute(
+                "SELECT MAX(invoice_number) FROM automation_jobs"
+            ).fetchone()[0]
+            invoice_number = max(INVOICE_NUMBER_START, (last_number or INVOICE_NUMBER_START - 1) + 1)
+            cursor = conn.execute(
+                """INSERT INTO automation_jobs
+                   (dedupe_key,message_id,order_id,event_type,subject,sender,status,created_at,updated_at,invoice_number)
+                   VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                (key, message_id, event.order_id, event.event_type, event.subject, event.sender,
+                 "processing", now, now, invoice_number),
+            )
+            job_id = cursor.lastrowid
 
     try:
-        order = fetch_order_by_id(event.order_id, force=True)
+        if event.order_items:
+            order = {
+                "id": event.order_id,
+                "name": event.subject,
+                "orderItems": list(event.order_items),
+                "deliveryDate": event.delivery_date,
+                "deliveryAddress": event.delivery_address,
+                "paymentTerms": event.payment_terms,
+                "source": "email",
+            }
+        else:
+            order = fetch_order_by_id(event.order_id, force=True)
         if not order:
-            raise LookupError("Заявка не получена из API Закупай")
+            raise LookupError("Состав заявки отсутствует в письме и не получен из API Закупай")
         result = build_vi_draft(order, invoice_number=invoice_number)
         status = result["status"]
         error = None
