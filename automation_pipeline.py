@@ -234,7 +234,10 @@ def process_email(raw_email: bytes, fetch_order_by_id) -> dict:
             job_id = cursor.lastrowid
 
     try:
-        if event.order_items:
+        # The email is a notification. Zakupay remains the primary source of truth.
+        order = fetch_order_by_id(event.order_id, force=True)
+        if not order and event.order_items:
+            # Safe fallback for orders temporarily omitted by the Zakupay API.
             order = {
                 "id": event.order_id,
                 "name": event.subject,
@@ -242,12 +245,10 @@ def process_email(raw_email: bytes, fetch_order_by_id) -> dict:
                 "deliveryDate": event.delivery_date,
                 "deliveryAddress": event.delivery_address,
                 "paymentTerms": event.payment_terms,
-                "source": "email",
+                "source": "email_fallback",
             }
-        else:
-            order = fetch_order_by_id(event.order_id, force=True)
         if not order:
-            raise LookupError("Состав заявки отсутствует в письме и не получен из API Закупай")
+            raise LookupError("Заявка не получена из API Закупай, состав отсутствует в письме")
         result = build_vi_draft(order, invoice_number=invoice_number)
         status = result["status"]
         error = None
