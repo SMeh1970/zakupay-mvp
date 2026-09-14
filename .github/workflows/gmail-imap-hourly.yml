@@ -1,5 +1,5 @@
 name: Forward Zakupay Gmail messages
-# Verification run processes one unlabelled message.
+# Verification uses only zakupay@sel-be.ru requests.
 
 on:
   schedule:
