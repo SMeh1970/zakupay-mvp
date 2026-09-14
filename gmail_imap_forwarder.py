@@ -84,7 +84,7 @@ def main() -> int:
             raise RuntimeError("Could not select Gmail INBOX")
 
         query = (
-            f'from:(sel-be.ru) after:{START_AFTER} '
+            f'from:zakupay@sel-be.ru after:{START_AFTER} '
             f'-label:{PROCESSED_LABEL}'
         )
         status, data = mailbox.uid("search", None, "X-GM-RAW", f'"{query}"')
