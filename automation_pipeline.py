@@ -18,11 +18,12 @@ from email import policy
 from email.parser import BytesParser
 
 from fastapi import Header, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 
 from supplier_adapters import VseinstrumentiAdapter
 from vi_order_match import _label, _score_details
 from zakupay_email import parse_zakupay_email
+from invoice_generator import build_invoice_xlsx
 
 
 DB_PATH = os.getenv("AUTOMATION_DB_PATH", "automation.db")
@@ -174,6 +175,7 @@ def build_vi_draft(order: dict, invoice_number: int | None = None) -> dict:
     return {
         "order_id": order.get("id"),
         "order_name": order.get("name"),
+        "customer": order.get("customer") or {},
         "status": status,
         "live_offer_created": False,
         "invoice_number": invoice_number,
@@ -297,6 +299,26 @@ def install_automation_pipeline(app, fetch_order_by_id):
                    FROM automation_jobs ORDER BY id DESC LIMIT ?""", (limit,)
             ).fetchall()
         return {"count": len(rows), "jobs": [dict(row) for row in rows]}
+
+    @app.get("/automation/jobs/{job_id}/invoice.xlsx")
+    def automation_invoice(job_id: int):
+        with _connect() as conn:
+            row = conn.execute("SELECT * FROM automation_jobs WHERE id=?", (job_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Задание не найдено")
+        if not row["result_json"]:
+            raise HTTPException(status_code=409, detail=row["error"] or "Расчёт ещё не готов")
+        result = json.loads(row["result_json"])
+        try:
+            content = build_invoice_xlsx(result)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+        filename = f"AVIOR_invoice_{row['invoice_number']}_order_{row['order_id']}.xlsx"
+        return Response(
+            content=content,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
 
     @app.get("/automation/jobs/{job_id}")
     def automation_job(job_id: int):
