@@ -89,13 +89,14 @@ def accepted_result(status_code: int, payload: dict | None) -> bool:
 
 
 
-def _drafts_mailbox(mailbox: imaplib.IMAP4_SSL) -> str:
+def _drafts_mailbox(mailbox: imaplib.IMAP4_SSL) -> str | bytes:
     status, rows = mailbox.list()
     if status == "OK":
         for row in rows or []:
-            decoded = row.decode("utf-8", "replace") if isinstance(row, bytes) else str(row)
-            if "\\Drafts" in decoded:
-                name = decoded.rsplit(" ", 1)[-1].strip('"')
+            raw = row if isinstance(row, bytes) else str(row).encode("ascii", "replace")
+            if b"\\draft" in raw.lower():
+                # Preserve Gmail's modified UTF-7 bytes for localized folder names.
+                name = raw.rsplit(b" ", 1)[-1].strip(b'"')
                 if name:
                     return name
     return "[Gmail]/Drafts"
