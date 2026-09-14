@@ -1,13 +1,10 @@
 name: Forward Zakupay Gmail messages
-# Validate Russian Gmail Drafts mailbox.
+# Production hourly Gmail review-card generation.
 
 on:
   workflow_dispatch:
   schedule:
     - cron: "7 * * * *"
-  push:
-    branches: [main]
-    paths: [".github/workflows/gmail-imap-hourly.yml"]
 
 concurrency:
   group: zakupay-gmail-hourly
@@ -36,5 +33,5 @@ jobs:
           ZAKUPAY_EMAIL_WEBHOOK_SECRET: ${{ secrets.ZAKUPAY_EMAIL_WEBHOOK_SECRET }}
           WEBHOOK_URL: "https://zakupay-mvp.onrender.com/automation/email/ingest"
           START_AFTER: "1789333200"
-          GMAIL_MAX_MESSAGES_PER_RUN: "1"
+          GMAIL_MAX_MESSAGES_PER_RUN: "25"
         run: python gmail_imap_forwarder.py
