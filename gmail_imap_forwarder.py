@@ -148,9 +148,26 @@ def main() -> int:
                     if isinstance(response_payload, dict)
                     else None
                 )
+                response_status = (
+                    response_payload.get("status")
+                    if isinstance(response_payload, dict)
+                    else None
+                )
+                duplicate = (
+                    response_payload.get("duplicate")
+                    if isinstance(response_payload, dict)
+                    else None
+                )
+                job_id = (
+                    response_payload.get("job_id")
+                    if isinstance(response_payload, dict)
+                    else None
+                )
                 print(
-                    f"Webhook failed for UID {uid.decode()}: "
-                    f"HTTP {response_code}; detail={detail or 'unknown'}",
+                    f"Webhook not accepted for UID {uid.decode()}: "
+                    f"HTTP {response_code}; status={response_status}; "
+                    f"duplicate={duplicate}; job={job_id}; "
+                    f"detail={detail or 'none'}",
                     file=sys.stderr,
                 )
 
