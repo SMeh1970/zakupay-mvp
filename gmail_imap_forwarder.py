@@ -90,16 +90,25 @@ def accepted_result(status_code: int, payload: dict | None) -> bool:
 
 
 def _drafts_mailbox(mailbox: imaplib.IMAP4_SSL) -> str | bytes:
+    listings = []
     status, rows = mailbox.list()
     if status == "OK":
-        for row in rows or []:
-            raw = row if isinstance(row, bytes) else str(row).encode("ascii", "replace")
-            if b"\\draft" in raw.lower():
-                # Preserve Gmail's modified UTF-7 bytes for localized folder names.
-                name = raw.rsplit(b" ", 1)[-1].strip(b'"')
-                if name:
-                    return name
-    return "[Gmail]/Drafts"
+        listings.extend(rows or [])
+    try:
+        status, rows = mailbox.xatom("XLIST", '""', '"*"')
+        if status == "OK":
+            listings.extend(rows or [])
+    except imaplib.IMAP4.error:
+        pass
+    for row in listings:
+        raw = row if isinstance(row, bytes) else str(row).encode("ascii", "replace")
+        flags = raw.split(b")", 1)[0].lower()
+        if b"\\draft" in flags:
+            # Preserve Gmail's modified UTF-7 bytes for localized folder names.
+            name = raw.rsplit(b" ", 1)[-1].strip(b'"')
+            if name:
+                return name
+    raise RuntimeError(f"Gmail Drafts mailbox was not found; LIST rows={listings!r}")
 
 
 def create_review_draft(mailbox: imaplib.IMAP4_SSL, payload: dict) -> None:
