@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import email
 import imaplib
+import json
 import os
 import sys
 import urllib.error
@@ -55,7 +56,7 @@ def message_is_new_enough(raw_message: bytes) -> bool:
         return True
 
 
-def post_message(raw_message: bytes) -> int:
+def post_message(raw_message: bytes) -> tuple[int, dict | None]:
     request = urllib.request.Request(
         WEBHOOK_URL,
         data=raw_message,
@@ -67,9 +68,22 @@ def post_message(raw_message: bytes) -> int:
     )
     try:
         with urllib.request.urlopen(request, timeout=90) as response:
-            return response.status
+            status = response.status
+            body = response.read()
     except urllib.error.HTTPError as exc:
-        return exc.code
+        status = exc.code
+        body = exc.read()
+    try:
+        payload = json.loads(body.decode("utf-8", "replace"))
+    except (ValueError, UnicodeDecodeError):
+        payload = None
+    return status, payload
+
+
+def accepted_result(status_code: int, payload: dict | None) -> bool:
+    if not 200 <= status_code < 300 or not isinstance(payload, dict):
+        return False
+    return payload.get("status") in {"ready_for_review", "needs_review"}
 
 
 def main() -> int:
@@ -92,7 +106,7 @@ def main() -> int:
             raise RuntimeError("Gmail search failed")
 
         uids = data[0].split() if data and data[0] else []
-        max_per_run = int(os.getenv("GMAIL_MAX_MESSAGES_PER_RUN", "50"))
+        max_per_run = int(os.getenv("GMAIL_MAX_MESSAGES_PER_RUN", "5"))
         uids = uids[:max_per_run]
         for uid in uids:
             status, parts = mailbox.uid("fetch", uid, "(RFC822)")
@@ -111,8 +125,8 @@ def main() -> int:
             if not raw_message or not message_is_new_enough(raw_message):
                 continue
 
-            response_code = post_message(raw_message)
-            if 200 <= response_code < 300:
+            response_code, response_payload = post_message(raw_message)
+            if accepted_result(response_code, response_payload):
                 mailbox.uid(
                     "store",
                     uid,
@@ -120,10 +134,23 @@ def main() -> int:
                     f'("{PROCESSED_LABEL}")',
                 )
                 forwarded += 1
+                print(
+                    "Accepted "
+                    f"UID={uid.decode()} "
+                    f"order={response_payload.get('result', {}).get('order_id')} "
+                    f"job={response_payload.get('job_id')} "
+                    f"status={response_payload.get('status')}"
+                )
             else:
                 failed += 1
+                detail = (
+                    response_payload.get("detail")
+                    if isinstance(response_payload, dict)
+                    else None
+                )
                 print(
-                    f"Webhook failed for UID {uid.decode()}: HTTP {response_code}",
+                    f"Webhook failed for UID {uid.decode()}: "
+                    f"HTTP {response_code}; detail={detail or 'unknown'}",
                     file=sys.stderr,
                 )
 
