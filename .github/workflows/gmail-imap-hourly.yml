@@ -1,5 +1,5 @@
 name: Forward Zakupay Gmail messages
-# Validate Gmail XLIST Drafts discovery.
+# Validate Russian Gmail Drafts mailbox.
 
 on:
   workflow_dispatch:
