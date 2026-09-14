@@ -92,6 +92,8 @@ def main() -> int:
             raise RuntimeError("Gmail search failed")
 
         uids = data[0].split() if data and data[0] else []
+        max_per_run = int(os.getenv("GMAIL_MAX_MESSAGES_PER_RUN", "50"))
+        uids = uids[:max_per_run]
         for uid in uids:
             status, parts = mailbox.uid("fetch", uid, "(RFC822)")
             if status != "OK" or not parts:
