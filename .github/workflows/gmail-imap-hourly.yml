@@ -1,15 +1,7 @@
 name: Forward Zakupay Gmail messages
-# Verification uses only zakupay@sel-be.ru requests.
 
 on:
-  schedule:
-    - cron: "0 * * * *"
   workflow_dispatch:
-  push:
-    branches:
-      - main
-    paths:
-      - ".github/workflows/gmail-imap-hourly.yml"
 
 permissions:
   contents: read
@@ -19,21 +11,20 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - name: Check out automation branch
+      - name: Check out reviewed code
         uses: actions/checkout@v4
-        with:
-          ref: ai-analysis-v1
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
-      - name: Forward new Zakupay messages
+      - name: Forward verified Zakupay messages
         env:
           GMAIL_IMAP_EMAIL: "1043324@gmail.com"
           GMAIL_IMAP_APP_PASSWORD: ${{ secrets.GMAIL_IMAP_APP_PASSWORD }}
           ZAKUPAY_EMAIL_WEBHOOK_SECRET: ${{ secrets.ZAKUPAY_EMAIL_WEBHOOK_SECRET }}
           WEBHOOK_URL: "https://zakupay-mvp.onrender.com/automation/email/ingest"
           START_AFTER: "1789333200"
+          GMAIL_MAX_MESSAGES_PER_RUN: "5"
         run: python gmail_imap_forwarder.py
