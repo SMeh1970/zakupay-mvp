@@ -117,14 +117,17 @@ def create_review_draft(mailbox: imaplib.IMAP4_SSL, payload: dict) -> None:
             subtype="vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             filename=str(payload.get("attachment_name") or "invoice.xlsx"),
         )
-    status, _ = mailbox.append(
-        _drafts_mailbox(mailbox),
-        "(\\Draft)",
+    drafts_mailbox = _drafts_mailbox(mailbox)
+    status, detail = mailbox.append(
+        drafts_mailbox,
+        None,
         None,
         message.as_bytes(),
     )
     if status != "OK":
-        raise RuntimeError("Gmail did not save the review draft")
+        raise RuntimeError(
+            f"Gmail did not save the review draft in {drafts_mailbox}: {detail!r}"
+        )
 
 def main() -> int:
     require_config()
