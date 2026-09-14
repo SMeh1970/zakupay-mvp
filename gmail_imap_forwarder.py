@@ -144,7 +144,7 @@ def main() -> int:
             else:
                 failed += 1
                 detail = (
-                    response_payload.get("detail")
+                    response_payload.get("detail") or response_payload.get("error")
                     if isinstance(response_payload, dict)
                     else None
                 )
@@ -167,7 +167,7 @@ def main() -> int:
                     f"Webhook not accepted for UID {uid.decode()}: "
                     f"HTTP {response_code}; status={response_status}; "
                     f"duplicate={duplicate}; job={job_id}; "
-                    f"detail={detail or 'none'}",
+                    f"reason={detail or 'none'}",
                     file=sys.stderr,
                 )
 
