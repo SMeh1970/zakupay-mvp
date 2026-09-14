@@ -205,7 +205,13 @@ def process_email(raw_email: bytes, fetch_order_by_id) -> dict:
         ).fetchone()
         if existing:
             result = json.loads(existing["result_json"]) if existing["result_json"] else None
-            return {"duplicate": True, "job_id": existing["id"], "status": existing["status"], "result": result}
+            return {
+                "duplicate": True,
+                "job_id": existing["id"],
+                "status": existing["status"],
+                "error": existing["error"],
+                "result": result,
+            }
         last_number = conn.execute(
             "SELECT MAX(invoice_number) FROM automation_jobs"
         ).fetchone()[0]
