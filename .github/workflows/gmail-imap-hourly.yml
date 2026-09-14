@@ -1,5 +1,5 @@
 name: Forward Zakupay Gmail messages
-# Processes at most 50 unlabelled messages per run.
+# Verification run processes one unlabelled message.
 
 on:
   schedule:
