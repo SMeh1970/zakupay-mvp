@@ -1,5 +1,5 @@
 name: Forward Zakupay Gmail messages
-# Production hourly ingestion; business failures remain unlabeled for retry.
+# One-message Gmail draft append validation.
 
 on:
   workflow_dispatch:
