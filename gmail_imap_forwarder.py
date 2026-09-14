@@ -108,6 +108,12 @@ def _drafts_mailbox(mailbox: imaplib.IMAP4_SSL) -> str | bytes:
             name = raw.rsplit(b" ", 1)[-1].strip(b'"')
             if name:
                 return name
+    # Russian Gmail locale: "Черновики" in IMAP modified UTF-7.
+    russian_drafts = b"&BCcENQRABD0EPgQyBDgEOgQ4-"
+    for row in listings:
+        raw = row if isinstance(row, bytes) else str(row).encode("ascii", "replace")
+        if russian_drafts in raw:
+            return raw.rsplit(b" ", 1)[-1].strip(b'"')
     raise RuntimeError(f"Gmail Drafts mailbox was not found; LIST rows={listings!r}")
 
 
