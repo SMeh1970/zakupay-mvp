@@ -1,0 +1,31 @@
+name: Forward Zakupay Gmail messages
+
+on:
+  schedule:
+    - cron: "0 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  forward:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Forward new Zakupay messages
+        env:
+          GMAIL_IMAP_EMAIL: "1043324@gmail.com"
+          GMAIL_IMAP_APP_PASSWORD: ${{ secrets.GMAIL_IMAP_APP_PASSWORD }}
+          ZAKUPAY_EMAIL_WEBHOOK_SECRET: ${{ secrets.ZAKUPAY_EMAIL_WEBHOOK_SECRET }}
+          WEBHOOK_URL: "https://zakupay-mvp.onrender.com/automation/email/ingest"
+          START_AFTER: "1789333200"
+        run: python gmail_imap_forwarder.py
