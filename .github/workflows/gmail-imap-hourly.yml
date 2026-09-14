@@ -2,6 +2,9 @@ name: Forward Zakupay Gmail messages
 
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
+    paths: [".github/workflows/gmail-imap-hourly.yml"]
 
 permissions:
   contents: read
