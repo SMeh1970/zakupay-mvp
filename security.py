@@ -391,7 +391,9 @@ def install_security(app: FastAPI) -> None:
     async def private_routes(request: Request, call_next):
         path = request.url.path
         browser_protected = path == "/dashboard" or path.startswith("/dashboard/")
-        api_protected = path.startswith(("/analysis/", "/zakupay/")) or path in {
+        api_protected = path.startswith(("/analysis/", "/zakupay/")) or (
+            path.startswith("/automation/") and path != "/automation/email/ingest"
+        ) or path in {
             "/orders",
             "/order",
         }

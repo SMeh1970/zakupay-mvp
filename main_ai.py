@@ -10,6 +10,7 @@ from main import (
     app, api_filter_dict, compact_order, esc, fetch_all_orders, fetch_order_by_id, filter_orders,
     has_my_offer, max_competitors, zakupay_headers, ZAKUPAY_BASE_URL,
 )
+from automation_pipeline import install_automation_pipeline
 import ai_panel
 from ai_panel_v2 import install_ai_panel_v2
 from analysis_detail import install_analysis_detail
@@ -217,6 +218,7 @@ install_offer_panel(
     esc=esc,
     fetch_order_by_id=fetch_order_by_id,
 )
+install_automation_pipeline(app, fetch_order_by_id=fetch_order_by_id)
 install_abacus_mcp(
     app,
     fetch_all_orders=fetch_all_orders,
