@@ -1,5 +1,5 @@
 name: Forward Zakupay Gmail messages
-# Safe response-status diagnostic.
+# Failed-job reason diagnostic.
 
 on:
   workflow_dispatch:
