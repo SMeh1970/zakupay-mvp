@@ -1,5 +1,5 @@
 name: Forward Zakupay Gmail messages
-# One-message Gmail draft append validation.
+# Validate localized Gmail Drafts mailbox.
 
 on:
   workflow_dispatch:
