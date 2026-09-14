@@ -1,5 +1,5 @@
 name: Forward Zakupay Gmail messages
-# Failed-job reason diagnostic.
+# Validate email-body order parsing.
 
 on:
   workflow_dispatch:
