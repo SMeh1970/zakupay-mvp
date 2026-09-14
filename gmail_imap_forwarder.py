@@ -11,6 +11,7 @@ Optional:
 
 from __future__ import annotations
 
+import base64
 import email
 import imaplib
 import json
@@ -18,6 +19,7 @@ import os
 import sys
 import urllib.error
 import urllib.request
+from email.message import EmailMessage
 from email.policy import default
 from email.utils import parsedate_to_datetime
 
@@ -86,6 +88,44 @@ def accepted_result(status_code: int, payload: dict | None) -> bool:
     return payload.get("status") in {"ready_for_review", "needs_review"}
 
 
+
+def _drafts_mailbox(mailbox: imaplib.IMAP4_SSL) -> str:
+    status, rows = mailbox.list()
+    if status == "OK":
+        for row in rows or []:
+            decoded = row.decode("utf-8", "replace") if isinstance(row, bytes) else str(row)
+            if "\\Drafts" in decoded:
+                name = decoded.rsplit(" ", 1)[-1].strip('"')
+                if name:
+                    return name
+    return "[Gmail]/Drafts"
+
+
+def create_review_draft(mailbox: imaplib.IMAP4_SSL, payload: dict) -> None:
+    if not isinstance(payload, dict) or not payload.get("body"):
+        raise RuntimeError("Webhook did not return Gmail draft data")
+    message = EmailMessage()
+    message["From"] = GMAIL_EMAIL
+    message["To"] = str(payload.get("to") or GMAIL_EMAIL)
+    message["Subject"] = str(payload.get("subject") or "Проверка заявки Закупай")
+    message.set_content(str(payload["body"]))
+    attachment = payload.get("attachment_base64")
+    if attachment:
+        message.add_attachment(
+            base64.b64decode(attachment),
+            maintype="application",
+            subtype="vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            filename=str(payload.get("attachment_name") or "invoice.xlsx"),
+        )
+    status, _ = mailbox.append(
+        _drafts_mailbox(mailbox),
+        "(\\Draft)",
+        None,
+        message.as_bytes(),
+    )
+    if status != "OK":
+        raise RuntimeError("Gmail did not save the review draft")
+
 def main() -> int:
     require_config()
     forwarded = 0
@@ -127,6 +167,16 @@ def main() -> int:
 
             response_code, response_payload = post_message(raw_message)
             if accepted_result(response_code, response_payload):
+                try:
+                    create_review_draft(mailbox, response_payload.get("gmail_draft"))
+                except Exception as exc:
+                    failed += 1
+                    print(
+                        f"Could not create Gmail draft for UID {uid.decode()}: "
+                        f"{type(exc).__name__}: {exc}",
+                        file=sys.stderr,
+                    )
+                    continue
                 mailbox.uid(
                     "store",
                     uid,
