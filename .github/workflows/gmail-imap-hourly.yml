@@ -1,11 +1,14 @@
 name: Forward Zakupay Gmail messages
-# Validate email-body order parsing.
+# Production hourly ingestion; business failures remain unlabeled for retry.
 
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
-    paths: [".github/workflows/gmail-imap-hourly.yml"]
+  schedule:
+    - cron: "7 * * * *"
+
+concurrency:
+  group: zakupay-gmail-hourly
+  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -30,5 +33,5 @@ jobs:
           ZAKUPAY_EMAIL_WEBHOOK_SECRET: ${{ secrets.ZAKUPAY_EMAIL_WEBHOOK_SECRET }}
           WEBHOOK_URL: "https://zakupay-mvp.onrender.com/automation/email/ingest"
           START_AFTER: "1789333200"
-          GMAIL_MAX_MESSAGES_PER_RUN: "5"
+          GMAIL_MAX_MESSAGES_PER_RUN: "25"
         run: python gmail_imap_forwarder.py
