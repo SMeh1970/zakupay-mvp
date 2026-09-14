@@ -121,7 +121,7 @@ def create_review_draft(mailbox: imaplib.IMAP4_SSL, payload: dict) -> None:
     drafts_mailbox = _drafts_mailbox(mailbox)
     status, detail = mailbox.append(
         drafts_mailbox,
-        None,
+        "(\\Draft)",
         None,
         message.as_bytes(),
     )
