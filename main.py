@@ -82,14 +82,55 @@ def request_orders_page(page=1, page_size=100, api_filters=None):
 
 
 def fetch_order_by_id(order_id, force=False):
-    """Return one order, preferring the API's resource endpoint over a list scan."""
+    """Return one order using Zakupay's documented ``ids`` collection filter."""
     order_id = int(order_id)
-    url = f"{ZAKUPAY_BASE_URL}/api/v1/orders/{order_id}"
+    list_url = f"{ZAKUPAY_BASE_URL}/api/v1/orders"
     common = {
         "format": "json", "isoDate": "true", "ignoreKeywordFilter": "true",
         "showNotInteresting": "true", "showAllRegions": "true",
         "allRegions": "true", "showAllCategories": "true", "allCategories": "true",
     }
+
+    # Zakupay support confirmed on 2026-09-15 that a concrete application is
+    # fetched through GET /api/v1/orders?ids=<id>; its lines are returned in
+    # orders[0].orderItems.  The older senderId/orderId/zakupayIds probes do not
+    # filter by the application id and must not be used for this lookup.
+    try:
+        response = requests.get(
+            list_url,
+            headers=zakupay_headers(),
+            params=dict(common, ids=order_id),
+            timeout=30,
+        )
+        if response.status_code == 401:
+            raise HTTPException(status_code=401, detail="Закупай отклонил токен")
+        if response.status_code == 403:
+            raise HTTPException(status_code=403, detail="Недостаточно прав для получения заявки")
+        if response.ok:
+            data = response.json()
+            candidates = data.get("orders") if isinstance(data, dict) else data
+            if not isinstance(candidates, list):
+                candidates = []
+            order = next(
+                (o for o in candidates if isinstance(o, dict) and int(o.get("id") or 0) == order_id),
+                None,
+            )
+            logger.warning(
+                "order lookup id=%s method=ids status=%s candidates=%s found=%s items=%s",
+                order_id,
+                response.status_code,
+                len(candidates),
+                bool(order),
+                len(order.get("orderItems") or []) if order else 0,
+            )
+            if order:
+                return order
+        else:
+            logger.warning("order lookup id=%s method=ids status=%s", order_id, response.status_code)
+    except HTTPException:
+        raise
+    except (requests.RequestException, ValueError, TypeError) as exc:
+        logger.warning("order lookup id=%s method=ids failed=%s", order_id, type(exc).__name__)
 
     # This is the endpoint used by Zakupay's own supplier registry page.
     # It often contains orders omitted by the public collection API.
@@ -108,37 +149,6 @@ def fetch_order_by_id(order_id, force=False):
             return order
     except (requests.RequestException, ValueError, TypeError) as exc:
         logger.warning("order lookup id=%s method=registry failed=%s", order_id, type(exc).__name__)
-
-    # Cynteka installations differ: some expose a resource URL, while others
-    # only allow lookup through the collection filters.
-    attempts = [(url, common)]
-    list_url = f"{ZAKUPAY_BASE_URL}/api/v1/orders"
-    for key in ("senderId", "orderId", "zakupayIds"):
-        attempts.append((list_url, dict(common, **{key: order_id}, count=100, totalCount="true")))
-
-    for attempt_url, params in attempts:
-        try:
-            response = requests.get(attempt_url, headers=zakupay_headers(), params=params, timeout=8)
-            if not response.ok:
-                logger.warning("order lookup id=%s method=%s status=%s", order_id, next((k for k in ("senderId", "orderId", "zakupayIds") if k in params), "path"), response.status_code)
-                continue
-            data = response.json()
-            candidates = []
-            if isinstance(data, list):
-                candidates = data
-            elif isinstance(data, dict):
-                if isinstance(data.get("orders"), list):
-                    candidates = data["orders"]
-                elif isinstance(data.get("order"), dict):
-                    candidates = [data["order"]]
-                elif data.get("id") is not None:
-                    candidates = [data]
-            order = next((o for o in candidates if isinstance(o, dict) and int(o.get("id") or 0) == order_id), None)
-            logger.warning("order lookup id=%s method=%s status=%s candidates=%s found=%s", order_id, next((k for k in ("senderId", "orderId", "zakupayIds") if k in params), "path"), response.status_code, len(candidates), bool(order))
-            if order:
-                return order
-        except (requests.RequestException, ValueError, TypeError) as exc:
-            logger.warning("order lookup id=%s failed=%s", order_id, type(exc).__name__)
 
     orders = fetch_all_orders(force=force)
     return next((o for o in orders if int(o.get("id") or 0) == order_id), None)
