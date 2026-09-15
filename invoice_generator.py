@@ -42,9 +42,10 @@ def _customer_text(customer: dict | None) -> str:
 
 
 def build_invoice_xlsx(draft: dict) -> bytes:
-    rows = draft.get("items") or []
-    if not rows or any(row.get("decision") != "auto_ready" for row in rows):
-        raise ValueError("Счёт нельзя сформировать: не все позиции прошли автоматическую проверку")
+    all_rows = draft.get("items") or []
+    rows = [row for row in all_rows if row.get("decision") == "auto_ready"]
+    if not rows:
+        raise ValueError("Счёт нельзя сформировать: нет ни одной подтверждённой позиции")
 
     wb = Workbook()
     ws = wb.active
@@ -126,6 +127,10 @@ def build_invoice_xlsx(draft: dict) -> bytes:
 
     ws.merge_cells(start_row=footer + 1, start_column=1, end_row=footer + 1, end_column=6)
     ws.cell(footer + 1, 1, "Оплата: 100% предоплата. Доставка включена в стоимость.")
+    excluded = len(all_rows) - len(rows)
+    if excluded:
+        ws.merge_cells(start_row=footer + 2, start_column=1, end_row=footer + 2, end_column=6)
+        ws.cell(footer + 2, 1, f"Частичный счёт: не включено неподтверждённых позиций — {excluded}.")
     ws.merge_cells(start_row=footer + 3, start_column=1, end_row=footer + 3, end_column=3)
     ws.cell(footer + 3, 1, f"Руководитель: __________________ / {SELLER['director']} /")
     ws.freeze_panes = "A12"

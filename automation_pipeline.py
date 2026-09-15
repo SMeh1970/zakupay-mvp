@@ -12,6 +12,8 @@ import hashlib
 import html
 import json
 import os
+import math
+import re
 import sqlite3
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -23,7 +25,7 @@ from fastapi import Header, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 
 from supplier_adapters import VseinstrumentiAdapter
-from vi_order_match import _label, _score_details
+from vi_order_match import _identifiers, _label, _measurements, _norm, _score_details
 from zakupay_email import parse_zakupay_email
 from invoice_generator import build_invoice_xlsx
 
@@ -93,6 +95,80 @@ def _unit_name(item):
     return str(unit)
 
 
+def _search_variants(requested: str) -> list[str]:
+    """Search exact identifiers first, then progressively broader text variants."""
+    variants = []
+    for identifier in sorted(_identifiers(requested), key=len, reverse=True):
+        variants.append(identifier)
+    cleaned = re.sub(r"https?://\S+", " ", requested, flags=re.I)
+    cleaned = re.sub(r"\b(?:комментарий|код товара)\s*:\s*", " ", cleaned, flags=re.I)
+    cleaned = " ".join(cleaned.split())
+    key_tokens = [
+        token for token in _norm(cleaned).split()
+        if len(token) >= 2 and token not in {
+            "для", "шт", "штук", "упаковка", "комплект", "набор", "требуется",
+            "эквивалент", "аналог", "цвет", "материал", "товар", "изделие",
+        }
+    ]
+    if key_tokens:
+        variants.append(" ".join(key_tokens[:10]))
+    # Common catalogue names differ between the request and VI. These variants
+    # widen retrieval only; hard dimensions/models are still checked below.
+    synonym_groups = (
+        ("коронка", "пила кольцевая"),
+        ("щетка чашка", "корщетка чашечная"),
+        ("саморез", "винт самонарезающий"),
+        ("стекло защитное", "светофильтр"),
+        ("держатель", "адаптер"),
+    )
+    normalized = _norm(cleaned)
+    for left, right in synonym_groups:
+        if left in normalized:
+            variants.append(normalized.replace(left, right))
+        if right in normalized:
+            variants.append(normalized.replace(right, left))
+    variants.extend([cleaned, requested])
+    return list(dict.fromkeys(value for value in variants if value.strip()))
+
+
+def _search_candidates(vi, requested: str) -> list:
+    quotes = []
+    seen = set()
+    for query in _search_variants(requested):
+        for quote in vi.search(query, limit=VI_CANDIDATE_LIMIT):
+            key = quote.sku or (quote.article, quote.name)
+            if key in seen:
+                continue
+            seen.add(key)
+            quotes.append(quote)
+    return quotes
+
+
+def _pack_size(name: str, supplier_unit: str | None, requested_unit: str) -> int:
+    """Return pieces in one supplier sales unit when that can be read safely."""
+    if "упак" in _norm(requested_unit) or "комплект" in _norm(requested_unit):
+        return 1
+    text = f"{name or ''} {supplier_unit or ''}".lower().replace("штук", "шт")
+    matches = re.findall(r"(?<![xх×*])\b(\d{1,6})\s*шт\.?\b", text)
+    values = [int(value) for value in matches if int(value) > 1]
+    return max(values) if values else 1
+
+
+def _hard_conflicts(requested: str, selected: dict) -> list[str]:
+    conflicts = []
+    candidate_text = " ".join(str(selected.get(key) or "") for key in ("name", "article", "sku"))
+    requested_ids = _identifiers(requested)
+    candidate_ids = _identifiers(candidate_text)
+    if requested_ids and candidate_ids and not (requested_ids & candidate_ids):
+        conflicts.append("не совпадает модель/артикул")
+    requested_measures = _measurements(requested)
+    candidate_measures = _measurements(selected.get("name") or "")
+    if requested_measures and candidate_measures and not requested_measures.issubset(candidate_measures):
+        missing = ", ".join(sorted(requested_measures - candidate_measures))
+        conflicts.append(f"не совпадают размеры: {missing}")
+    return conflicts
+
+
 def build_vi_draft(order: dict, invoice_number: int | None = None) -> dict:
     """Build a conservative, reviewable offer draft from VI search results."""
     vi = VseinstrumentiAdapter()
@@ -101,7 +177,7 @@ def build_vi_draft(order: dict, invoice_number: int | None = None) -> dict:
 
     def match_item(position, item):
         requested = str(item.get("goodName") or "").strip()
-        quotes = vi.search(requested, limit=VI_CANDIDATE_LIMIT)
+        quotes = _search_candidates(vi, requested)
         candidates = []
         for quote in quotes:
             if quote.error:
@@ -124,15 +200,38 @@ def build_vi_draft(order: dict, invoice_number: int | None = None) -> dict:
         score = (best or {}).get("match_score") or 0
         requested_qty = float(item.get("count") or 0)
         stock = (best or {}).get("stock")
-        enough_stock = stock is not None and stock >= requested_qty
-        if score >= AUTO_MATCH_THRESHOLD and enough_stock and best.get("price") is not None:
+        requested_unit = _unit_name(item)
+        pack_size = _pack_size((best or {}).get("name") or "", (best or {}).get("unit"), requested_unit)
+        purchase_units = math.ceil(requested_qty / pack_size) if requested_qty else 0
+        enough_stock = stock is not None and stock >= purchase_units
+        courier_date = (best or {}).get("courier_date")
+        pickup_date = (best or {}).get("pickup_date")
+        dated_availability = stock is None and bool(courier_date or pickup_date)
+        conflicts = _hard_conflicts(requested, best or {}) if best else []
+        exact_identifier = bool(
+            _identifiers(requested)
+            & _identifiers(" ".join(str((best or {}).get(k) or "") for k in ("name", "article", "sku")))
+        )
+        match_status = "точное соответствие" if not conflicts and (exact_identifier or score >= AUTO_MATCH_THRESHOLD) else "замена"
+        if conflicts:
+            match_status = "сомнительное соответствие"
+        availability_status = (
+            "количество подтверждено" if enough_stock else
+            "доступно к заказу, количество не подтверждено" if courier_date else
+            "доступно к самовывозу, количество не подтверждено" if pickup_date else
+            "подтвержденного количества недостаточно" if stock is not None else
+            "наличие не подтверждено"
+        )
+        can_auto = not conflicts and (exact_identifier or score >= AUTO_MATCH_THRESHOLD)
+        if can_auto and (enough_stock or dated_availability) and best.get("price") is not None:
             decision = "auto_ready"
         elif score >= REVIEW_MATCH_THRESHOLD:
             decision = "review"
         else:
             decision = "manual"
         purchase_price = (best or {}).get("price")
-        offer_price = round(purchase_price * (1 + DEFAULT_MARKUP), 2) if purchase_price is not None else None
+        unit_purchase_price = purchase_price / pack_size if purchase_price is not None else None
+        offer_price = round(unit_purchase_price * (1 + DEFAULT_MARKUP), 2) if unit_purchase_price is not None else None
         return {
             "position": position,
             "order_item_id": item.get("id"),
@@ -144,6 +243,13 @@ def build_vi_draft(order: dict, invoice_number: int | None = None) -> dict:
             "purchase_price": purchase_price,
             "proposed_unit_price": offer_price,
             "stock_confirmed": enough_stock,
+            "availability_status": availability_status,
+            "courier_date": courier_date,
+            "pickup_date": pickup_date,
+            "pack_size": pack_size,
+            "purchase_units": purchase_units,
+            "match_status": match_status,
+            "replacement_details": conflicts,
             "candidates": candidates[:3],
         }
 
@@ -174,7 +280,7 @@ def build_vi_draft(order: dict, invoice_number: int | None = None) -> dict:
                 }
     rows = [rows_by_position[position] for position in sorted(rows_by_position)]
     ready = [row for row in rows if row["decision"] == "auto_ready"]
-    status = "ready_for_review" if len(ready) == len(rows) and rows else "needs_review"
+    status = "ready_for_review" if ready else "needs_review"
     return {
         "order_id": order.get("id"),
         "order_name": order.get("name"),
@@ -192,6 +298,8 @@ def build_vi_draft(order: dict, invoice_number: int | None = None) -> dict:
             "auto_ready": len(ready),
             "review": sum(row["decision"] == "review" for row in rows),
             "manual": sum(row["decision"] == "manual" for row in rows),
+            "included_in_invoice": len(ready),
+            "excluded_from_invoice": len(rows) - len(ready),
         },
         "items": rows,
     }
@@ -212,22 +320,36 @@ def _gmail_draft_payload(result: dict, job_id: int) -> dict:
     ]
     for row in result.get("items") or []:
         selected = row.get("selected") or {}
+        dates = []
+        if row.get("courier_date"):
+            dates.append(f"доставка: {row.get('courier_date')}")
+        if row.get("pickup_date"):
+            dates.append(f"самовывоз: {row.get('pickup_date')}")
         lines.append(
             f"{row.get('position')}. {row.get('requested_name')} — "
             f"{row.get('quantity')} {row.get('unit')}; "
             f"подбор: {selected.get('name') or 'не найден'}; "
-            f"цена продажи: {row.get('proposed_unit_price') or '—'} руб.; "
-            f"решение: {row.get('decision')}"
+            f"статус подбора: {row.get('match_status') or 'не определён'}; "
+            f"замена: {', '.join(row.get('replacement_details') or []) or 'нет'}; "
+            f"наличие: {row.get('availability_status') or 'не подтверждено'}; "
+            f"к покупке: {row.get('purchase_units') or '—'} ед. ВИ по {row.get('pack_size') or 1} шт.; "
+            f"{'; '.join(dates) or 'дата доставки не передана'}; "
+            f"цена продажи за единицу заявки: {row.get('proposed_unit_price') or '—'} руб.; "
+            f"в счёт: {'да' if row.get('decision') == 'auto_ready' else 'нет'}"
         )
     review_url = f"{APP_PUBLIC_URL}/dashboard/automation/jobs/{job_id}/review"
     lines.extend(["", "Проверить заявку и продолжить:", review_url])
     payload = {
         "to": os.getenv("GMAIL_REVIEW_RECIPIENT", "1043324@gmail.com"),
-        "subject": f"Проверка заявки Закупай № {result.get('order_id')} / счёт № {result.get('invoice_number')}",
+        "subject": (
+            f"Проверка заявки Закупай № {result.get('order_id')} / счёт № {result.get('invoice_number')}"
+            if result.get("invoice_number") is not None else
+            f"Проверка заявки Закупай № {result.get('order_id')} / счёт не сформирован"
+        ),
         "body": "\n".join(lines),
         "review_url": review_url,
     }
-    if result.get("status") == "ready_for_review":
+    if (result.get("summary") or {}).get("auto_ready", 0) > 0:
         invoice = build_invoice_xlsx(result)
         payload["attachment_name"] = (
             f"AVIOR_invoice_{result.get('invoice_number')}_order_{result.get('order_id')}.xlsx"
@@ -266,10 +388,7 @@ def process_email(raw_email: bytes, fetch_order_by_id) -> dict:
                 (now, job_id),
             )
         else:
-            last_number = conn.execute(
-                "SELECT MAX(invoice_number) FROM automation_jobs"
-            ).fetchone()[0]
-            invoice_number = max(INVOICE_NUMBER_START, (last_number or INVOICE_NUMBER_START - 1) + 1)
+            invoice_number = None
             cursor = conn.execute(
                 """INSERT INTO automation_jobs
                    (dedupe_key,message_id,order_id,event_type,subject,sender,status,created_at,updated_at,invoice_number)
@@ -296,6 +415,12 @@ def process_email(raw_email: bytes, fetch_order_by_id) -> dict:
         if not order:
             raise LookupError("Заявка не получена из API Закупай, состав отсутствует в письме")
         result = build_vi_draft(order, invoice_number=invoice_number)
+        if result["summary"]["auto_ready"] > 0 and invoice_number is None:
+            with _lock, _connect() as conn:
+                last_number = conn.execute("SELECT MAX(invoice_number) FROM automation_jobs").fetchone()[0]
+                invoice_number = max(INVOICE_NUMBER_START, (last_number or INVOICE_NUMBER_START - 1) + 1)
+                conn.execute("UPDATE automation_jobs SET invoice_number=? WHERE id=?", (invoice_number, job_id))
+            result["invoice_number"] = invoice_number
         status = result["status"]
         error = None
     except Exception as exc:
@@ -362,13 +487,17 @@ def install_automation_pipeline(app, fetch_order_by_id):
         table_rows = []
         for item in result.get("items") or []:
             selected = item.get("selected") or {}
-            table_rows.append(
+        table_rows.append(
                 "<tr>"
                 f"<td>{item.get('position')}</td>"
                 f"<td>{html.escape(str(item.get('requested_name') or ''))}</td>"
                 f"<td>{html.escape(str(selected.get('name') or 'Не найден'))}</td>"
                 f"<td>{html.escape(str(item.get('quantity') or ''))} {html.escape(str(item.get('unit') or ''))}</td>"
                 f"<td>{html.escape(str(item.get('proposed_unit_price') or '—'))}</td>"
+                f"<td>{html.escape(str(item.get('match_status') or '—'))}</td>"
+                f"<td>{html.escape(', '.join(item.get('replacement_details') or []) or 'нет')}</td>"
+                f"<td>{html.escape(str(item.get('availability_status') or '—'))}</td>"
+                f"<td>{html.escape(str(item.get('courier_date') or item.get('pickup_date') or '—'))}</td>"
                 f"<td>{html.escape(str(item.get('decision') or ''))}</td>"
                 "</tr>"
             )
@@ -388,7 +517,8 @@ def install_automation_pipeline(app, fetch_order_by_id):
                 "th{background:#eee}</style><body>"
                 f"<h1>Заявка Закупай № {row['order_id']}</h1>"
                 f"<p>Счёт № {row['invoice_number']} · статус: {html.escape(str(row['status']))}</p>"
-                "<table><tr><th>№</th><th>Заявка</th><th>Подбор ВИ</th><th>Количество</th><th>Цена</th><th>Решение</th></tr>"
+                "<table><tr><th>№</th><th>Заявка</th><th>Подбор ВИ</th><th>Количество</th><th>Цена</th>"
+                "<th>Статус подбора</th><th>Замена</th><th>Наличие</th><th>Срок</th><th>Решение</th></tr>"
                 + "".join(table_rows) + "</table>" + invoice_link + offer_link + "</body></html>"
             ),
             media_type="text/html",
