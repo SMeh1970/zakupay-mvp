@@ -16,7 +16,7 @@ permissions:
 jobs:
   forward:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 45
     steps:
       - name: Check out reviewed code
         uses: actions/checkout@v4
