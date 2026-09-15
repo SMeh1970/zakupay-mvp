@@ -43,7 +43,7 @@ def _customer_text(customer: dict | None) -> str:
 
 def build_invoice_xlsx(draft: dict) -> bytes:
     all_rows = draft.get("items") or []
-    rows = [row for row in all_rows if row.get("decision") == "auto_ready"]
+    rows = [row for row in all_rows if row.get("decision") in {"auto_ready", "approved"}]
     if not rows:
         raise ValueError("Счёт нельзя сформировать: нет ни одной подтверждённой позиции")
 

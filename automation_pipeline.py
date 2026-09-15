@@ -357,6 +357,26 @@ def _gmail_draft_payload(result: dict, job_id: int) -> dict:
         payload["attachment_base64"] = base64.b64encode(invoice).decode("ascii")
     return payload
 
+
+def _included(row: dict) -> bool:
+    return row.get("decision") in {"auto_ready", "approved"}
+
+
+def _refresh_summary(result: dict) -> None:
+    rows = result.get("items") or []
+    included = sum(_included(row) for row in rows)
+    result["status"] = "ready_for_review" if included else "needs_review"
+    result["summary"] = {
+        "positions": len(rows),
+        "auto_ready": sum(row.get("decision") == "auto_ready" for row in rows),
+        "approved": sum(row.get("decision") == "approved" for row in rows),
+        "review": sum(row.get("decision") == "review" for row in rows),
+        "manual": sum(row.get("decision") == "manual" for row in rows),
+        "excluded": sum(row.get("decision") == "excluded" for row in rows),
+        "included_in_invoice": included,
+        "excluded_from_invoice": len(rows) - included,
+    }
+
 def process_email(raw_email: bytes, fetch_order_by_id) -> dict:
     event = parse_zakupay_email(raw_email)
     if event.event_type != "new_order":
@@ -475,6 +495,54 @@ def install_automation_pipeline(app, fetch_order_by_id):
             ).fetchall()
         return {"count": len(rows), "jobs": [dict(row) for row in rows]}
 
+    @app.get("/dashboard/automation")
+    def automation_dashboard():
+        with _connect() as conn:
+            rows = conn.execute("SELECT * FROM automation_jobs ORDER BY id DESC LIMIT 300").fetchall()
+        cards = []
+        for row in rows:
+            result = json.loads(row["result_json"]) if row["result_json"] else {}
+            summary = result.get("summary") or {}
+            total = summary.get("positions", 0)
+            exact = summary.get("auto_ready", 0)
+            approved = summary.get("approved", 0)
+            review = summary.get("review", 0)
+            manual = summary.get("manual", 0)
+            excluded = summary.get("excluded", 0)
+            ready = summary.get("included_in_invoice", exact + approved)
+            parts = [f"{total} позиций", f"{exact} точных"]
+            if approved:
+                parts.append(f"{approved} подтверждено вручную")
+            if review:
+                parts.append(f"{review} замен/проверок")
+            if manual:
+                parts.append(f"{manual} не найдено")
+            if excluded:
+                parts.append(f"{excluded} исключено")
+            cls = "ok" if total and ready == total else "warn" if ready else "bad"
+            invoice = (
+                f"<a class='button secondary' href='/dashboard/automation/jobs/{row['id']}/invoice.xlsx'>Скачать счёт</a>"
+                if ready else ""
+            )
+            send = (
+                f"<a class='button send' href='/dashboard/order/{row['order_id']}/offer'>Отправить {ready} поз.</a>"
+                if ready else "<span class='muted'>Нет позиций для отправки</span>"
+            )
+            order_label = f" / {html.escape(str(result.get('order_name')))}" if result.get("order_name") else ""
+            cards.append(
+                f"<section class='card {cls}'><div><a class='title' href='/dashboard/automation/jobs/{row['id']}/review'>"
+                f"Заявка №{row['order_id']}{order_label}</a><div class='meta'>{html.escape(' · '.join(parts))}</div>"
+                f"<div class='meta'>Статус: {html.escape(str(row['status']))} · счёт: {row['invoice_number'] or '—'}</div></div>"
+                f"<div class='actions'><a class='button' href='/dashboard/automation/jobs/{row['id']}/review'>Открыть</a>{invoice}{send}</div></section>"
+            )
+        return Response(content=(
+            "<!doctype html><html lang='ru'><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
+            "<title>Обработка заявок</title><style>body{font-family:Arial;margin:0;background:#f4f6f8;color:#202124}main{max-width:1200px;margin:auto;padding:28px}"
+            ".card{display:flex;justify-content:space-between;gap:20px;background:#fff;border-left:7px solid #9aa0a6;border-radius:12px;padding:18px;margin:12px 0;box-shadow:0 2px 8px #0001}.card.ok{border-color:#188038}.card.warn{border-color:#f9ab00}.card.bad{border-color:#d93025}"
+            ".title{font-size:20px;font-weight:700;color:#174ea6;text-decoration:none}.meta{margin-top:8px;color:#5f6368}.actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.button{background:#1a73e8;color:#fff;padding:10px 13px;border-radius:7px;text-decoration:none;font-weight:700}.secondary{background:#5f6368}.send{background:#188038}.muted{color:#777}@media(max-width:760px){.card{display:block}.actions{margin-top:14px}}</style>"
+            "<main><h1>Заявки Закупай</h1><p>Подбор ВИ, частичные счета и контроль перед отправкой.</p>" + "".join(cards) + "</main></html>"
+        ), media_type="text/html")
+
     @app.get("/dashboard/automation/jobs/{job_id}/review")
     def automation_review(job_id: int):
         with _connect() as conn:
@@ -487,18 +555,28 @@ def install_automation_pipeline(app, fetch_order_by_id):
         table_rows = []
         for item in result.get("items") or []:
             selected = item.get("selected") or {}
-        table_rows.append(
+            candidates = item.get("candidates") or []
+            candidate_options = []
+            selected_sku = str(selected.get("sku") or selected.get("article") or selected.get("name") or "")
+            usable_candidates = [candidate for candidate in candidates if not candidate.get("error")]
+            for idx, candidate in enumerate(usable_candidates):
+                key = str(candidate.get("sku") or candidate.get("article") or candidate.get("name") or "")
+                label = f"{candidate.get('name')} — {candidate.get('price') or '—'} ₽"
+                candidate_options.append(f"<option value='{idx}' {'selected' if key == selected_sku else ''}>{html.escape(label)}</option>")
+            checked = "checked" if _included(item) else ""
+            table_rows.append(
                 "<tr>"
+                f"<td><input type='checkbox' name='include_{item.get('position')}' value='1' {checked}></td>"
                 f"<td>{item.get('position')}</td>"
                 f"<td>{html.escape(str(item.get('requested_name') or ''))}</td>"
-                f"<td>{html.escape(str(selected.get('name') or 'Не найден'))}</td>"
-                f"<td>{html.escape(str(item.get('quantity') or ''))} {html.escape(str(item.get('unit') or ''))}</td>"
-                f"<td>{html.escape(str(item.get('proposed_unit_price') or '—'))}</td>"
+                f"<td><select name='candidate_{item.get('position')}'>{''.join(candidate_options) or '<option>Не найден</option>'}</select></td>"
+                f"<td><input class='qty' name='quantity_{item.get('position')}' type='number' step='0.001' value='{html.escape(str(item.get('quantity') or ''))}'> {html.escape(str(item.get('unit') or ''))}</td>"
+                f"<td><input class='price' name='price_{item.get('position')}' type='number' step='0.01' value='{html.escape(str(item.get('proposed_unit_price') or ''))}'></td>"
                 f"<td>{html.escape(str(item.get('match_status') or '—'))}</td>"
                 f"<td>{html.escape(', '.join(item.get('replacement_details') or []) or 'нет')}</td>"
                 f"<td>{html.escape(str(item.get('availability_status') or '—'))}</td>"
                 f"<td>{html.escape(str(item.get('courier_date') or item.get('pickup_date') or '—'))}</td>"
-                f"<td>{html.escape(str(item.get('decision') or ''))}</td>"
+                f"<td>{'В счёте' if _included(item) else 'Исключено'}</td>"
                 "</tr>"
             )
         invoice_link = (
@@ -512,17 +590,47 @@ def install_automation_pipeline(app, fetch_order_by_id):
         return Response(
             content=(
                 "<!doctype html><html lang='ru'><meta charset='utf-8'>"
-                "<title>Проверка заявки</title><style>body{font-family:Arial;margin:24px}"
+                "<title>Проверка заявки</title><style>body{font-family:Arial;margin:24px;background:#f4f6f8}main{background:#fff;padding:20px;border-radius:12px;overflow:auto}"
                 "table{border-collapse:collapse;width:100%}td,th{border:1px solid #ccc;padding:8px}"
-                "th{background:#eee}</style><body>"
+                "th{background:#eee}select{min-width:280px}.qty{width:90px}.price{width:100px}button,.button{display:inline-block;padding:11px 16px;background:#1a73e8;color:white;border:0;border-radius:7px;text-decoration:none;font-weight:bold}.send{background:#188038}</style><body><main>"
+                "<p><a href='/dashboard/automation'>← Все заявки</a></p>"
                 f"<h1>Заявка Закупай № {row['order_id']}</h1>"
                 f"<p>Счёт № {row['invoice_number']} · статус: {html.escape(str(row['status']))}</p>"
-                "<table><tr><th>№</th><th>Заявка</th><th>Подбор ВИ</th><th>Количество</th><th>Цена</th>"
+                f"<form method='post' action='/dashboard/automation/jobs/{job_id}/review'><table><tr><th>Включить</th><th>№</th><th>Заявка</th><th>Подбор ВИ</th><th>Количество</th><th>Цена</th>"
                 "<th>Статус подбора</th><th>Замена</th><th>Наличие</th><th>Срок</th><th>Решение</th></tr>"
-                + "".join(table_rows) + "</table>" + invoice_link + offer_link + "</body></html>"
+                + "".join(table_rows) + "</table><p><button type='submit'>Сохранить и пересчитать счёт</button></p></form>" + invoice_link + offer_link + "</main></body></html>"
             ),
             media_type="text/html",
         )
+
+    @app.post("/dashboard/automation/jobs/{job_id}/review")
+    async def automation_review_save(job_id: int, request: Request):
+        form = await request.form()
+        with _lock, _connect() as conn:
+            row = conn.execute("SELECT * FROM automation_jobs WHERE id=?", (job_id,)).fetchone()
+            if not row or not row["result_json"]:
+                raise HTTPException(status_code=404, detail="Заявка не найдена")
+            result = json.loads(row["result_json"])
+            for item in result.get("items") or []:
+                pos = item.get("position")
+                raw_idx = str(form.get(f"candidate_{pos}") or "")
+                candidates = [x for x in (item.get("candidates") or []) if not x.get("error")]
+                if raw_idx.isdigit() and int(raw_idx) < len(candidates):
+                    item["selected"] = candidates[int(raw_idx)]
+                try:
+                    item["quantity"] = float(form.get(f"quantity_{pos}") or item.get("quantity") or 0)
+                    item["proposed_unit_price"] = float(form.get(f"price_{pos}") or 0)
+                except (TypeError, ValueError):
+                    raise HTTPException(status_code=400, detail=f"Некорректное количество или цена в позиции {pos}")
+                include = form.get(f"include_{pos}") == "1"
+                item["decision"] = "approved" if include and item.get("selected") and item.get("proposed_unit_price") is not None else "excluded"
+                item["operator_included"] = include
+            _refresh_summary(result)
+            conn.execute(
+                "UPDATE automation_jobs SET status=?, result_json=?, updated_at=? WHERE id=?",
+                (result["status"], json.dumps(result, ensure_ascii=False), datetime.now(timezone.utc).isoformat(), job_id),
+            )
+        return Response(status_code=303, headers={"Location": f"/dashboard/automation/jobs/{job_id}/review"})
 
     @app.get("/dashboard/automation/jobs/{job_id}/invoice.xlsx")
     def dashboard_automation_invoice(job_id: int):

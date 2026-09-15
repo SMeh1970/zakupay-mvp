@@ -161,6 +161,20 @@ class PipelineTests(unittest.TestCase):
         self.assertNotEqual(item["decision"], "auto_ready")
         self.assertIn("не совпадает модель/артикул", item["replacement_details"])
 
+    def test_operator_approved_row_is_included_in_partial_invoice(self):
+        draft = {
+            "invoice_number": 240,
+            "order_id": 1,
+            "items": [
+                {"decision": "approved", "requested_name": "Товар 1", "selected": {"name": "Аналог 1"}, "quantity": 2, "unit": "шт", "proposed_unit_price": 100},
+                {"decision": "excluded", "requested_name": "Товар 2", "selected": {"name": "Аналог 2"}, "quantity": 1, "unit": "шт", "proposed_unit_price": 200},
+            ],
+        }
+        workbook = load_workbook(BytesIO(pipeline.build_invoice_xlsx(draft)))
+        values = [cell.value for row in workbook.active.iter_rows() for cell in row]
+        self.assertIn("Аналог 1", values)
+        self.assertNotIn("Аналог 2", values)
+
 
 if __name__ == "__main__":
     unittest.main()
