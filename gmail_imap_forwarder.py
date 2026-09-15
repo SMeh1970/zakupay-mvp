@@ -145,17 +145,33 @@ def create_review_draft(mailbox: imaplib.IMAP4_SSL, payload: dict) -> None:
             f"Gmail did not save the review draft in {drafts_mailbox}: {detail!r}"
         )
 
-def main() -> int:
-    require_config()
-    forwarded = 0
-    failed = 0
-
-    with imaplib.IMAP4_SSL(GMAIL_HOST, 993) as mailbox:
+def open_mailbox() -> imaplib.IMAP4_SSL:
+    """Open a short-lived authenticated IMAP session."""
+    mailbox = imaplib.IMAP4_SSL(GMAIL_HOST, 993, timeout=30)
+    try:
         mailbox.login(GMAIL_EMAIL, GMAIL_APP_PASSWORD)
         status, _ = mailbox.select("INBOX")
         if status != "OK":
             raise RuntimeError("Could not select Gmail INBOX")
+        return mailbox
+    except Exception:
+        close_mailbox(mailbox)
+        raise
 
+
+def close_mailbox(mailbox: imaplib.IMAP4_SSL | None) -> None:
+    """Close IMAP without turning a server-side EOF into a job failure."""
+    if mailbox is None:
+        return
+    try:
+        mailbox.logout()
+    except (imaplib.IMAP4.abort, imaplib.IMAP4.error, OSError):
+        pass
+
+
+def pending_uids() -> list[bytes]:
+    mailbox = open_mailbox()
+    try:
         query = (
             f'from:zakupay@sel-be.ru after:{START_AFTER} '
             f'-label:{PROCESSED_LABEL}'
@@ -163,54 +179,61 @@ def main() -> int:
         status, data = mailbox.uid("search", None, "X-GM-RAW", f'"{query}"')
         if status != "OK":
             raise RuntimeError("Gmail search failed")
-
         uids = data[0].split() if data and data[0] else []
         max_per_run = int(os.getenv("GMAIL_MAX_MESSAGES_PER_RUN", "5"))
-        uids = uids[:max_per_run]
-        for uid in uids:
-            status, parts = mailbox.uid("fetch", uid, "(RFC822)")
-            if status != "OK" or not parts:
-                failed += 1
-                continue
+        return uids[:max_per_run]
+    finally:
+        close_mailbox(mailbox)
 
-            raw_message = next(
-                (
-                    part[1]
-                    for part in parts
-                    if isinstance(part, tuple) and isinstance(part[1], bytes)
-                ),
-                None,
-            )
+
+def fetch_raw_message(uid: bytes) -> bytes | None:
+    mailbox = open_mailbox()
+    try:
+        status, parts = mailbox.uid("fetch", uid, "(RFC822)")
+        if status != "OK" or not parts:
+            return None
+        return next(
+            (
+                part[1]
+                for part in parts
+                if isinstance(part, tuple) and isinstance(part[1], bytes)
+            ),
+            None,
+        )
+    finally:
+        close_mailbox(mailbox)
+
+
+def save_draft_and_label(uid: bytes, payload: dict) -> None:
+    mailbox = open_mailbox()
+    try:
+        create_review_draft(mailbox, payload)
+        status, detail = mailbox.uid(
+            "store",
+            uid,
+            "+X-GM-LABELS",
+            f'("{PROCESSED_LABEL}")',
+        )
+        if status != "OK":
+            raise RuntimeError(f"Could not label processed UID {uid.decode()}: {detail!r}")
+    finally:
+        close_mailbox(mailbox)
+
+
+def main() -> int:
+    require_config()
+    forwarded = 0
+    failed = 0
+    uids = pending_uids()
+
+    for uid in uids:
+        try:
+            raw_message = fetch_raw_message(uid)
             if not raw_message or not message_is_new_enough(raw_message):
                 continue
 
             response_code, response_payload = post_message(raw_message)
-            if accepted_result(response_code, response_payload):
-                try:
-                    create_review_draft(mailbox, response_payload.get("gmail_draft"))
-                except Exception as exc:
-                    failed += 1
-                    print(
-                        f"Could not create Gmail draft for UID {uid.decode()}: "
-                        f"{type(exc).__name__}: {exc}",
-                        file=sys.stderr,
-                    )
-                    continue
-                mailbox.uid(
-                    "store",
-                    uid,
-                    "+X-GM-LABELS",
-                    f'("{PROCESSED_LABEL}")',
-                )
-                forwarded += 1
-                print(
-                    "Accepted "
-                    f"UID={uid.decode()} "
-                    f"order={response_payload.get('result', {}).get('order_id')} "
-                    f"job={response_payload.get('job_id')} "
-                    f"status={response_payload.get('status')}"
-                )
-            else:
+            if not accepted_result(response_code, response_payload):
                 failed += 1
                 detail = (
                     response_payload.get("detail") or response_payload.get("error")
@@ -239,9 +262,30 @@ def main() -> int:
                     f"reason={detail or 'none'}",
                     file=sys.stderr,
                 )
+                continue
+
+            save_draft_and_label(uid, response_payload.get("gmail_draft"))
+            forwarded += 1
+            print(
+                "Accepted "
+                f"UID={uid.decode()} "
+                f"order={response_payload.get('result', {}).get('order_id')} "
+                f"job={response_payload.get('job_id')} "
+                f"status={response_payload.get('status')} "
+                f"duplicate={response_payload.get('duplicate', False)}"
+            )
+        except Exception as exc:
+            failed += 1
+            print(
+                f"Could not process UID {uid.decode()}: "
+                f"{type(exc).__name__}: {exc}",
+                file=sys.stderr,
+            )
 
     print(f"Forwarded={forwarded}; failed={failed}")
-    return 1 if failed else 0
+    # A partial success must not cancel the whole hourly batch. Unlabelled
+    # failures stay pending and are retried on the next run.
+    return 1 if failed and not forwarded else 0
 
 
 if __name__ == "__main__":
