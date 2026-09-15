@@ -31,6 +31,7 @@ from invoice_generator import build_invoice_xlsx
 
 
 DB_PATH = os.getenv("AUTOMATION_DB_PATH", "automation.db")
+DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
 WEBHOOK_SECRET = os.getenv("ZAKUPAY_EMAIL_WEBHOOK_SECRET", "").strip()
 AUTO_MATCH_THRESHOLD = float(os.getenv("AUTO_MATCH_THRESHOLD", "0.88"))
 REVIEW_MATCH_THRESHOLD = float(os.getenv("REVIEW_MATCH_THRESHOLD", "0.72"))
@@ -48,6 +49,30 @@ _lock = threading.Lock()
 
 
 def _connect():
+    if DATABASE_URL:
+        import psycopg
+        from psycopg.rows import dict_row
+        conn = psycopg.connect(DATABASE_URL, row_factory=dict_row)
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS automation_jobs (
+                id BIGSERIAL PRIMARY KEY,
+                dedupe_key TEXT NOT NULL UNIQUE,
+                message_id TEXT,
+                order_id BIGINT NOT NULL,
+                event_type TEXT NOT NULL,
+                subject TEXT,
+                sender TEXT,
+                status TEXT NOT NULL,
+                error TEXT,
+                result_json TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                invoice_number BIGINT
+            )"""
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_automation_jobs_order ON automation_jobs(order_id, created_at)")
+        conn.commit()
+        return conn
     conn = sqlite3.connect(DB_PATH, timeout=30)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
@@ -75,6 +100,12 @@ def _connect():
     if "invoice_number" not in columns:
         conn.execute("ALTER TABLE automation_jobs ADD COLUMN invoice_number INTEGER")
     return conn
+
+
+def _execute(conn, sql: str, params=()):
+    if DATABASE_URL:
+        sql = sql.replace("?", "%s")
+    return conn.execute(sql, params)
 
 
 def _message_id(raw_email: bytes) -> str:
@@ -385,7 +416,7 @@ def process_email(raw_email: bytes, fetch_order_by_id) -> dict:
     now = datetime.now(timezone.utc).isoformat()
     message_id = _message_id(raw_email)
     with _lock, _connect() as conn:
-        existing = conn.execute(
+        existing = _execute(conn,
             "SELECT * FROM automation_jobs WHERE dedupe_key = ?", (key,)
         ).fetchone()
         if existing and existing["status"] != "failed":
@@ -403,20 +434,23 @@ def process_email(raw_email: bytes, fetch_order_by_id) -> dict:
         if existing:
             job_id = existing["id"]
             invoice_number = existing["invoice_number"]
-            conn.execute(
+            _execute(conn,
                 "UPDATE automation_jobs SET status='processing', error=NULL, updated_at=? WHERE id=?",
                 (now, job_id),
             )
         else:
             invoice_number = None
-            cursor = conn.execute(
-                """INSERT INTO automation_jobs
+            insert_sql = """INSERT INTO automation_jobs
                    (dedupe_key,message_id,order_id,event_type,subject,sender,status,created_at,updated_at,invoice_number)
-                   VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                   VALUES (?,?,?,?,?,?,?,?,?,?)"""
+            if DATABASE_URL:
+                insert_sql += " RETURNING id"
+            cursor = _execute(conn,
+                insert_sql,
                 (key, message_id, event.order_id, event.event_type, event.subject, event.sender,
                  "processing", now, now, invoice_number),
             )
-            job_id = cursor.lastrowid
+            job_id = cursor.fetchone()["id"] if DATABASE_URL else cursor.lastrowid
 
     try:
         # The email is a notification. Zakupay remains the primary source of truth.
@@ -437,9 +471,10 @@ def process_email(raw_email: bytes, fetch_order_by_id) -> dict:
         result = build_vi_draft(order, invoice_number=invoice_number)
         if result["summary"]["auto_ready"] > 0 and invoice_number is None:
             with _lock, _connect() as conn:
-                last_number = conn.execute("SELECT MAX(invoice_number) FROM automation_jobs").fetchone()[0]
+                last_row = _execute(conn, "SELECT MAX(invoice_number) AS max_invoice FROM automation_jobs").fetchone()
+                last_number = last_row["max_invoice"] if DATABASE_URL else last_row[0]
                 invoice_number = max(INVOICE_NUMBER_START, (last_number or INVOICE_NUMBER_START - 1) + 1)
-                conn.execute("UPDATE automation_jobs SET invoice_number=? WHERE id=?", (invoice_number, job_id))
+                _execute(conn, "UPDATE automation_jobs SET invoice_number=? WHERE id=?", (invoice_number, job_id))
             result["invoice_number"] = invoice_number
         status = result["status"]
         error = None
@@ -450,7 +485,7 @@ def process_email(raw_email: bytes, fetch_order_by_id) -> dict:
 
     updated = datetime.now(timezone.utc).isoformat()
     with _lock, _connect() as conn:
-        conn.execute(
+        _execute(conn,
             "UPDATE automation_jobs SET status=?, error=?, result_json=?, updated_at=? WHERE id=?",
             (status, error, json.dumps(result, ensure_ascii=False) if result else None, updated, job_id),
         )
@@ -489,7 +524,7 @@ def install_automation_pipeline(app, fetch_order_by_id):
     def automation_jobs(limit: int = 100):
         limit = max(1, min(limit, 500))
         with _connect() as conn:
-            rows = conn.execute(
+            rows = _execute(conn,
                 """SELECT id,invoice_number,order_id,event_type,subject,sender,status,error,created_at,updated_at
                    FROM automation_jobs ORDER BY id DESC LIMIT ?""", (limit,)
             ).fetchall()
@@ -498,7 +533,7 @@ def install_automation_pipeline(app, fetch_order_by_id):
     @app.get("/dashboard/automation")
     def automation_dashboard():
         with _connect() as conn:
-            rows = conn.execute("SELECT * FROM automation_jobs ORDER BY id DESC LIMIT 300").fetchall()
+            rows = _execute(conn, "SELECT * FROM automation_jobs ORDER BY id DESC LIMIT 300").fetchall()
         cards = []
         for row in rows:
             result = json.loads(row["result_json"]) if row["result_json"] else {}
@@ -546,7 +581,7 @@ def install_automation_pipeline(app, fetch_order_by_id):
     @app.get("/dashboard/automation/jobs/{job_id}/review")
     def automation_review(job_id: int):
         with _connect() as conn:
-            row = conn.execute("SELECT * FROM automation_jobs WHERE id=?", (job_id,)).fetchone()
+            row = _execute(conn, "SELECT * FROM automation_jobs WHERE id=?", (job_id,)).fetchone()
         if not row:
             raise HTTPException(status_code=404, detail="Задание не найдено")
         result = json.loads(row["result_json"]) if row["result_json"] else None
@@ -607,7 +642,7 @@ def install_automation_pipeline(app, fetch_order_by_id):
     async def automation_review_save(job_id: int, request: Request):
         form = await request.form()
         with _lock, _connect() as conn:
-            row = conn.execute("SELECT * FROM automation_jobs WHERE id=?", (job_id,)).fetchone()
+            row = _execute(conn, "SELECT * FROM automation_jobs WHERE id=?", (job_id,)).fetchone()
             if not row or not row["result_json"]:
                 raise HTTPException(status_code=404, detail="Заявка не найдена")
             result = json.loads(row["result_json"])
@@ -626,7 +661,7 @@ def install_automation_pipeline(app, fetch_order_by_id):
                 item["decision"] = "approved" if include and item.get("selected") and item.get("proposed_unit_price") is not None else "excluded"
                 item["operator_included"] = include
             _refresh_summary(result)
-            conn.execute(
+            _execute(conn,
                 "UPDATE automation_jobs SET status=?, result_json=?, updated_at=? WHERE id=?",
                 (result["status"], json.dumps(result, ensure_ascii=False), datetime.now(timezone.utc).isoformat(), job_id),
             )
@@ -635,7 +670,7 @@ def install_automation_pipeline(app, fetch_order_by_id):
     @app.get("/dashboard/automation/jobs/{job_id}/invoice.xlsx")
     def dashboard_automation_invoice(job_id: int):
         with _connect() as conn:
-            row = conn.execute("SELECT * FROM automation_jobs WHERE id=?", (job_id,)).fetchone()
+            row = _execute(conn, "SELECT * FROM automation_jobs WHERE id=?", (job_id,)).fetchone()
         if not row or not row["result_json"]:
             raise HTTPException(status_code=404, detail="Готовый счёт не найден")
         try:
@@ -648,7 +683,7 @@ def install_automation_pipeline(app, fetch_order_by_id):
     @app.get("/automation/jobs/{job_id}/invoice.xlsx")
     def automation_invoice(job_id: int):
         with _connect() as conn:
-            row = conn.execute("SELECT * FROM automation_jobs WHERE id=?", (job_id,)).fetchone()
+            row = _execute(conn, "SELECT * FROM automation_jobs WHERE id=?", (job_id,)).fetchone()
         if not row:
             raise HTTPException(status_code=404, detail="Задание не найдено")
         if not row["result_json"]:
@@ -668,7 +703,7 @@ def install_automation_pipeline(app, fetch_order_by_id):
     @app.get("/automation/jobs/{job_id}")
     def automation_job(job_id: int):
         with _connect() as conn:
-            row = conn.execute("SELECT * FROM automation_jobs WHERE id=?", (job_id,)).fetchone()
+            row = _execute(conn, "SELECT * FROM automation_jobs WHERE id=?", (job_id,)).fetchone()
         if not row:
             raise HTTPException(status_code=404, detail="Задание не найдено")
         data = dict(row)
