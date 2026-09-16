@@ -1,5 +1,5 @@
 name: Process Zakupay Gmail notifications via API
-# Replay marker: prepayment-email-v2-batch-2
+# Replay marker: prepayment-email-v3
 
 on:
   push:
@@ -33,7 +33,7 @@ jobs:
           GMAIL_IMAP_APP_PASSWORD: ${{ secrets.GMAIL_IMAP_APP_PASSWORD }}
           START_AFTER: "1789506000"
           GMAIL_MAX_MESSAGES_PER_RUN: "5"
-          GMAIL_PROCESSED_LABEL: "ZakupayProcessedV2"
+          GMAIL_PROCESSED_LABEL: "ZakupayProcessedV3"
         run: |
           OIDC_TOKEN="$(curl --fail-with-body --show-error --silent \
             -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
