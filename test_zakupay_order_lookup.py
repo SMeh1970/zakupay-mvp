@@ -31,6 +31,22 @@ class ZakupayOrderLookupTests(unittest.TestCase):
         self.assertEqual(get.call_args.kwargs["params"]["ids"], 37217190)
         post.assert_not_called()
 
+    @patch("main.requests.post")
+    @patch("main.request_orders_page")
+    def test_all_orders_uses_registry_when_public_collection_is_empty(self, page, post):
+        page.return_value = {"orders": []}
+        post.return_value = Mock(
+            status_code=200,
+            ok=True,
+            json=lambda: [{"id": 37217190, "delay": 0, "orderItems": [{"id": 10}]}],
+        )
+        main._orders_cache.update({"ts": 0.0, "key": "", "orders": []})
+
+        orders = main.fetch_all_orders(force=True)
+
+        self.assertEqual([order["id"] for order in orders], [37217190])
+        self.assertEqual(post.call_args.args[0], f"{main.ZAKUPAY_BASE_URL}/core/supplier/getorders")
+
 
 if __name__ == "__main__":
     unittest.main()
