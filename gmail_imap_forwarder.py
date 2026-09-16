@@ -3,7 +3,7 @@
 Required environment variables:
   GMAIL_IMAP_EMAIL
   GMAIL_IMAP_APP_PASSWORD
-  ZAKUPAY_EMAIL_WEBHOOK_SECRET
+  WEBHOOK_BEARER_TOKEN or ZAKUPAY_EMAIL_WEBHOOK_SECRET
 Optional:
   WEBHOOK_URL (defaults to production ingest endpoint)
   START_AFTER (Unix epoch; defaults to 2026-09-14 00:00 Europe/Moscow)
@@ -29,6 +29,7 @@ WEBHOOK_URL = os.getenv(
     "https://zakupay-mvp.onrender.com/automation/email/ingest",
 ).strip()
 WEBHOOK_SECRET = os.getenv("ZAKUPAY_EMAIL_WEBHOOK_SECRET", "").strip()
+WEBHOOK_BEARER_TOKEN = os.getenv("WEBHOOK_BEARER_TOKEN", "").strip()
 START_AFTER = int(os.getenv("START_AFTER", "1789333200"))
 PROCESSED_LABEL = "ZakupayProcessed"
 
@@ -39,8 +40,8 @@ def require_config() -> None:
         missing.append("GMAIL_IMAP_EMAIL")
     if not GMAIL_APP_PASSWORD:
         missing.append("GMAIL_IMAP_APP_PASSWORD")
-    if not WEBHOOK_SECRET:
-        missing.append("ZAKUPAY_EMAIL_WEBHOOK_SECRET")
+    if not WEBHOOK_SECRET and not WEBHOOK_BEARER_TOKEN:
+        missing.append("WEBHOOK_BEARER_TOKEN or ZAKUPAY_EMAIL_WEBHOOK_SECRET")
     if missing:
         raise RuntimeError("Missing environment variables: " + ", ".join(missing))
 
@@ -57,14 +58,16 @@ def message_is_new_enough(raw_message: bytes) -> bool:
 
 
 def post_message(raw_message: bytes) -> tuple[int, dict | None]:
+    headers = {"Content-Type": "message/rfc822"}
+    if WEBHOOK_BEARER_TOKEN:
+        headers["Authorization"] = f"Bearer {WEBHOOK_BEARER_TOKEN}"
+    else:
+        headers["X-Webhook-Secret"] = WEBHOOK_SECRET
     request = urllib.request.Request(
         WEBHOOK_URL,
         data=raw_message,
         method="POST",
-        headers={
-            "Content-Type": "message/rfc822",
-            "X-Webhook-Secret": WEBHOOK_SECRET,
-        },
+        headers=headers,
     )
     try:
         with urllib.request.urlopen(request, timeout=90) as response:
@@ -83,7 +86,9 @@ def post_message(raw_message: bytes) -> tuple[int, dict | None]:
 def accepted_result(status_code: int, payload: dict | None) -> bool:
     if not 200 <= status_code < 300 or not isinstance(payload, dict):
         return False
-    return payload.get("status") in {"ready_for_review", "needs_review"}
+    return payload.get("status") in {
+        "ready_for_review", "needs_review", "skipped_not_prepayment",
+    }
 
 
 def main() -> int:
