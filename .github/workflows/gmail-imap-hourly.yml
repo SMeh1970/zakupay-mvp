@@ -2,6 +2,7 @@ name: Process Zakupay API orders
 # Zakupay API is the source of truth; Gmail forwarding is no longer used.
 # Signed workflow calls are verified by the Render application.
 # Each run advances through persistent deduplicated jobs.
+# Batch diagnostics are recorded by the Render application.
 
 on:
   push:
