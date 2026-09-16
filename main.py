@@ -1,4 +1,5 @@
 import html
+import logging
 import os
 import time
 from urllib.parse import urlencode
@@ -23,6 +24,7 @@ ZAKUPAY_API_KEY = os.getenv("ZAKUPAY_API_KEY")
 ZAKUPAY_BASE_URL = os.getenv("ZAKUPAY_BASE_URL", "https://prodavay.sel-be.ru")
 CACHE_TTL_SECONDS = 60
 _orders_cache = {"ts": 0.0, "key": "", "orders": []}
+logger = logging.getLogger("zakupay.orders")
 
 
 def esc(value):
@@ -49,7 +51,17 @@ def clean_params(params):
 
 def request_orders_page(page=1, page_size=100, api_filters=None):
     url = f"{ZAKUPAY_BASE_URL}/api/v1/orders"
-    params = {"status": "actual", "isoDate": "true", "page": page, "pageSize": page_size}
+    # The supplier API exposes active orders by default.  `status=actual` is not
+    # an orders API parameter and made valid orders disappear for some accounts.
+    # `count` is the documented limit; page/pageSize are kept for compatible
+    # installations of the same API.
+    params = {
+        "format": "json", "isoDate": "true", "totalCount": "true",
+        "count": page_size, "page": page, "pageSize": page_size,
+        "ignoreKeywordFilter": "true", "showNotInteresting": "true",
+        "showAllRegions": "true", "allRegions": "true",
+        "showAllCategories": "true", "allCategories": "true",
+    }
     if api_filters:
         params.update(clean_params(api_filters))
     try:
@@ -67,6 +79,79 @@ def request_orders_page(page=1, page_size=100, api_filters=None):
     if not response.ok:
         raise HTTPException(status_code=response.status_code, detail=data)
     return data
+
+
+def fetch_order_by_id(order_id, force=False):
+    """Return one order using Zakupay's documented ``ids`` collection filter."""
+    order_id = int(order_id)
+    list_url = f"{ZAKUPAY_BASE_URL}/api/v1/orders"
+    common = {
+        "format": "json", "isoDate": "true", "ignoreKeywordFilter": "true",
+        "showNotInteresting": "true", "showAllRegions": "true",
+        "allRegions": "true", "showAllCategories": "true", "allCategories": "true",
+    }
+
+    # Zakupay support confirmed on 2026-09-15 that a concrete application is
+    # fetched through GET /api/v1/orders?ids=<id>; its lines are returned in
+    # orders[0].orderItems.  The older senderId/orderId/zakupayIds probes do not
+    # filter by the application id and must not be used for this lookup.
+    try:
+        response = requests.get(
+            list_url,
+            headers=zakupay_headers(),
+            params=dict(common, ids=order_id),
+            timeout=30,
+        )
+        if response.status_code == 401:
+            raise HTTPException(status_code=401, detail="Закупай отклонил токен")
+        if response.status_code == 403:
+            raise HTTPException(status_code=403, detail="Недостаточно прав для получения заявки")
+        if response.ok:
+            data = response.json()
+            candidates = data.get("orders") if isinstance(data, dict) else data
+            if not isinstance(candidates, list):
+                candidates = []
+            order = next(
+                (o for o in candidates if isinstance(o, dict) and int(o.get("id") or 0) == order_id),
+                None,
+            )
+            logger.warning(
+                "order lookup id=%s method=ids status=%s candidates=%s found=%s items=%s",
+                order_id,
+                response.status_code,
+                len(candidates),
+                bool(order),
+                len(order.get("orderItems") or []) if order else 0,
+            )
+            if order:
+                return order
+        else:
+            logger.warning("order lookup id=%s method=ids status=%s", order_id, response.status_code)
+    except HTTPException:
+        raise
+    except (requests.RequestException, ValueError, TypeError) as exc:
+        logger.warning("order lookup id=%s method=ids failed=%s", order_id, type(exc).__name__)
+
+    # This is the endpoint used by Zakupay's own supplier registry page.
+    # It often contains orders omitted by the public collection API.
+    try:
+        response = requests.post(
+            f"{ZAKUPAY_BASE_URL}/core/supplier/getorders",
+            headers=dict(zakupay_headers(), **{"Content-Type": "application/json"}),
+            json={"status": "actual", "size": 1000}, timeout=8,
+        )
+        candidates = response.json() if response.ok else []
+        if not isinstance(candidates, list):
+            candidates = []
+        order = next((o for o in candidates if isinstance(o, dict) and int(o.get("id") or 0) == order_id), None)
+        logger.warning("order lookup id=%s method=registry status=%s candidates=%s found=%s", order_id, response.status_code, len(candidates), bool(order))
+        if order:
+            return order
+    except (requests.RequestException, ValueError, TypeError) as exc:
+        logger.warning("order lookup id=%s method=registry failed=%s", order_id, type(exc).__name__)
+
+    orders = fetch_all_orders(force=force)
+    return next((o for o in orders if int(o.get("id") or 0) == order_id), None)
 
 
 def fetch_all_orders(force=False, api_filters=None):
@@ -102,6 +187,50 @@ def fetch_all_orders(force=False, api_filters=None):
             break
         if len(batch) < 10:
             break
+
+    # The public collection endpoint may return an empty set for supplier
+    # accounts even though the same orders are visible in Zakupay's registry.
+    # Fall back to the endpoint used by that registry so hourly automation does
+    # not silently treat a restricted public response as "no active orders".
+    if not all_orders and not api_filters:
+        try:
+            response = requests.post(
+                f"{ZAKUPAY_BASE_URL}/core/supplier/getorders",
+                headers=dict(zakupay_headers(), **{"Content-Type": "application/json"}),
+                json={"status": "actual", "size": 1000},
+                timeout=30,
+            )
+            if response.status_code == 401:
+                raise HTTPException(status_code=401, detail="Закупай отклонил токен")
+            if response.status_code == 403:
+                raise HTTPException(status_code=403, detail="Недостаточно прав для получения заявок")
+            if response.ok:
+                payload = response.json()
+                if isinstance(payload, list):
+                    candidates = payload
+                elif isinstance(payload, dict):
+                    candidates = payload.get("orders") or payload.get("data") or []
+                else:
+                    candidates = []
+                for order in candidates:
+                    if not isinstance(order, dict):
+                        continue
+                    oid = order.get("id")
+                    if oid in seen_ids:
+                        continue
+                    seen_ids.add(oid)
+                    all_orders.append(order)
+                logger.warning(
+                    "orders collection empty; registry fallback status=%s candidates=%s",
+                    response.status_code,
+                    len(all_orders),
+                )
+            else:
+                logger.warning("orders registry fallback status=%s", response.status_code)
+        except HTTPException:
+            raise
+        except (requests.RequestException, ValueError, TypeError) as exc:
+            logger.warning("orders registry fallback failed=%s", type(exc).__name__)
 
     _orders_cache.update({"ts": now, "key": cache_key, "orders": all_orders})
     return all_orders

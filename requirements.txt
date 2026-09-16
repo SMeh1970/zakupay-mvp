@@ -3,3 +3,8 @@ uvicorn
 apscheduler
 python-dotenv
 requests
+python-multipart
+PyYAML
+openpyxl
+psycopg[binary]
+PyJWT[crypto]
