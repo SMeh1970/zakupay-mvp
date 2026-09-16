@@ -3,6 +3,7 @@ name: Process Zakupay API orders
 # Signed workflow calls are verified by the Render application.
 # Each run advances through persistent deduplicated jobs.
 # Batch diagnostics are recorded by the Render application.
+# Registry fallback covers supplier-visible active orders.
 
 on:
   push:
