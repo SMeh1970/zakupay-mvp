@@ -175,6 +175,32 @@ class PipelineTests(unittest.TestCase):
         self.assertIn("Аналог 1", values)
         self.assertNotIn("Аналог 2", values)
 
+    @patch.object(pipeline.VseinstrumentiAdapter, "search")
+    def test_api_order_is_persisted_and_deduplicated_by_order_id(self, search):
+        search.return_value = [SupplierQuote(
+            supplier="ВИ", name="Маркер черный 1 мм", sku="123", price=100, stock=50,
+        )]
+        first = pipeline.process_api_order(ORDER)
+        second = pipeline.process_api_order(ORDER)
+        self.assertFalse(first["duplicate"])
+        self.assertTrue(second["duplicate"])
+        self.assertEqual(first["result"]["invoice_number"], 240)
+
+    @patch.object(pipeline, "build_vi_draft")
+    def test_failed_api_order_can_be_retried(self, build):
+        build.side_effect = RuntimeError("temporary")
+        with self.assertRaisesRegex(RuntimeError, "temporary"):
+            pipeline.process_api_order(ORDER)
+        build.side_effect = None
+        build.return_value = {
+            "status": "ready_for_review",
+            "summary": {"auto_ready": 1},
+            "invoice_number": None,
+        }
+        retried = pipeline.process_api_order(ORDER)
+        self.assertFalse(retried["duplicate"])
+        self.assertEqual(retried["status"], "ready_for_review")
+
 
 if __name__ == "__main__":
     unittest.main()
