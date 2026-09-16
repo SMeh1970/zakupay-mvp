@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import hmac
 import html
 import json
 import os
@@ -44,8 +45,37 @@ DEFAULT_DELIVERY_INCLUDED = os.getenv("AUTO_OFFER_DELIVERY_INCLUDED", "true").lo
 INVOICE_NUMBER_START = int(os.getenv("AUTO_INVOICE_NUMBER_START", "240"))
 VI_CANDIDATE_LIMIT = int(os.getenv("AUTO_VI_CANDIDATE_LIMIT", "8"))
 APP_PUBLIC_URL = os.getenv("APP_PUBLIC_URL", "https://zakupay-mvp.onrender.com").rstrip("/")
+GITHUB_OIDC_AUDIENCE = "zakupay-mvp"
+GITHUB_OIDC_ISSUER = "https://token.actions.githubusercontent.com"
+GITHUB_REPOSITORY = os.getenv("GITHUB_AUTOMATION_REPOSITORY", "SMeh1970/zakupay-mvp")
 
 _lock = threading.Lock()
+
+
+def _authorized_automation_call(webhook_secret: str | None, authorization: str | None) -> bool:
+    if WEBHOOK_SECRET and webhook_secret and hmac.compare_digest(webhook_secret, WEBHOOK_SECRET):
+        return True
+    scheme, _, token = (authorization or "").partition(" ")
+    if scheme.lower() != "bearer" or not token:
+        return False
+    try:
+        import jwt
+
+        signing_key = jwt.PyJWKClient(f"{GITHUB_OIDC_ISSUER}/.well-known/jwks").get_signing_key_from_jwt(token)
+        claims = jwt.decode(
+            token,
+            signing_key.key,
+            algorithms=["RS256"],
+            audience=GITHUB_OIDC_AUDIENCE,
+            issuer=GITHUB_OIDC_ISSUER,
+        )
+    except Exception:
+        return False
+    return (
+        claims.get("repository") == GITHUB_REPOSITORY
+        and claims.get("ref") in {"refs/heads/main", "refs/heads/ai-analysis-v1"}
+        and claims.get("event_name") in {"schedule", "workflow_dispatch", "push"}
+    )
 
 
 def _connect():
@@ -621,11 +651,12 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
             raise HTTPException(status_code=502, detail=str(exc))
 
     @app.post("/automation/api/poll")
-    def poll_zakupay_api(x_webhook_secret: str | None = Header(default=None)):
-        if not WEBHOOK_SECRET:
-            raise HTTPException(status_code=503, detail="ZAKUPAY_EMAIL_WEBHOOK_SECRET не настроен")
-        if x_webhook_secret != WEBHOOK_SECRET:
-            raise HTTPException(status_code=401, detail="Неверный секрет webhook")
+    def poll_zakupay_api(
+        x_webhook_secret: str | None = Header(default=None),
+        authorization: str | None = Header(default=None),
+    ):
+        if not _authorized_automation_call(x_webhook_secret, authorization):
+            raise HTTPException(status_code=401, detail="Неверная авторизация автоматизации")
         if fetch_all_orders is None:
             raise HTTPException(status_code=503, detail="Получение списка заявок не подключено")
 
