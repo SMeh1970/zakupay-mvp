@@ -504,7 +504,22 @@ def process_email(raw_email: bytes, fetch_order_by_id) -> dict:
             }
         if not order:
             raise LookupError("Заявка не получена из API Закупай, состав отсутствует в письме")
-        result = build_vi_draft(order, invoice_number=invoice_number)
+        try:
+            delay = float(order.get("delay"))
+        except (TypeError, ValueError):
+            delay = None
+        if delay != 0:
+            result = {
+                "order_id": order.get("id"),
+                "order_name": order.get("name"),
+                "status": "skipped_not_prepayment",
+                "reason": "Условие предоплаты не подтверждено API Закупай",
+                "invoice_number": None,
+                "summary": {"positions": len(order.get("orderItems") or []), "auto_ready": 0},
+                "items": [],
+            }
+        else:
+            result = build_vi_draft(order, invoice_number=invoice_number)
         if result["summary"]["auto_ready"] > 0 and invoice_number is None:
             with _lock, _connect() as conn:
                 last_row = _execute(conn, "SELECT MAX(invoice_number) AS max_invoice FROM automation_jobs").fetchone()
@@ -637,11 +652,10 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
     async def ingest_zakupay_email(
         request: Request,
         x_webhook_secret: str | None = Header(default=None),
+        authorization: str | None = Header(default=None),
     ):
-        if not WEBHOOK_SECRET:
-            raise HTTPException(status_code=503, detail="ZAKUPAY_EMAIL_WEBHOOK_SECRET не настроен")
-        if x_webhook_secret != WEBHOOK_SECRET:
-            raise HTTPException(status_code=401, detail="Неверный секрет webhook")
+        if not _authorized_automation_call(x_webhook_secret, authorization):
+            raise HTTPException(status_code=401, detail="Неверная авторизация автоматизации")
         raw = await request.body()
         if not raw:
             raise HTTPException(status_code=400, detail="Пустое письмо")
@@ -744,7 +758,10 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
     @app.get("/dashboard/automation")
     def automation_dashboard():
         with _connect() as conn:
-            rows = _execute(conn, "SELECT * FROM automation_jobs ORDER BY id DESC LIMIT 300").fetchall()
+            rows = _execute(
+                conn,
+                "SELECT * FROM automation_jobs WHERE status != 'skipped_not_prepayment' ORDER BY id DESC LIMIT 300",
+            ).fetchall()
         cards = []
         for row in rows:
             result = json.loads(row["result_json"]) if row["result_json"] else {}
