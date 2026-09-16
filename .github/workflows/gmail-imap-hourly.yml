@@ -10,6 +10,7 @@ on:
 
 permissions:
   contents: read
+  id-token: write
 
 jobs:
   process:
@@ -17,13 +18,15 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Process current prepayment orders
-        env:
-          ZAKUPAY_EMAIL_WEBHOOK_SECRET: ${{ secrets.ZAKUPAY_EMAIL_WEBHOOK_SECRET }}
         run: |
+          OIDC_TOKEN="$(curl --fail-with-body --show-error --silent \
+            -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=zakupay-mvp" \
+            | python -c 'import json,sys; print(json.load(sys.stdin)["value"])')"
           curl --fail-with-body --show-error --silent \
             --max-time 1500 \
             --retry 2 \
             --retry-delay 15 \
             -X POST \
-            -H "X-Webhook-Secret: ${ZAKUPAY_EMAIL_WEBHOOK_SECRET}" \
+            -H "Authorization: Bearer ${OIDC_TOKEN}" \
             https://zakupay-mvp.onrender.com/automation/api/poll
