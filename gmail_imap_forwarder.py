@@ -31,7 +31,7 @@ WEBHOOK_URL = os.getenv(
 WEBHOOK_SECRET = os.getenv("ZAKUPAY_EMAIL_WEBHOOK_SECRET", "").strip()
 WEBHOOK_BEARER_TOKEN = os.getenv("WEBHOOK_BEARER_TOKEN", "").strip()
 START_AFTER = int(os.getenv("START_AFTER", "1789333200"))
-PROCESSED_LABEL = "ZakupayProcessed"
+PROCESSED_LABEL = os.getenv("GMAIL_PROCESSED_LABEL", "ZakupayProcessedV2").strip()
 
 
 def require_config() -> None:
