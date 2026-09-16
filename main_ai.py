@@ -218,7 +218,12 @@ install_offer_panel(
     esc=esc,
     fetch_order_by_id=fetch_order_by_id,
 )
-install_automation_pipeline(app, fetch_order_by_id=fetch_order_by_id)
+install_automation_pipeline(
+    app,
+    fetch_order_by_id=fetch_order_by_id,
+    fetch_all_orders=fetch_all_orders,
+    has_my_offer=has_my_offer,
+)
 install_abacus_mcp(
     app,
     fetch_all_orders=fetch_all_orders,
