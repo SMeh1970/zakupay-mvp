@@ -3,7 +3,7 @@
 Required environment variables:
   GMAIL_IMAP_EMAIL
   GMAIL_IMAP_APP_PASSWORD
-  ZAKUPAY_EMAIL_WEBHOOK_SECRET
+  WEBHOOK_BEARER_TOKEN or ZAKUPAY_EMAIL_WEBHOOK_SECRET
 Optional:
   WEBHOOK_URL (defaults to production ingest endpoint)
   START_AFTER (Unix epoch; defaults to 2026-09-14 00:00 Europe/Moscow)
@@ -11,7 +11,6 @@ Optional:
 
 from __future__ import annotations
 
-import base64
 import email
 import imaplib
 import json
@@ -19,7 +18,6 @@ import os
 import sys
 import urllib.error
 import urllib.request
-from email.message import EmailMessage
 from email.policy import default
 from email.utils import parsedate_to_datetime
 
@@ -31,6 +29,7 @@ WEBHOOK_URL = os.getenv(
     "https://zakupay-mvp.onrender.com/automation/email/ingest",
 ).strip()
 WEBHOOK_SECRET = os.getenv("ZAKUPAY_EMAIL_WEBHOOK_SECRET", "").strip()
+WEBHOOK_BEARER_TOKEN = os.getenv("WEBHOOK_BEARER_TOKEN", "").strip()
 START_AFTER = int(os.getenv("START_AFTER", "1789333200"))
 PROCESSED_LABEL = "ZakupayProcessed"
 
@@ -41,8 +40,8 @@ def require_config() -> None:
         missing.append("GMAIL_IMAP_EMAIL")
     if not GMAIL_APP_PASSWORD:
         missing.append("GMAIL_IMAP_APP_PASSWORD")
-    if not WEBHOOK_SECRET:
-        missing.append("ZAKUPAY_EMAIL_WEBHOOK_SECRET")
+    if not WEBHOOK_SECRET and not WEBHOOK_BEARER_TOKEN:
+        missing.append("WEBHOOK_BEARER_TOKEN or ZAKUPAY_EMAIL_WEBHOOK_SECRET")
     if missing:
         raise RuntimeError("Missing environment variables: " + ", ".join(missing))
 
@@ -59,14 +58,16 @@ def message_is_new_enough(raw_message: bytes) -> bool:
 
 
 def post_message(raw_message: bytes) -> tuple[int, dict | None]:
+    headers = {"Content-Type": "message/rfc822"}
+    if WEBHOOK_BEARER_TOKEN:
+        headers["Authorization"] = f"Bearer {WEBHOOK_BEARER_TOKEN}"
+    else:
+        headers["X-Webhook-Secret"] = WEBHOOK_SECRET
     request = urllib.request.Request(
         WEBHOOK_URL,
         data=raw_message,
         method="POST",
-        headers={
-            "Content-Type": "message/rfc822",
-            "X-Webhook-Secret": WEBHOOK_SECRET,
-        },
+        headers=headers,
     )
     try:
         with urllib.request.urlopen(request, timeout=90) as response:
@@ -85,93 +86,22 @@ def post_message(raw_message: bytes) -> tuple[int, dict | None]:
 def accepted_result(status_code: int, payload: dict | None) -> bool:
     if not 200 <= status_code < 300 or not isinstance(payload, dict):
         return False
-    return payload.get("status") in {"ready_for_review", "needs_review"}
+    return payload.get("status") in {
+        "ready_for_review", "needs_review", "skipped_not_prepayment",
+    }
 
 
+def main() -> int:
+    require_config()
+    forwarded = 0
+    failed = 0
 
-def _drafts_mailbox(mailbox: imaplib.IMAP4_SSL) -> str | bytes:
-    listings = []
-    status, rows = mailbox.list()
-    if status == "OK":
-        listings.extend(rows or [])
-    try:
-        status, rows = mailbox.xatom("XLIST", '""', '"*"')
-        if status == "OK":
-            listings.extend(rows or [])
-    except imaplib.IMAP4.error:
-        pass
-    for row in listings:
-        raw = row if isinstance(row, bytes) else str(row).encode("ascii", "replace")
-        flags = raw.split(b")", 1)[0].lower()
-        if b"\\draft" in flags:
-            # Preserve Gmail's modified UTF-7 bytes for localized folder names.
-            name = raw.rsplit(b" ", 1)[-1].strip(b'"')
-            if name:
-                return name
-    # Russian Gmail locale: "Черновики" in IMAP modified UTF-7.
-    russian_drafts = b"&BCcENQRABD0EPgQyBDgEOgQ4-"
-    for row in listings:
-        raw = row if isinstance(row, bytes) else str(row).encode("ascii", "replace")
-        if russian_drafts in raw:
-            return raw.rsplit(b" ", 1)[-1].strip(b'"')
-    raise RuntimeError(f"Gmail Drafts mailbox was not found; LIST rows={listings!r}")
-
-
-def create_review_draft(mailbox: imaplib.IMAP4_SSL, payload: dict) -> None:
-    if not isinstance(payload, dict) or not payload.get("body"):
-        raise RuntimeError("Webhook did not return Gmail draft data")
-    message = EmailMessage()
-    message["From"] = GMAIL_EMAIL
-    message["To"] = str(payload.get("to") or GMAIL_EMAIL)
-    message["Subject"] = str(payload.get("subject") or "Проверка заявки Закупай")
-    message.set_content(str(payload["body"]))
-    attachment = payload.get("attachment_base64")
-    if attachment:
-        message.add_attachment(
-            base64.b64decode(attachment),
-            maintype="application",
-            subtype="vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            filename=str(payload.get("attachment_name") or "invoice.xlsx"),
-        )
-    drafts_mailbox = _drafts_mailbox(mailbox)
-    status, detail = mailbox.append(
-        drafts_mailbox,
-        "(\\Draft)",
-        None,
-        message.as_bytes(),
-    )
-    if status != "OK":
-        raise RuntimeError(
-            f"Gmail did not save the review draft in {drafts_mailbox}: {detail!r}"
-        )
-
-def open_mailbox() -> imaplib.IMAP4_SSL:
-    """Open a short-lived authenticated IMAP session."""
-    mailbox = imaplib.IMAP4_SSL(GMAIL_HOST, 993, timeout=30)
-    try:
+    with imaplib.IMAP4_SSL(GMAIL_HOST, 993) as mailbox:
         mailbox.login(GMAIL_EMAIL, GMAIL_APP_PASSWORD)
         status, _ = mailbox.select("INBOX")
         if status != "OK":
             raise RuntimeError("Could not select Gmail INBOX")
-        return mailbox
-    except Exception:
-        close_mailbox(mailbox)
-        raise
 
-
-def close_mailbox(mailbox: imaplib.IMAP4_SSL | None) -> None:
-    """Close IMAP without turning a server-side EOF into a job failure."""
-    if mailbox is None:
-        return
-    try:
-        mailbox.logout()
-    except (imaplib.IMAP4.abort, imaplib.IMAP4.error, OSError):
-        pass
-
-
-def pending_uids() -> list[bytes]:
-    mailbox = open_mailbox()
-    try:
         query = (
             f'from:zakupay@sel-be.ru after:{START_AFTER} '
             f'-label:{PROCESSED_LABEL}'
@@ -179,113 +109,58 @@ def pending_uids() -> list[bytes]:
         status, data = mailbox.uid("search", None, "X-GM-RAW", f'"{query}"')
         if status != "OK":
             raise RuntimeError("Gmail search failed")
+
         uids = data[0].split() if data and data[0] else []
         max_per_run = int(os.getenv("GMAIL_MAX_MESSAGES_PER_RUN", "5"))
-        return uids[:max_per_run]
-    finally:
-        close_mailbox(mailbox)
+        uids = uids[:max_per_run]
+        for uid in uids:
+            status, parts = mailbox.uid("fetch", uid, "(RFC822)")
+            if status != "OK" or not parts:
+                failed += 1
+                continue
 
-
-def fetch_raw_message(uid: bytes) -> bytes | None:
-    mailbox = open_mailbox()
-    try:
-        status, parts = mailbox.uid("fetch", uid, "(RFC822)")
-        if status != "OK" or not parts:
-            return None
-        return next(
-            (
-                part[1]
-                for part in parts
-                if isinstance(part, tuple) and isinstance(part[1], bytes)
-            ),
-            None,
-        )
-    finally:
-        close_mailbox(mailbox)
-
-
-def save_draft_and_label(uid: bytes, payload: dict) -> None:
-    mailbox = open_mailbox()
-    try:
-        create_review_draft(mailbox, payload)
-        status, detail = mailbox.uid(
-            "store",
-            uid,
-            "+X-GM-LABELS",
-            f'("{PROCESSED_LABEL}")',
-        )
-        if status != "OK":
-            raise RuntimeError(f"Could not label processed UID {uid.decode()}: {detail!r}")
-    finally:
-        close_mailbox(mailbox)
-
-
-def main() -> int:
-    require_config()
-    forwarded = 0
-    failed = 0
-    uids = pending_uids()
-
-    for uid in uids:
-        try:
-            raw_message = fetch_raw_message(uid)
+            raw_message = next(
+                (
+                    part[1]
+                    for part in parts
+                    if isinstance(part, tuple) and isinstance(part[1], bytes)
+                ),
+                None,
+            )
             if not raw_message or not message_is_new_enough(raw_message):
                 continue
 
             response_code, response_payload = post_message(raw_message)
-            if not accepted_result(response_code, response_payload):
+            if accepted_result(response_code, response_payload):
+                mailbox.uid(
+                    "store",
+                    uid,
+                    "+X-GM-LABELS",
+                    f'("{PROCESSED_LABEL}")',
+                )
+                forwarded += 1
+                print(
+                    "Accepted "
+                    f"UID={uid.decode()} "
+                    f"order={response_payload.get('result', {}).get('order_id')} "
+                    f"job={response_payload.get('job_id')} "
+                    f"status={response_payload.get('status')}"
+                )
+            else:
                 failed += 1
                 detail = (
-                    response_payload.get("detail") or response_payload.get("error")
-                    if isinstance(response_payload, dict)
-                    else None
-                )
-                response_status = (
-                    response_payload.get("status")
-                    if isinstance(response_payload, dict)
-                    else None
-                )
-                duplicate = (
-                    response_payload.get("duplicate")
-                    if isinstance(response_payload, dict)
-                    else None
-                )
-                job_id = (
-                    response_payload.get("job_id")
+                    response_payload.get("detail")
                     if isinstance(response_payload, dict)
                     else None
                 )
                 print(
-                    f"Webhook not accepted for UID {uid.decode()}: "
-                    f"HTTP {response_code}; status={response_status}; "
-                    f"duplicate={duplicate}; job={job_id}; "
-                    f"reason={detail or 'none'}",
+                    f"Webhook failed for UID {uid.decode()}: "
+                    f"HTTP {response_code}; detail={detail or 'unknown'}",
                     file=sys.stderr,
                 )
-                continue
-
-            save_draft_and_label(uid, response_payload.get("gmail_draft"))
-            forwarded += 1
-            print(
-                "Accepted "
-                f"UID={uid.decode()} "
-                f"order={response_payload.get('result', {}).get('order_id')} "
-                f"job={response_payload.get('job_id')} "
-                f"status={response_payload.get('status')} "
-                f"duplicate={response_payload.get('duplicate', False)}"
-            )
-        except Exception as exc:
-            failed += 1
-            print(
-                f"Could not process UID {uid.decode()}: "
-                f"{type(exc).__name__}: {exc}",
-                file=sys.stderr,
-            )
 
     print(f"Forwarded={forwarded}; failed={failed}")
-    # A partial success must not cancel the whole hourly batch. Unlabelled
-    # failures stay pending and are retried on the next run.
-    return 1 if failed and not forwarded else 0
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":
