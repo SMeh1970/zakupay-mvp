@@ -1,4 +1,4 @@
-name: Forward Zakupay Gmail messages
+name: Process Zakupay API orders
 
 on:
   schedule:
@@ -9,23 +9,18 @@ permissions:
   contents: read
 
 jobs:
-  forward:
+  process:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 30
     steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Forward new Zakupay messages
+      - name: Process current prepayment orders
         env:
-          GMAIL_IMAP_EMAIL: "1043324@gmail.com"
-          GMAIL_IMAP_APP_PASSWORD: ${{ secrets.GMAIL_IMAP_APP_PASSWORD }}
           ZAKUPAY_EMAIL_WEBHOOK_SECRET: ${{ secrets.ZAKUPAY_EMAIL_WEBHOOK_SECRET }}
-          WEBHOOK_URL: "https://zakupay-mvp.onrender.com/automation/email/ingest"
-          START_AFTER: "1789333200"
-        run: python gmail_imap_forwarder.py
+        run: |
+          curl --fail-with-body --show-error --silent \
+            --max-time 1500 \
+            --retry 2 \
+            --retry-delay 15 \
+            -X POST \
+            -H "X-Webhook-Secret: ${ZAKUPAY_EMAIL_WEBHOOK_SECRET}" \
+            https://zakupay-mvp.onrender.com/automation/api/poll
