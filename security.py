@@ -392,7 +392,8 @@ def install_security(app: FastAPI) -> None:
         path = request.url.path
         browser_protected = path == "/dashboard" or path.startswith("/dashboard/")
         api_protected = path.startswith(("/analysis/", "/zakupay/")) or (
-            path.startswith("/automation/") and path != "/automation/email/ingest"
+            path.startswith("/automation/")
+            and path not in {"/automation/email/ingest", "/automation/api/poll"}
         ) or path in {
             "/orders",
             "/order",
