@@ -3,6 +3,7 @@ name: Process Zakupay Gmail notifications via API
 on:
   push:
     branches:
+      - main
       - ai-analysis-v1
   schedule:
     - cron: "0 * * * *"
