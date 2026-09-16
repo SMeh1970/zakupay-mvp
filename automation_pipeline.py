@@ -119,6 +119,10 @@ def _dedupe_key(raw_email: bytes, event) -> str:
     return hashlib.sha256(stable.encode("utf-8", errors="replace")).hexdigest()
 
 
+def _api_dedupe_key(order_id: int) -> str:
+    return hashlib.sha256(f"zakupay-api:{int(order_id)}".encode("utf-8")).hexdigest()
+
+
 def _unit_name(item):
     unit = item.get("unit") or item.get("unitName") or ""
     if isinstance(unit, dict):
@@ -500,7 +504,103 @@ def process_email(raw_email: bytes, fetch_order_by_id) -> dict:
     }
 
 
-def install_automation_pipeline(app, fetch_order_by_id):
+def process_api_order(order: dict) -> dict:
+    """Create one persistent review job from a Zakupay API order."""
+    order_id = int(order.get("id") or 0)
+    if not order_id:
+        raise ValueError("У заявки отсутствует ID")
+    if not order.get("orderItems"):
+        raise ValueError(f"Заявка {order_id} не содержит позиций")
+
+    key = _api_dedupe_key(order_id)
+    now = datetime.now(timezone.utc).isoformat()
+    with _lock, _connect() as conn:
+        existing = _execute(
+            conn, "SELECT * FROM automation_jobs WHERE dedupe_key = ?", (key,)
+        ).fetchone()
+        if existing and existing["status"] != "failed":
+            result = json.loads(existing["result_json"]) if existing["result_json"] else None
+            return {
+                "duplicate": True,
+                "job_id": existing["id"],
+                "status": existing["status"],
+                "error": existing["error"],
+                "result": result,
+            }
+
+        if existing:
+            job_id = existing["id"]
+            invoice_number = existing["invoice_number"]
+            _execute(
+                conn,
+                "UPDATE automation_jobs SET status='processing', error=NULL, updated_at=? WHERE id=?",
+                (now, job_id),
+            )
+        else:
+            invoice_number = None
+            insert_sql = """INSERT INTO automation_jobs
+                (dedupe_key,message_id,order_id,event_type,subject,sender,status,created_at,updated_at,invoice_number)
+                VALUES (?,?,?,?,?,?,?,?,?,?)"""
+            if DATABASE_URL:
+                insert_sql += " RETURNING id"
+            cursor = _execute(
+                conn,
+                insert_sql,
+                (
+                    key, None, order_id, "api_order", order.get("name") or f"Заявка {order_id}",
+                    "Zakupay API", "processing", now, now, invoice_number,
+                ),
+            )
+            job_id = cursor.fetchone()["id"] if DATABASE_URL else cursor.lastrowid
+
+    try:
+        result = build_vi_draft(order, invoice_number=invoice_number)
+        if result["summary"]["auto_ready"] > 0 and invoice_number is None:
+            with _lock, _connect() as conn:
+                last_row = _execute(
+                    conn, "SELECT MAX(invoice_number) AS max_invoice FROM automation_jobs"
+                ).fetchone()
+                last_number = last_row["max_invoice"] if DATABASE_URL else last_row[0]
+                invoice_number = max(
+                    INVOICE_NUMBER_START, (last_number or INVOICE_NUMBER_START - 1) + 1
+                )
+                _execute(
+                    conn,
+                    "UPDATE automation_jobs SET invoice_number=? WHERE id=?",
+                    (invoice_number, job_id),
+                )
+            result["invoice_number"] = invoice_number
+        status = result["status"]
+        error = None
+    except Exception as exc:
+        result = None
+        status = "failed"
+        error = f"{type(exc).__name__}: {exc}"
+
+    updated = datetime.now(timezone.utc).isoformat()
+    with _lock, _connect() as conn:
+        _execute(
+            conn,
+            "UPDATE automation_jobs SET status=?, error=?, result_json=?, updated_at=? WHERE id=?",
+            (
+                status,
+                error,
+                json.dumps(result, ensure_ascii=False) if result else None,
+                updated,
+                job_id,
+            ),
+        )
+    if error:
+        raise RuntimeError(error)
+    return {
+        "duplicate": False,
+        "job_id": job_id,
+        "status": status,
+        "result": result,
+    }
+
+
+def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, has_my_offer=None):
     @app.post("/automation/email/ingest")
     async def ingest_zakupay_email(
         request: Request,
@@ -519,6 +619,77 @@ def install_automation_pipeline(app, fetch_order_by_id):
             raise HTTPException(status_code=400, detail=str(exc))
         except RuntimeError as exc:
             raise HTTPException(status_code=502, detail=str(exc))
+
+    @app.post("/automation/api/poll")
+    def poll_zakupay_api(x_webhook_secret: str | None = Header(default=None)):
+        if not WEBHOOK_SECRET:
+            raise HTTPException(status_code=503, detail="ZAKUPAY_EMAIL_WEBHOOK_SECRET не настроен")
+        if x_webhook_secret != WEBHOOK_SECRET:
+            raise HTTPException(status_code=401, detail="Неверный секрет webhook")
+        if fetch_all_orders is None:
+            raise HTTPException(status_code=503, detail="Получение списка заявок не подключено")
+
+        orders = fetch_all_orders(force=True)
+        prepayment = []
+        skipped_payment = skipped_offer = skipped_empty = 0
+        for order in orders:
+            try:
+                delay = float(order.get("delay"))
+            except (TypeError, ValueError):
+                skipped_payment += 1
+                continue
+            if delay != 0:
+                skipped_payment += 1
+                continue
+            if has_my_offer and has_my_offer(order):
+                skipped_offer += 1
+                continue
+            if not order.get("orderItems"):
+                skipped_empty += 1
+                continue
+            prepayment.append(order)
+
+        # Keep an hourly HTTP invocation bounded. Persistent deduplication makes
+        # the next invocation continue with the remaining new orders.
+        max_orders = max(1, min(int(os.getenv("AUTO_API_MAX_ORDERS_PER_RUN", "5")), 25))
+        processed = []
+        duplicates = 0
+        attempted = 0
+        failures = []
+        for order in prepayment:
+            if attempted >= max_orders:
+                break
+            attempted += 1
+            try:
+                outcome = process_api_order(order)
+                if outcome.get("duplicate"):
+                    duplicates += 1
+                    continue
+                processed.append({
+                    "order_id": order.get("id"),
+                    "job_id": outcome.get("job_id"),
+                    "status": outcome.get("status"),
+                    "invoice_number": (outcome.get("result") or {}).get("invoice_number"),
+                })
+            except Exception as exc:
+                failures.append({"order_id": order.get("id"), "error": f"{type(exc).__name__}: {exc}"})
+
+        return {
+            "source": "Zakupay API",
+            "total_actual": len(orders),
+            "prepayment_candidates": len(prepayment),
+            "attempted": attempted,
+            "processed_new": len(processed),
+            "already_processed": duplicates,
+            "processed": processed,
+            "failed": failures,
+            "skipped": {
+                "not_confirmed_prepayment": skipped_payment,
+                "already_has_our_offer": skipped_offer,
+                "without_items": skipped_empty,
+            },
+            "batch_limit": max_orders,
+        }
 
     @app.get("/automation/jobs")
     def automation_jobs(limit: int = 100):
