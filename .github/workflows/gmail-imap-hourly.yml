@@ -1,4 +1,5 @@
 name: Process Zakupay API orders
+# Zakupay API is the source of truth; Gmail forwarding is no longer used.
 
 on:
   push:
