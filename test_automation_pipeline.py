@@ -24,6 +24,7 @@ Content-Type: text/plain; charset=utf-8
 ORDER = {
     "id": 37299999,
     "name": "Тест",
+    "delay": 0,
     "orderItems": [{"id": 10, "goodName": "Маркер черный 1 мм", "count": 10, "unit": {"name": "шт"}}],
 }
 
@@ -76,6 +77,7 @@ class PipelineTests(unittest.TestCase):
     def test_partial_invoice_contains_only_confirmed_rows(self, search):
         order = {
             "id": 37299999,
+            "delay": 0,
             "orderItems": [
                 {"id": 1, "goodName": "Маркер черный 1 мм", "count": 2, "unit": {"name": "шт"}},
                 {"id": 2, "goodName": "Ковер 100x100 см", "count": 1, "unit": {"name": "шт"}},
