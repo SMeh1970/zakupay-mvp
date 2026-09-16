@@ -66,7 +66,8 @@ def _prepayment_confirmed(order: dict) -> bool:
     terms = str(order.get("paymentTerms") or "").lower().replace("ё", "е")
     terms = " ".join(terms.split())
     if not terms:
-        return False
+        # Zakupay omits the entire delay row in autorequest emails when delay is zero.
+        return order.get("source") == "email_fallback"
     if "предоплат" in terms or "без отсроч" in terms or "отсрочка не требуется" in terms:
         return True
     if terms in {"нет", "не требуется", "0", "0 дней", "0 день", "0 дн."}:
@@ -475,7 +476,7 @@ def process_email(raw_email: bytes, fetch_order_by_id) -> dict:
         existing = _execute(conn,
             "SELECT * FROM automation_jobs WHERE dedupe_key = ?", (key,)
         ).fetchone()
-        if existing and existing["status"] != "failed":
+        if existing and existing["status"] not in {"failed", "skipped_not_prepayment"}:
             result = json.loads(existing["result_json"]) if existing["result_json"] else None
             response = {
                 "duplicate": True,
