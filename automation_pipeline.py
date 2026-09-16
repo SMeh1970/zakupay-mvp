@@ -12,6 +12,7 @@ import hashlib
 import hmac
 import html
 import json
+import logging
 import os
 import math
 import re
@@ -50,6 +51,7 @@ GITHUB_OIDC_ISSUER = "https://token.actions.githubusercontent.com"
 GITHUB_REPOSITORY = os.getenv("GITHUB_AUTOMATION_REPOSITORY", "SMeh1970/zakupay-mvp")
 
 _lock = threading.Lock()
+logger = logging.getLogger("zakupay.automation")
 
 
 def _authorized_automation_call(webhook_secret: str | None, authorization: str | None) -> bool:
@@ -690,12 +692,12 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
         for order in prepayment:
             if attempted >= max_orders:
                 break
-            attempted += 1
             try:
                 outcome = process_api_order(order)
                 if outcome.get("duplicate"):
                     duplicates += 1
                     continue
+                attempted += 1
                 processed.append({
                     "order_id": order.get("id"),
                     "job_id": outcome.get("job_id"),
@@ -703,9 +705,10 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
                     "invoice_number": (outcome.get("result") or {}).get("invoice_number"),
                 })
             except Exception as exc:
+                attempted += 1
                 failures.append({"order_id": order.get("id"), "error": f"{type(exc).__name__}: {exc}"})
 
-        return {
+        response = {
             "source": "Zakupay API",
             "total_actual": len(orders),
             "prepayment_candidates": len(prepayment),
@@ -721,6 +724,12 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
             },
             "batch_limit": max_orders,
         }
+        logger.info(
+            "api poll total=%s prepayment=%s attempted=%s new=%s duplicates=%s failed=%s",
+            response["total_actual"], response["prepayment_candidates"], response["attempted"],
+            response["processed_new"], response["already_processed"], len(response["failed"]),
+        )
+        return response
 
     @app.get("/automation/jobs")
     def automation_jobs(limit: int = 100):
