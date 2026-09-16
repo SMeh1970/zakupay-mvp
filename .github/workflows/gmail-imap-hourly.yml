@@ -1,37 +1,32 @@
-name: Forward Zakupay Gmail messages
-# Production hourly Gmail review-card generation.
+name: Process Zakupay API orders
 
 on:
-  workflow_dispatch:
+  push:
+    branches:
+      - ai-analysis-v1
   schedule:
-    - cron: "7 * * * *"
-
-concurrency:
-  group: zakupay-gmail-hourly
-  cancel-in-progress: false
+    - cron: "0 * * * *"
+  workflow_dispatch:
 
 permissions:
   contents: read
+  id-token: write
 
 jobs:
-  forward:
+  process:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 30
     steps:
-      - name: Check out reviewed code
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Forward verified Zakupay messages
-        env:
-          GMAIL_IMAP_EMAIL: "1043324@gmail.com"
-          GMAIL_IMAP_APP_PASSWORD: ${{ secrets.GMAIL_IMAP_APP_PASSWORD }}
-          ZAKUPAY_EMAIL_WEBHOOK_SECRET: ${{ secrets.ZAKUPAY_EMAIL_WEBHOOK_SECRET }}
-          WEBHOOK_URL: "https://zakupay-mvp.onrender.com/automation/email/ingest"
-          START_AFTER: "1789333200"
-          GMAIL_MAX_MESSAGES_PER_RUN: "25"
-        run: python gmail_imap_forwarder.py
+      - name: Process current prepayment orders
+        run: |
+          OIDC_TOKEN="$(curl --fail-with-body --show-error --silent \
+            -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=zakupay-mvp" \
+            | python -c 'import json,sys; print(json.load(sys.stdin)["value"])')"
+          curl --fail-with-body --show-error --silent \
+            --max-time 1500 \
+            --retry 2 \
+            --retry-delay 15 \
+            -X POST \
+            -H "Authorization: Bearer ${OIDC_TOKEN}" \
+            https://zakupay-mvp.onrender.com/automation/api/poll
