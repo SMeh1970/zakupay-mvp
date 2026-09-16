@@ -188,6 +188,50 @@ def fetch_all_orders(force=False, api_filters=None):
         if len(batch) < 10:
             break
 
+    # The public collection endpoint may return an empty set for supplier
+    # accounts even though the same orders are visible in Zakupay's registry.
+    # Fall back to the endpoint used by that registry so hourly automation does
+    # not silently treat a restricted public response as "no active orders".
+    if not all_orders and not api_filters:
+        try:
+            response = requests.post(
+                f"{ZAKUPAY_BASE_URL}/core/supplier/getorders",
+                headers=dict(zakupay_headers(), **{"Content-Type": "application/json"}),
+                json={"status": "actual", "size": 1000},
+                timeout=30,
+            )
+            if response.status_code == 401:
+                raise HTTPException(status_code=401, detail="Закупай отклонил токен")
+            if response.status_code == 403:
+                raise HTTPException(status_code=403, detail="Недостаточно прав для получения заявок")
+            if response.ok:
+                payload = response.json()
+                if isinstance(payload, list):
+                    candidates = payload
+                elif isinstance(payload, dict):
+                    candidates = payload.get("orders") or payload.get("data") or []
+                else:
+                    candidates = []
+                for order in candidates:
+                    if not isinstance(order, dict):
+                        continue
+                    oid = order.get("id")
+                    if oid in seen_ids:
+                        continue
+                    seen_ids.add(oid)
+                    all_orders.append(order)
+                logger.warning(
+                    "orders collection empty; registry fallback status=%s candidates=%s",
+                    response.status_code,
+                    len(all_orders),
+                )
+            else:
+                logger.warning("orders registry fallback status=%s", response.status_code)
+        except HTTPException:
+            raise
+        except (requests.RequestException, ValueError, TypeError) as exc:
+            logger.warning("orders registry fallback failed=%s", type(exc).__name__)
+
     _orders_cache.update({"ts": now, "key": cache_key, "orders": all_orders})
     return all_orders
 
