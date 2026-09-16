@@ -724,7 +724,7 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
             },
             "batch_limit": max_orders,
         }
-        logger.info(
+        logger.warning(
             "api poll total=%s prepayment=%s attempted=%s new=%s duplicates=%s failed=%s",
             response["total_actual"], response["prepayment_candidates"], response["attempted"],
             response["processed_new"], response["already_processed"], len(response["failed"]),
