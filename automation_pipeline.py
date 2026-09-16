@@ -54,6 +54,26 @@ _lock = threading.Lock()
 logger = logging.getLogger("zakupay.automation")
 
 
+def _prepayment_confirmed(order: dict) -> bool:
+    """Return True only when API or email explicitly confirms no payment delay."""
+    delay = order.get("delay")
+    if delay is not None and str(delay).strip() != "":
+        try:
+            return float(delay) == 0
+        except (TypeError, ValueError):
+            return False
+
+    terms = str(order.get("paymentTerms") or "").lower().replace("ё", "е")
+    terms = " ".join(terms.split())
+    if not terms:
+        return False
+    if "предоплат" in terms or "без отсроч" in terms or "отсрочка не требуется" in terms:
+        return True
+    if terms in {"нет", "не требуется", "0", "0 дней", "0 день", "0 дн."}:
+        return True
+    return False
+
+
 def _authorized_automation_call(webhook_secret: str | None, authorization: str | None) -> bool:
     if WEBHOOK_SECRET and webhook_secret and hmac.compare_digest(webhook_secret, WEBHOOK_SECRET):
         return True
@@ -504,16 +524,21 @@ def process_email(raw_email: bytes, fetch_order_by_id) -> dict:
             }
         if not order:
             raise LookupError("Заявка не получена из API Закупай, состав отсутствует в письме")
-        try:
-            delay = float(order.get("delay"))
-        except (TypeError, ValueError):
-            delay = None
-        if delay != 0:
+        prepayment_confirmed = _prepayment_confirmed(order)
+        logger.warning(
+            "email order=%s source=%s positions=%s prepayment=%s payment_terms=%r",
+            event.order_id,
+            order.get("source", "zakupay_api"),
+            len(order.get("orderItems") or []),
+            prepayment_confirmed,
+            str(order.get("paymentTerms") or "")[:120],
+        )
+        if not prepayment_confirmed:
             result = {
                 "order_id": order.get("id"),
                 "order_name": order.get("name"),
                 "status": "skipped_not_prepayment",
-                "reason": "Условие предоплаты не подтверждено API Закупай",
+                "reason": "Условие предоплаты не подтверждено ни API Закупай, ни письмом",
                 "invoice_number": None,
                 "summary": {"positions": len(order.get("orderItems") or []), "auto_ready": 0},
                 "items": [],
