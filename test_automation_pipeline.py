@@ -37,6 +37,42 @@ class PipelineTests(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
+    def test_search_variants_expand_russian_catalog_word_forms(self):
+        variants = pipeline._search_variants("Нарукавники брезентовые")
+        self.assertIn("нарукавники брезентовые", variants)
+        self.assertIn("брезентовые нарукавники", variants)
+        self.assertIn("нарукавник брезентовый", variants)
+        self.assertIn("брезентовый нарукавник", variants)
+        self.assertIn("нарукавники", variants)
+
+    @patch.object(pipeline.VseinstrumentiAdapter, "search")
+    def test_broad_catalog_variant_recovers_product(self, search):
+        order = {
+            "id": 37299999,
+            "orderItems": [{
+                "id": 1,
+                "goodName": "Нарукавники брезентовые",
+                "count": 10,
+                "unit": {"name": "пар"},
+            }],
+        }
+
+        def results(query, limit=8):
+            if query == "нарукавники":
+                return [SupplierQuote(
+                    supplier="ВИ",
+                    name="Нарукавники брезентовые ФАЕР РЕЗИСТ п.420гр",
+                    sku="36641496",
+                    price=175,
+                    stock=100,
+                )]
+            return []
+
+        search.side_effect = results
+        item = pipeline.build_vi_draft(order)["items"][0]
+        self.assertEqual(item["selected"]["sku"], "36641496")
+        self.assertEqual(item["decision"], "review")
+
     @patch.object(pipeline.VseinstrumentiAdapter, "search")
     def test_builds_draft_and_deduplicates_message(self, search):
         search.return_value = [SupplierQuote(
