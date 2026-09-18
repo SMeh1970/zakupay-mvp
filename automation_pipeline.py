@@ -909,12 +909,45 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
                 "<p><a href='/dashboard/automation'>← Все заявки</a></p>"
                 f"<h1>Заявка Закупай № {row['order_id']}</h1>"
                 f"<p>Счёт № {row['invoice_number']} · статус: {html.escape(str(row['status']))}</p>"
+                f"<form method='post' action='/dashboard/automation/jobs/{job_id}/refresh'><p><button class='button' type='submit'>Повторить поиск в ВИ</button></p></form>"
                 f"<form method='post' action='/dashboard/automation/jobs/{job_id}/review'><table><tr><th>Включить</th><th>№</th><th>Заявка</th><th>Подбор ВИ</th><th>Количество</th><th>Цена</th>"
                 "<th>Статус подбора</th><th>Замена</th><th>Наличие</th><th>Срок</th><th>Решение</th></tr>"
                 + "".join(table_rows) + "</table><p><button type='submit'>Сохранить и пересчитать счёт</button></p></form>" + invoice_link + offer_link + "</main></body></html>"
             ),
             media_type="text/html",
         )
+
+    @app.post("/dashboard/automation/jobs/{job_id}/refresh")
+    def automation_review_refresh(job_id: int):
+        with _connect() as conn:
+            row = _execute(conn, "SELECT * FROM automation_jobs WHERE id=?", (job_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Задание не найдено")
+        old_result = json.loads(row["result_json"]) if row["result_json"] else {}
+        if old_result.get("live_offer_created"):
+            raise HTTPException(status_code=409, detail="Предложение уже отправлено; повторный подбор заблокирован")
+
+        order = fetch_order_by_id(int(row["order_id"]), force=True)
+        if not order:
+            raise HTTPException(status_code=409, detail="Заявка больше не доступна через API Закупай")
+        result = build_vi_draft(order, invoice_number=row["invoice_number"])
+        invoice_number = row["invoice_number"]
+        if result["summary"]["auto_ready"] > 0 and invoice_number is None:
+            with _lock, _connect() as conn:
+                last_row = _execute(conn, "SELECT MAX(invoice_number) AS max_invoice FROM automation_jobs").fetchone()
+                last_number = last_row["max_invoice"] if DATABASE_URL else last_row[0]
+                invoice_number = max(INVOICE_NUMBER_START, (last_number or INVOICE_NUMBER_START - 1) + 1)
+                _execute(conn, "UPDATE automation_jobs SET invoice_number=? WHERE id=?", (invoice_number, job_id))
+            result["invoice_number"] = invoice_number
+
+        updated = datetime.now(timezone.utc).isoformat()
+        with _lock, _connect() as conn:
+            _execute(
+                conn,
+                "UPDATE automation_jobs SET status=?, error=NULL, result_json=?, updated_at=? WHERE id=?",
+                (result["status"], json.dumps(result, ensure_ascii=False), updated, job_id),
+            )
+        return Response(status_code=303, headers={"Location": f"/dashboard/automation/jobs/{job_id}/review"})
 
     @app.post("/dashboard/automation/jobs/{job_id}/review")
     async def automation_review_save(job_id: int, request: Request):
