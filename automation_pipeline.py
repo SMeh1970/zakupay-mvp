@@ -210,6 +210,30 @@ def _search_variants(requested: str) -> list[str]:
         ("держатель", "адаптер"),
     )
     normalized = _norm(cleaned)
+
+    # VI's public site expands Russian word forms automatically, while the
+    # OpenAPI product search is less forgiving.  A catalogue request such as
+    # "нарукавники брезентовые" can therefore return no products even though
+    # the site has a full category.  Add conservative word-order and inflection
+    # variants before falling back to the original phrase.
+    words = normalized.split()
+    if 2 <= len(words) <= 4:
+        variants.append(" ".join(reversed(words)))
+    russian_catalog_forms = {
+        "нарукавники": "нарукавник",
+        "брезентовые": "брезентовый",
+    }
+    inflected = [russian_catalog_forms.get(word, word) for word in words]
+    if inflected != words:
+        variants.append(" ".join(inflected))
+        if 2 <= len(inflected) <= 4:
+            variants.append(" ".join(reversed(inflected)))
+
+    # For a short generic catalogue name, one precise noun is a useful final
+    # retrieval query.  Matching and hard-conflict checks still decide whether
+    # any returned product may be used in an invoice.
+    if len(words) <= 4:
+        variants.extend(word for word in words if len(word) >= 5)
     for left, right in synonym_groups:
         if left in normalized:
             variants.append(normalized.replace(left, right))
