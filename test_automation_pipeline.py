@@ -45,6 +45,18 @@ class PipelineTests(unittest.TestCase):
         self.assertIn("брезентовый нарукавник", variants)
         self.assertIn("нарукавники", variants)
 
+    def test_purchase_label_explains_pack_and_unit_price_basis(self):
+        packed = pipeline._purchase_label(
+            {"name": "Саморезы, 1000 шт.", "price": 1339.0, "unit": "Упаковка"},
+            "шт",
+        )
+        single = pipeline._purchase_label(
+            {"name": "Защитные очки", "price": 76.0, "unit": "шт"},
+            "шт",
+        )
+        self.assertIn("закупка ВИ: 1339 ₽ за упаковку 1000 шт.", packed)
+        self.assertIn("закупка ВИ: 76 ₽ за 1 шт", single)
+
     @patch.object(pipeline.VseinstrumentiAdapter, "search")
     def test_broad_catalog_variant_recovers_product(self, search):
         order = {
