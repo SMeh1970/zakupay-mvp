@@ -266,6 +266,27 @@ def _pack_size(name: str, supplier_unit: str | None, requested_unit: str) -> int
     return max(values) if values else 1
 
 
+def _purchase_label(candidate: dict, requested_unit: str) -> str:
+    """Human-readable VI purchase price with its sales-unit context."""
+    name = str(candidate.get("name") or "Товар ВИ")
+    price = candidate.get("price")
+    if price is None:
+        return f"{name} — закупочная цена ВИ не передана"
+    numeric_price = float(price)
+    price_text = (
+        str(int(numeric_price))
+        if numeric_price.is_integer()
+        else f"{numeric_price:.2f}".rstrip("0").rstrip(".")
+    )
+    pack_size = _pack_size(name, candidate.get("unit"), requested_unit)
+    if pack_size > 1:
+        price_basis = f"за упаковку {pack_size} шт."
+    else:
+        supplier_unit = str(candidate.get("unit") or requested_unit or "ед.").strip()
+        price_basis = f"за 1 {supplier_unit}"
+    return f"{name} — закупка ВИ: {price_text} ₽ {price_basis}"
+
+
 def _hard_conflicts(requested: str, selected: dict) -> list[str]:
     conflicts = []
     candidate_text = " ".join(str(selected.get(key) or "") for key in ("name", "article", "sku"))
@@ -874,7 +895,7 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
             usable_candidates = [candidate for candidate in candidates if not candidate.get("error")]
             for idx, candidate in enumerate(usable_candidates):
                 key = str(candidate.get("sku") or candidate.get("article") or candidate.get("name") or "")
-                label = f"{candidate.get('name')} — {candidate.get('price') or '—'} ₽"
+                label = _purchase_label(candidate, str(item.get("unit") or ""))
                 candidate_options.append(f"<option value='{idx}' {'selected' if key == selected_sku else ''}>{html.escape(label)}</option>")
             checked = "checked" if _included(item) else ""
             table_rows.append(
@@ -910,7 +931,7 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
                 f"<h1>Заявка Закупай № {row['order_id']}</h1>"
                 f"<p>Счёт № {row['invoice_number']} · статус: {html.escape(str(row['status']))}</p>"
                 f"<form method='post' action='/dashboard/automation/jobs/{job_id}/refresh'><p><button class='button' type='submit'>Повторить поиск в ВИ</button></p></form>"
-                f"<form method='post' action='/dashboard/automation/jobs/{job_id}/review'><table><tr><th>Включить</th><th>№</th><th>Заявка</th><th>Подбор ВИ</th><th>Количество</th><th>Цена</th>"
+                f"<form method='post' action='/dashboard/automation/jobs/{job_id}/review'><table><tr><th>Включить</th><th>№</th><th>Заявка</th><th>Подбор ВИ<br><small>(закупочная цена)</small></th><th>Количество</th><th>Наша цена<br><small>за единицу заявки (+5%)</small></th>"
                 "<th>Статус подбора</th><th>Замена</th><th>Наличие</th><th>Срок</th><th>Решение</th></tr>"
                 + "".join(table_rows) + "</table><p><button type='submit'>Сохранить и пересчитать счёт</button></p></form>" + invoice_link + offer_link + "</main></body></html>"
             ),
