@@ -27,6 +27,23 @@ _orders_cache = {"ts": 0.0, "key": "", "orders": []}
 logger = logging.getLogger("zakupay.orders")
 
 
+def _orders_from_payload(data):
+    """Accept the collection wrappers used by different Zakupay API builds."""
+    if isinstance(data, list):
+        return [item for item in data if isinstance(item, dict)]
+    if not isinstance(data, dict):
+        return []
+    for key in ("orders", "items", "data", "content", "result"):
+        value = data.get(key)
+        if isinstance(value, list):
+            return [item for item in value if isinstance(item, dict)]
+        if isinstance(value, dict):
+            nested = _orders_from_payload(value)
+            if nested:
+                return nested
+    return []
+
+
 def esc(value):
     return "" if value is None else html.escape(str(value))
 
@@ -96,36 +113,51 @@ def fetch_order_by_id(order_id, force=False):
     # orders[0].orderItems.  The older senderId/orderId/zakupayIds probes do not
     # filter by the application id and must not be used for this lookup.
     try:
-        response = requests.get(
-            list_url,
-            headers=zakupay_headers(),
-            params=dict(common, ids=order_id),
-            timeout=30,
-        )
-        if response.status_code == 401:
-            raise HTTPException(status_code=401, detail="Закупай отклонил токен")
-        if response.status_code == 403:
-            raise HTTPException(status_code=403, detail="Недостаточно прав для получения заявки")
-        if response.ok:
+        response = None
+        candidates = []
+        # Installations of the supplier API accept one of these equivalent
+        # serializations for a collection parameter.  Stop after the first
+        # successful match; this is an exact lookup, never a broad import.
+        for id_params in (
+            {"ids": order_id},
+            {"ids[]": order_id},
+            {"ids": f"[{order_id}]"},
+        ):
+            response = requests.get(
+                list_url,
+                headers=zakupay_headers(),
+                params=dict(common, **id_params),
+                timeout=30,
+            )
+            if response.status_code in {401, 403}:
+                break
+            if not response.ok:
+                continue
             data = response.json()
-            candidates = data.get("orders") if isinstance(data, dict) else data
-            if not isinstance(candidates, list):
-                candidates = []
+            candidates = _orders_from_payload(data)
             order = next(
-                (o for o in candidates if isinstance(o, dict) and int(o.get("id") or 0) == order_id),
+                (o for o in candidates if int(o.get("id") or 0) == order_id),
                 None,
             )
             logger.warning(
-                "order lookup id=%s method=ids status=%s candidates=%s found=%s items=%s",
+                "order lookup id=%s params=%s status=%s keys=%s candidates=%s found=%s items=%s",
                 order_id,
+                next(iter(id_params)),
                 response.status_code,
+                sorted(data.keys()) if isinstance(data, dict) else type(data).__name__,
                 len(candidates),
                 bool(order),
                 len(order.get("orderItems") or []) if order else 0,
             )
             if order:
                 return order
-        else:
+        if response is None:
+            return None
+        if response.status_code == 401:
+            raise HTTPException(status_code=401, detail="Закупай отклонил токен")
+        if response.status_code == 403:
+            raise HTTPException(status_code=403, detail="Недостаточно прав для получения заявки")
+        if not response.ok:
             logger.warning("order lookup id=%s method=ids status=%s", order_id, response.status_code)
     except HTTPException:
         raise
