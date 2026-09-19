@@ -207,9 +207,6 @@ install_analysis_detail(
     zakupay_base_url=ZAKUPAY_BASE_URL,
     esc=esc,
     fetch_order_by_id=fetch_order_by_id,
-    load_offer_context=load_automation_offer_context,
-    mark_offer_created=mark_automation_offer_created,
-    build_invoice=build_invoice_xlsx,
 )
 install_api_discovery(
     app,
@@ -225,6 +222,9 @@ install_offer_panel(
     zakupay_base_url=ZAKUPAY_BASE_URL,
     esc=esc,
     fetch_order_by_id=fetch_order_by_id,
+    load_offer_context=load_automation_offer_context,
+    mark_offer_created=mark_automation_offer_created,
+    build_invoice=build_invoice_xlsx,
 )
 install_automation_pipeline(
     app,
