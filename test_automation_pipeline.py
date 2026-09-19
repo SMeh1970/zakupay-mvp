@@ -275,6 +275,14 @@ class PipelineTests(unittest.TestCase):
         self.assertFalse(first["duplicate"])
         self.assertTrue(second["duplicate"])
         self.assertEqual(first["result"]["invoice_number"], 240)
+        context = pipeline.load_automation_offer_context(ORDER["id"])
+        self.assertEqual(context["job_id"], first["job_id"])
+        self.assertEqual(context["order"]["orderItems"][0]["id"], 10)
+
+        pipeline.mark_automation_offer_created(first["job_id"], offer_id="offer-1", file_id="file-1")
+        context = pipeline.load_automation_offer_context(ORDER["id"])
+        self.assertTrue(context["result"]["live_offer_created"])
+        self.assertEqual(context["result"]["live_offer_id"], "offer-1")
 
     @patch.object(pipeline, "build_vi_draft")
     def test_failed_api_order_can_be_retried(self, build):
