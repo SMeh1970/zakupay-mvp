@@ -916,7 +916,21 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
         if fetch_all_orders is None:
             raise HTTPException(status_code=503, detail="Получение списка заявок не подключено")
 
-        orders = fetch_all_orders(force=True)
+        try:
+            orders = fetch_all_orders(force=True)
+        except HTTPException as exc:
+            if exc.status_code not in {502, 503, 504}:
+                raise
+            logger.warning("api poll deferred because Zakupay is unavailable: %s", exc.detail)
+            # A temporary upstream timeout is not a failed scheduler run.  No
+            # application is marked as processed; the next hourly run retries.
+            return JSONResponse({
+                "source": "Zakupay API",
+                "status": "temporarily_unavailable",
+                "processed_new": 0,
+                "retry": "next_hourly_run",
+                "detail": str(exc.detail),
+            })
         prepayment = []
         skipped_payment = skipped_offer = skipped_empty = 0
         for order in orders:
