@@ -10,12 +10,17 @@ from main import (
     app, api_filter_dict, compact_order, esc, fetch_all_orders, fetch_order_by_id, filter_orders,
     has_my_offer, max_competitors, zakupay_headers, ZAKUPAY_BASE_URL,
 )
-from automation_pipeline import install_automation_pipeline
+from automation_pipeline import (
+    install_automation_pipeline,
+    load_automation_offer_context,
+    mark_automation_offer_created,
+)
 import ai_panel
 from ai_panel_v2 import install_ai_panel_v2
 from analysis_detail import install_analysis_detail
 from api_discovery import install_api_discovery
 from offer_panel_safe import install_offer_panel
+from invoice_generator import build_invoice_xlsx
 from price_estimator import analyze_order_v2
 from supplier_panel import install_supplier_panel
 from security import OAUTH_SCOPE, PANEL_USERNAME, _origin, _sign_payload, current_mcp_resource
@@ -202,6 +207,9 @@ install_analysis_detail(
     zakupay_base_url=ZAKUPAY_BASE_URL,
     esc=esc,
     fetch_order_by_id=fetch_order_by_id,
+    load_offer_context=load_automation_offer_context,
+    mark_offer_created=mark_automation_offer_created,
+    build_invoice=build_invoice_xlsx,
 )
 install_api_discovery(
     app,
