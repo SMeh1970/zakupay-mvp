@@ -557,6 +557,50 @@ def _saved_order_snapshot(row, result: dict) -> dict | None:
             logger.warning("invalid saved order snapshot job_id=%s", row.get("id") if hasattr(row, "get") else "unknown")
     return _order_from_saved_result(row, result)
 
+
+def load_automation_offer_context(order_id: int) -> dict | None:
+    """Return the latest locally persisted, reviewable application snapshot."""
+    with _connect() as conn:
+        row = _execute(
+            conn,
+            """SELECT * FROM automation_jobs
+               WHERE order_id=? AND result_json IS NOT NULL
+                 AND status != 'skipped_not_prepayment'
+               ORDER BY id DESC LIMIT 1""",
+            (int(order_id),),
+        ).fetchone()
+    if not row:
+        return None
+    result = json.loads(row["result_json"])
+    order = _saved_order_snapshot(row, result)
+    if not order:
+        return None
+    return {
+        "job_id": int(row["id"]),
+        "invoice_number": row["invoice_number"],
+        "order": order,
+        "result": result,
+    }
+
+
+def mark_automation_offer_created(job_id: int, offer_id=None, file_id=None, response=None) -> None:
+    """Persist a successful live submission to prevent accidental duplicates."""
+    with _lock, _connect() as conn:
+        row = _execute(conn, "SELECT result_json FROM automation_jobs WHERE id=?", (int(job_id),)).fetchone()
+        if not row or not row["result_json"]:
+            raise LookupError("Сохранённая обработка заявки не найдена")
+        result = json.loads(row["result_json"])
+        result["live_offer_created"] = True
+        result["live_offer_created_at"] = datetime.now(timezone.utc).isoformat()
+        result["live_offer_id"] = offer_id
+        result["live_offer_file_id"] = file_id
+        result["live_offer_response"] = response
+        _execute(
+            conn,
+            "UPDATE automation_jobs SET status='offer_created', result_json=?, updated_at=? WHERE id=?",
+            (json.dumps(result, ensure_ascii=False), result["live_offer_created_at"], int(job_id)),
+        )
+
 def process_email(raw_email: bytes, fetch_order_by_id) -> dict:
     event = parse_zakupay_email(raw_email)
     if event.event_type != "new_order":
