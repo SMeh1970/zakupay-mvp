@@ -1,3 +1,4 @@
+import json
 import os
 import tempfile
 import unittest
@@ -75,6 +76,21 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(order["orderItems"][0]["goodName"], "Нарукавники брезентовые")
         self.assertEqual(order["orderItems"][0]["unit"]["name"], "пара")
 
+    def test_refresh_prefers_full_saved_order_snapshot(self):
+        row = {
+            "id": 89,
+            "order_id": 37247138,
+            "subject": "Заявка из письма",
+            "order_json": json.dumps({
+                "id": 37247138,
+                "deliveryAddress": "Сохранённый адрес",
+                "orderItems": [{"goodName": "Нарукавники брезентовые", "count": 25}],
+            }, ensure_ascii=False),
+        }
+        order = pipeline._saved_order_snapshot(row, {"items": []})
+        self.assertEqual(order["source"], "saved_order_snapshot")
+        self.assertEqual(order["deliveryAddress"], "Сохранённый адрес")
+
     @patch.object(pipeline.VseinstrumentiAdapter, "search")
     def test_broad_catalog_variant_recovers_product(self, search):
         order = {
@@ -122,6 +138,12 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(first["result"]["prepayment_percent"], 100.0)
         self.assertTrue(first["result"]["delivery_included"])
         self.assertFalse(first["result"]["live_offer_created"])
+        with pipeline._connect() as conn:
+            row = pipeline._execute(
+                conn, "SELECT order_json FROM automation_jobs WHERE id=?", (first["job_id"],)
+            ).fetchone()
+        saved_order = json.loads(row["order_json"])
+        self.assertEqual(saved_order["orderItems"][0]["goodName"], "Маркер черный 1 мм")
 
     @patch.object(pipeline.VseinstrumentiAdapter, "search")
     def test_assigns_sequential_invoice_numbers(self, search):
