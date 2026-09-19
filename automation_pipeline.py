@@ -428,6 +428,8 @@ def build_vi_draft(order: dict, invoice_number: int | None = None) -> dict:
         "order_id": order.get("id"),
         "order_name": order.get("name"),
         "customer": order.get("customer") or {},
+        "zakupay_line_ids_complete": bool(items) and all(item.get("id") is not None for item in items),
+        "order_source": order.get("source") or "zakupay_api",
         "status": status,
         "live_offer_created": False,
         "invoice_number": invoice_number,
