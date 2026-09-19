@@ -583,6 +583,61 @@ def load_automation_offer_context(order_id: int) -> dict | None:
     }
 
 
+def enrich_automation_offer_context(order_id: int, fresh_order: dict | None) -> dict | None:
+    """Persist one deliberate API enrichment of missing Zakupay line IDs."""
+    context = load_automation_offer_context(order_id)
+    if not context:
+        return None
+    result = context["result"]
+    saved_order = context["order"]
+    result["order_id_enrichment_attempted_at"] = datetime.now(timezone.utc).isoformat()
+    result["order_id_enrichment_found"] = False
+
+    fresh_items = list((fresh_order or {}).get("orderItems") or [])
+    result_items = list(result.get("items") or [])
+    if fresh_items:
+        unused = set(range(len(fresh_items)))
+        for position, row in enumerate(result_items):
+            requested = _norm(row.get("requested_name") or "")
+            match_index = next(
+                (
+                    idx for idx in unused
+                    if requested and _norm(fresh_items[idx].get("goodName") or "") == requested
+                ),
+                None,
+            )
+            if match_index is None and position < len(fresh_items):
+                candidate_name = _norm(fresh_items[position].get("goodName") or "")
+                if requested and (requested in candidate_name or candidate_name in requested):
+                    match_index = position
+            if match_index is None:
+                continue
+            item_id = fresh_items[match_index].get("id")
+            if item_id is None:
+                continue
+            row["order_item_id"] = item_id
+            unused.discard(match_index)
+
+        if all(row.get("order_item_id") is not None for row in result_items):
+            result["order_id_enrichment_found"] = True
+        saved_order = dict(fresh_order)
+        saved_order["source"] = "zakupay_api_enrichment"
+
+    updated = datetime.now(timezone.utc).isoformat()
+    with _lock, _connect() as conn:
+        _execute(
+            conn,
+            "UPDATE automation_jobs SET order_json=?, result_json=?, updated_at=? WHERE id=?",
+            (
+                json.dumps(saved_order, ensure_ascii=False),
+                json.dumps(result, ensure_ascii=False),
+                updated,
+                context["job_id"],
+            ),
+        )
+    return load_automation_offer_context(order_id)
+
+
 def mark_automation_offer_created(job_id: int, offer_id=None, file_id=None, response=None) -> None:
     """Persist a successful live submission to prevent accidental duplicates."""
     with _lock, _connect() as conn:
