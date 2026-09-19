@@ -44,6 +44,7 @@ class PipelineTests(unittest.TestCase):
         self.assertIn("нарукавник брезентовый", variants)
         self.assertIn("брезентовый нарукавник", variants)
         self.assertIn("нарукавники", variants)
+        self.assertIn("36641496", variants)
 
     def test_purchase_label_explains_pack_and_unit_price_basis(self):
         packed = pipeline._purchase_label(
@@ -56,6 +57,23 @@ class PipelineTests(unittest.TestCase):
         )
         self.assertIn("закупка ВИ: 1339 ₽ за упаковку 1000 шт.", packed)
         self.assertIn("закупка ВИ: 76 ₽ за 1 шт", single)
+
+    def test_refresh_can_rebuild_order_from_saved_job(self):
+        order = pipeline._order_from_saved_result(
+            {"order_id": 37247138, "subject": "Заявка из письма"},
+            {
+                "order_name": "Брезентовые изделия",
+                "items": [{
+                    "order_item_id": 1,
+                    "requested_name": "Нарукавники брезентовые",
+                    "quantity": 25,
+                    "unit": "пара",
+                }],
+            },
+        )
+        self.assertEqual(order["source"], "saved_automation_job")
+        self.assertEqual(order["orderItems"][0]["goodName"], "Нарукавники брезентовые")
+        self.assertEqual(order["orderItems"][0]["unit"]["name"], "пара")
 
     @patch.object(pipeline.VseinstrumentiAdapter, "search")
     def test_broad_catalog_variant_recovers_product(self, search):
