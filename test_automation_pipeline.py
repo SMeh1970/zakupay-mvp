@@ -284,6 +284,22 @@ class PipelineTests(unittest.TestCase):
         self.assertTrue(context["result"]["live_offer_created"])
         self.assertEqual(context["result"]["live_offer_id"], "offer-1")
 
+    @patch.object(pipeline.VseinstrumentiAdapter, "search")
+    def test_missing_line_ids_are_enriched_once_and_persisted(self, search):
+        search.return_value = [SupplierQuote(
+            supplier="ВИ", name="Маркер черный 1 мм", sku="123", price=100, stock=50,
+        )]
+        order_without_ids = {
+            "id": ORDER["id"], "name": "Тест", "delay": 0,
+            "orderItems": [{"goodName": "Маркер черный 1 мм", "count": 10, "unit": {"name": "шт"}}],
+        }
+        created = pipeline.process_api_order(order_without_ids)
+        context = pipeline.enrich_automation_offer_context(ORDER["id"], ORDER)
+        self.assertEqual(context["job_id"], created["job_id"])
+        self.assertEqual(context["result"]["items"][0]["order_item_id"], 10)
+        self.assertTrue(context["result"]["order_id_enrichment_found"])
+        self.assertEqual(context["order"]["orderItems"][0]["id"], 10)
+
     @patch.object(pipeline, "build_vi_draft")
     def test_failed_api_order_can_be_retried(self, build):
         build.side_effect = RuntimeError("temporary")
