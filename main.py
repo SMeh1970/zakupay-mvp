@@ -23,6 +23,8 @@ app = FastAPI(
 ZAKUPAY_API_KEY = os.getenv("ZAKUPAY_API_KEY")
 ZAKUPAY_BASE_URL = os.getenv("ZAKUPAY_BASE_URL", "https://prodavay.sel-be.ru")
 CACHE_TTL_SECONDS = 60
+ZAKUPAY_REQUEST_ATTEMPTS = max(1, int(os.getenv("ZAKUPAY_REQUEST_ATTEMPTS", "3")))
+ZAKUPAY_REQUEST_TIMEOUT = max(10, int(os.getenv("ZAKUPAY_REQUEST_TIMEOUT", "30")))
 _orders_cache = {"ts": 0.0, "key": "", "orders": []}
 logger = logging.getLogger("zakupay.orders")
 
@@ -66,6 +68,33 @@ def clean_params(params):
     return result
 
 
+def _zakupay_request(call, url, **kwargs):
+    """Retry temporary Zakupay/network failures without retrying auth errors."""
+    kwargs.setdefault("timeout", ZAKUPAY_REQUEST_TIMEOUT)
+    last_error = None
+    for attempt in range(1, ZAKUPAY_REQUEST_ATTEMPTS + 1):
+        try:
+            response = call(url, **kwargs)
+            if response.status_code not in {429, 502, 503, 504}:
+                return response
+            last_error = f"HTTP {response.status_code}"
+        except (requests.Timeout, requests.ConnectionError) as exc:
+            last_error = str(exc)
+        except requests.RequestException:
+            raise
+        if attempt < ZAKUPAY_REQUEST_ATTEMPTS:
+            logger.warning(
+                "temporary Zakupay failure attempt=%s/%s error=%s",
+                attempt,
+                ZAKUPAY_REQUEST_ATTEMPTS,
+                last_error,
+            )
+            time.sleep(attempt)
+    raise requests.RequestException(
+        f"Закупай не ответил после {ZAKUPAY_REQUEST_ATTEMPTS} попыток: {last_error}"
+    )
+
+
 def request_orders_page(page=1, page_size=100, api_filters=None):
     url = f"{ZAKUPAY_BASE_URL}/api/v1/orders"
     # The supplier API exposes active orders by default.  `status=actual` is not
@@ -79,7 +108,9 @@ def request_orders_page(page=1, page_size=100, api_filters=None):
     if api_filters:
         params.update(clean_params(api_filters))
     try:
-        response = requests.get(url, headers=zakupay_headers(), params=params, timeout=30)
+        response = _zakupay_request(
+            requests.get, url, headers=zakupay_headers(), params=params
+        )
     except requests.RequestException as exc:
         raise HTTPException(status_code=502, detail=f"Ошибка соединения с Закупай: {exc}")
     if response.status_code == 401:
@@ -194,8 +225,16 @@ def fetch_all_orders(force=False, api_filters=None):
         return _orders_cache["orders"]
 
     all_orders, seen_ids = [], set()
+    public_api_error = None
     for page in range(1, 101):
-        data = request_orders_page(page=page, page_size=100, api_filters=api_filters)
+        try:
+            data = request_orders_page(page=page, page_size=100, api_filters=api_filters)
+        except HTTPException as exc:
+            if exc.status_code in {401, 403} or api_filters:
+                raise
+            public_api_error = str(exc.detail)
+            logger.warning("orders public API unavailable; trying registry fallback: %s", public_api_error)
+            break
         batch = data.get("orders") or []
         if not batch:
             break
@@ -221,11 +260,11 @@ def fetch_all_orders(force=False, api_filters=None):
     # not silently treat a restricted public response as "no active orders".
     if not all_orders and not api_filters:
         try:
-            response = requests.post(
+            response = _zakupay_request(
+                requests.post,
                 f"{ZAKUPAY_BASE_URL}/core/supplier/getorders",
                 headers=dict(zakupay_headers(), **{"Content-Type": "application/json"}),
                 json={"status": "actual", "size": 1000},
-                timeout=30,
             )
             if response.status_code == 401:
                 raise HTTPException(status_code=401, detail="Закупай отклонил токен")
@@ -258,6 +297,14 @@ def fetch_all_orders(force=False, api_filters=None):
             raise
         except (requests.RequestException, ValueError, TypeError) as exc:
             logger.warning("orders registry fallback failed=%s", type(exc).__name__)
+            if public_api_error:
+                raise HTTPException(
+                    status_code=503,
+                    detail=(
+                        "API Закупай временно недоступен: "
+                        f"основной endpoint: {public_api_error}; реестр: {exc}"
+                    ),
+                )
 
     _orders_cache.update({"ts": now, "key": cache_key, "orders": all_orders})
     return all_orders
