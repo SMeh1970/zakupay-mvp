@@ -3,12 +3,8 @@ name: Poll Zakupay API hourly
 # Gmail ingestion is intentionally disabled. Zakupay API is the only source.
 
 on:
-  push:
-    branches:
-      - main
-      - ai-analysis-v1
-  schedule:
-    - cron: "0 * * * *"
+  # Automatic polling is paused. Keep manual dispatch only so the workflow can
+  # be restored deliberately after Zakupay confirms API access.
   workflow_dispatch:
 
 permissions:
