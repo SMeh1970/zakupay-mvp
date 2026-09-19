@@ -12,7 +12,6 @@ from main import (
 )
 from automation_pipeline import (
     install_automation_pipeline,
-    enrich_automation_offer_context,
     load_automation_offer_context,
     mark_automation_offer_created,
 )
@@ -224,7 +223,6 @@ install_offer_panel(
     esc=esc,
     fetch_order_by_id=fetch_order_by_id,
     load_offer_context=load_automation_offer_context,
-    enrich_offer_context=enrich_automation_offer_context,
     mark_offer_created=mark_automation_offer_created,
     build_invoice=build_invoice_xlsx,
 )
