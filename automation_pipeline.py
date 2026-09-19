@@ -117,12 +117,14 @@ def _connect():
                 sender TEXT,
                 status TEXT NOT NULL,
                 error TEXT,
+                order_json TEXT,
                 result_json TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 invoice_number BIGINT
             )"""
         )
+        conn.execute("ALTER TABLE automation_jobs ADD COLUMN IF NOT EXISTS order_json TEXT")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_automation_jobs_order ON automation_jobs(order_id, created_at)")
         conn.commit()
         return conn
@@ -141,6 +143,7 @@ def _connect():
             sender TEXT,
             status TEXT NOT NULL,
             error TEXT,
+            order_json TEXT,
             result_json TEXT,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
@@ -152,6 +155,8 @@ def _connect():
     columns = {row[1] for row in conn.execute("PRAGMA table_info(automation_jobs)")}
     if "invoice_number" not in columns:
         conn.execute("ALTER TABLE automation_jobs ADD COLUMN invoice_number INTEGER")
+    if "order_json" not in columns:
+        conn.execute("ALTER TABLE automation_jobs ADD COLUMN order_json TEXT")
     return conn
 
 
@@ -537,6 +542,21 @@ def _order_from_saved_result(row, result: dict) -> dict | None:
         ],
     }
 
+
+def _saved_order_snapshot(row, result: dict) -> dict | None:
+    """Load the original stored order; support older rows via result recovery."""
+    keys = row.keys() if hasattr(row, "keys") else row
+    raw = row["order_json"] if "order_json" in keys else None
+    if raw:
+        try:
+            order = json.loads(raw)
+            if isinstance(order, dict) and order.get("orderItems"):
+                order["source"] = "saved_order_snapshot"
+                return order
+        except (TypeError, ValueError):
+            logger.warning("invalid saved order snapshot job_id=%s", row.get("id") if hasattr(row, "get") else "unknown")
+    return _order_from_saved_result(row, result)
+
 def process_email(raw_email: bytes, fetch_order_by_id) -> dict:
     event = parse_zakupay_email(raw_email)
     if event.event_type != "new_order":
@@ -597,6 +617,12 @@ def process_email(raw_email: bytes, fetch_order_by_id) -> dict:
             }
         if not order:
             raise LookupError("Заявка не получена из API Закупай, состав отсутствует в письме")
+        with _lock, _connect() as conn:
+            _execute(
+                conn,
+                "UPDATE automation_jobs SET order_json=?, updated_at=? WHERE id=?",
+                (json.dumps(order, ensure_ascii=False), datetime.now(timezone.utc).isoformat(), job_id),
+            )
         prepayment_confirmed = _prepayment_confirmed(order)
         logger.warning(
             "email order=%s source=%s positions=%s prepayment=%s payment_terms=%r",
@@ -699,6 +725,12 @@ def process_api_order(order: dict) -> dict:
             job_id = cursor.fetchone()["id"] if DATABASE_URL else cursor.lastrowid
 
     try:
+        with _lock, _connect() as conn:
+            _execute(
+                conn,
+                "UPDATE automation_jobs SET order_json=?, updated_at=? WHERE id=?",
+                (json.dumps(order, ensure_ascii=False), datetime.now(timezone.utc).isoformat(), job_id),
+            )
         result = build_vi_draft(order, invoice_number=invoice_number)
         if result["summary"]["auto_ready"] > 0 and invoice_number is None:
             with _lock, _connect() as conn:
@@ -984,11 +1016,9 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
         if old_result.get("live_offer_created"):
             raise HTTPException(status_code=409, detail="Предложение уже отправлено; повторный подбор заблокирован")
 
-        order = fetch_order_by_id(int(row["order_id"]), force=True)
+        order = _saved_order_snapshot(row, old_result)
         if not order:
-            order = _order_from_saved_result(row, old_result)
-            if not order:
-                raise HTTPException(status_code=409, detail="Состав заявки не сохранён и больше не доступен через API Закупай")
+            raise HTTPException(status_code=409, detail="Состав заявки не был сохранён")
         result = build_vi_draft(order, invoice_number=row["invoice_number"])
         result["last_search_at"] = datetime.now(timezone.utc).isoformat()
         result["last_search_source"] = order.get("source") or "zakupay_api"
@@ -1083,5 +1113,6 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
             raise HTTPException(status_code=404, detail="Задание не найдено")
         data = dict(row)
         data["result"] = json.loads(data.pop("result_json")) if data.get("result_json") else None
+        data["order_snapshot_saved"] = bool(data.pop("order_json", None))
         data.pop("dedupe_key", None)
         return data
