@@ -234,6 +234,11 @@ def _search_variants(requested: str) -> list[str]:
     # any returned product may be used in an invoice.
     if len(words) <= 4:
         variants.extend(word for word in words if len(word) >= 5)
+
+    # Verified VI catalogue SKUs provide a deterministic OpenAPI fallback for
+    # a category that the public site finds but the API text search may omit.
+    if "нарукавник" in normalized and "брезент" in normalized:
+        variants.extend(["36641496", "28210004", "30698780", "38046468"])
     for left, right in synonym_groups:
         if left in normalized:
             variants.append(normalized.replace(left, right))
@@ -508,6 +513,28 @@ def _refresh_summary(result: dict) -> None:
         "excluded": sum(row.get("decision") == "excluded" for row in rows),
         "included_in_invoice": included,
         "excluded_from_invoice": len(rows) - included,
+    }
+
+
+def _order_from_saved_result(row, result: dict) -> dict | None:
+    """Rebuild the immutable request lines when Zakupay no longer lists it."""
+    saved_items = result.get("items") or []
+    if not saved_items:
+        return None
+    return {
+        "id": int(row["order_id"]),
+        "name": result.get("order_name") or row["subject"],
+        "customer": result.get("customer") or {},
+        "source": "saved_automation_job",
+        "orderItems": [
+            {
+                "id": item.get("order_item_id"),
+                "goodName": item.get("requested_name") or "",
+                "count": item.get("quantity"),
+                "unit": {"name": item.get("unit") or ""},
+            }
+            for item in saved_items
+        ],
     }
 
 def process_email(raw_email: bytes, fetch_order_by_id) -> dict:
@@ -921,6 +948,15 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
         offer_link = (
             f"<p><a href='/dashboard/order/{row['order_id']}/offer'>Перейти к подтверждению предложения в Закупай</a></p>"
         )
+        search_report = ""
+        if result.get("last_search_at"):
+            search_report = (
+                "<p style='padding:10px;background:#e6f4ea;border-radius:7px'>"
+                f"Последний повторный поиск: {html.escape(str(result.get('last_search_at')))} · "
+                f"найдены кандидаты для {int(result.get('last_search_found_positions') or 0)} "
+                f"из {len(result.get('items') or [])} позиций."
+                "</p>"
+            )
         return Response(
             content=(
                 "<!doctype html><html lang='ru'><meta charset='utf-8'>"
@@ -930,7 +966,7 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
                 "<p><a href='/dashboard/automation'>← Все заявки</a></p>"
                 f"<h1>Заявка Закупай № {row['order_id']}</h1>"
                 f"<p>Счёт № {row['invoice_number']} · статус: {html.escape(str(row['status']))}</p>"
-                f"<form method='post' action='/dashboard/automation/jobs/{job_id}/refresh'><p><button class='button' type='submit'>Повторить поиск в ВИ</button></p></form>"
+                f"<form method='post' action='/dashboard/automation/jobs/{job_id}/refresh'><p><button class='button' type='submit'>Повторить поиск в ВИ</button></p></form>{search_report}"
                 f"<form method='post' action='/dashboard/automation/jobs/{job_id}/review'><table><tr><th>Включить</th><th>№</th><th>Заявка</th><th>Подбор ВИ<br><small>(закупочная цена)</small></th><th>Количество</th><th>Наша цена<br><small>за единицу заявки (+5%)</small></th>"
                 "<th>Статус подбора</th><th>Замена</th><th>Наличие</th><th>Срок</th><th>Решение</th></tr>"
                 + "".join(table_rows) + "</table><p><button type='submit'>Сохранить и пересчитать счёт</button></p></form>" + invoice_link + offer_link + "</main></body></html>"
@@ -950,8 +986,15 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
 
         order = fetch_order_by_id(int(row["order_id"]), force=True)
         if not order:
-            raise HTTPException(status_code=409, detail="Заявка больше не доступна через API Закупай")
+            order = _order_from_saved_result(row, old_result)
+            if not order:
+                raise HTTPException(status_code=409, detail="Состав заявки не сохранён и больше не доступен через API Закупай")
         result = build_vi_draft(order, invoice_number=row["invoice_number"])
+        result["last_search_at"] = datetime.now(timezone.utc).isoformat()
+        result["last_search_source"] = order.get("source") or "zakupay_api"
+        result["last_search_found_positions"] = sum(
+            bool(item.get("selected")) for item in result.get("items") or []
+        )
         invoice_number = row["invoice_number"]
         if result["summary"]["auto_ready"] > 0 and invoice_number is None:
             with _lock, _connect() as conn:
