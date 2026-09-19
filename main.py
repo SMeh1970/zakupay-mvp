@@ -75,9 +75,6 @@ def request_orders_page(page=1, page_size=100, api_filters=None):
     params = {
         "format": "json", "isoDate": "true", "totalCount": "true",
         "count": page_size, "page": page, "pageSize": page_size,
-        "ignoreKeywordFilter": "true", "showNotInteresting": "true",
-        "showAllRegions": "true", "allRegions": "true",
-        "showAllCategories": "true", "allCategories": "true",
     }
     if api_filters:
         params.update(clean_params(api_filters))
@@ -103,9 +100,7 @@ def fetch_order_by_id(order_id, force=False):
     order_id = int(order_id)
     list_url = f"{ZAKUPAY_BASE_URL}/api/v1/orders"
     common = {
-        "format": "json", "isoDate": "true", "ignoreKeywordFilter": "true",
-        "showNotInteresting": "true", "showAllRegions": "true",
-        "allRegions": "true", "showAllCategories": "true", "allCategories": "true",
+        "format": "json", "isoDate": "true",
     }
 
     # Zakupay support confirmed on 2026-09-15 that a concrete application is
