@@ -1,5 +1,7 @@
 name: Poll Zakupay API hourly
 
+# Gmail ingestion is intentionally disabled. Zakupay API is the only source.
+
 on:
   push:
     branches:
