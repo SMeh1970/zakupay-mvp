@@ -35,6 +35,9 @@ from invoice_generator import build_invoice_xlsx
 DB_PATH = os.getenv("AUTOMATION_DB_PATH", "automation.db")
 DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
 WEBHOOK_SECRET = os.getenv("ZAKUPAY_EMAIL_WEBHOOK_SECRET", "").strip()
+EMAIL_INGEST_ENABLED = os.getenv("ENABLE_ZAKUPAY_EMAIL_INGEST", "false").lower() in {
+    "1", "true", "yes", "on",
+}
 AUTO_MATCH_THRESHOLD = float(os.getenv("AUTO_MATCH_THRESHOLD", "0.88"))
 REVIEW_MATCH_THRESHOLD = float(os.getenv("REVIEW_MATCH_THRESHOLD", "0.72"))
 DEFAULT_MARKUP = float(os.getenv("AUTO_OFFER_MARKUP", "0.05"))
@@ -887,6 +890,12 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
     ):
         if not _authorized_automation_call(x_webhook_secret, authorization):
             raise HTTPException(status_code=401, detail="Неверная авторизация автоматизации")
+        if not EMAIL_INGEST_ENABLED:
+            return JSONResponse({
+                "accepted": False,
+                "status": "email_ingest_disabled",
+                "message": "Приём заявок из Gmail отключён; используется API Закупай",
+            })
         raw = await request.body()
         if not raw:
             raise HTTPException(status_code=400, detail="Пустое письмо")
