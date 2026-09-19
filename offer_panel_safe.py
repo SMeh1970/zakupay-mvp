@@ -25,6 +25,7 @@ def install_offer_panel(
     esc,
     fetch_order_by_id=None,
     load_offer_context=None,
+    enrich_offer_context=None,
     mark_offer_created=None,
     build_invoice=None,
 ):
@@ -114,36 +115,49 @@ def install_offer_panel(
             return [], f"Не удалось получить список: {exc}"
         if not r.ok:
             return [], f"Закупай вернул HTTP {r.status_code}"
-        try:
-            root = ET.fromstring(r.text)
-        except ET.ParseError:
-            return [], "Ответ check/token не удалось разобрать как XML"
+        data = _decode_response(r)
+        account_nodes = []
 
+        def walk(value, account_scope=False):
+            if isinstance(value, list):
+                for child in value:
+                    walk(child, account_scope=account_scope)
+                return
+            if not isinstance(value, dict):
+                return
+            if account_scope and value.get("id") is not None:
+                account_nodes.append(value)
+            elif value.get("id") is not None and ("bankName" in value or "company" in value):
+                account_nodes.append(value)
+            for key, child in value.items():
+                walk(child, account_scope=str(key).lower() in {"account", "accounts"})
+
+        walk(data)
         accounts = []
-        for node in root.iter():
-            if _local_name(node.tag) != "account":
+        seen = set()
+        for node in account_nodes:
+            account_id = str(node.get("id") or "").strip()
+            if not account_id or account_id in seen:
                 continue
-            fields = {}
-            for child in list(node):
-                name = _local_name(child.tag)
-                if name in {"id", "bankName", "name"}:
-                    fields[name] = (child.text or "").strip()
-                elif name == "currency":
-                    for nested in list(child):
-                        n = _local_name(nested.tag)
-                        if n in {"id", "name"}:
-                            fields[f"currency_{n}"] = (nested.text or "").strip()
-                elif name == "company":
-                    for nested in list(child):
-                        n = _local_name(nested.tag)
-                        if n in {"id", "name", "shortName"}:
-                            fields[f"company_{n}"] = (nested.text or "").strip()
-            if fields.get("id"):
-                company = fields.get("company_shortName") or fields.get("company_name") or "Юрлицо"
-                bank = fields.get("bankName") or "банк не указан"
-                account_name = fields.get("name") or "счёт"
-                fields["label"] = f"{company} / {bank} ({account_name})"
-                accounts.append(fields)
+            seen.add(account_id)
+            company_data = node.get("company") if isinstance(node.get("company"), dict) else {}
+            currency_data = node.get("currency") if isinstance(node.get("currency"), dict) else {}
+            fields = {
+                "id": account_id,
+                "name": node.get("name"),
+                "bankName": node.get("bankName"),
+                "company_name": company_data.get("name"),
+                "company_shortName": company_data.get("shortName"),
+                "currency_id": currency_data.get("id"),
+                "currency_name": currency_data.get("name"),
+            }
+            company = fields.get("company_shortName") or fields.get("company_name") or "Юрлицо"
+            bank = fields.get("bankName") or "банк не указан"
+            account_name = fields.get("name") or "счёт"
+            fields["label"] = f"{company} / {bank} ({account_name})"
+            accounts.append(fields)
+        if not accounts:
+            return [], "Ответ check/token получен, но банковские счета в нём не найдены"
         return accounts, ""
 
     def _num(value, field_name):
@@ -255,8 +269,20 @@ def install_offer_panel(
         return HTMLResponse(f"<h1>Юрлица и банковские счета</h1><table border='1' cellpadding='8'><tr><th>ID</th><th>Юрлицо / банк</th></tr>{rows}</table><p>Скопируй нужный ID в форму предложения.</p><p><a href='/dashboard/order/{order_id}/offer'>← Назад</a></p>")
 
     @app.get("/dashboard/order/{order_id}/offer", response_class=HTMLResponse)
-    def offer_builder(order_id: int):
+    def offer_builder(order_id: int, request: Request):
         context = _get_context(order_id)
+        missing_ids = any(
+            item.get("decision") in {"auto_ready", "approved"} and item.get("order_item_id") is None
+            for item in context["result"].get("items") or []
+        )
+        retry_ids = request.query_params.get("refresh_ids") == "1"
+        attempted = context["result"].get("order_id_enrichment_attempted_at")
+        if missing_ids and enrich_offer_context and fetch_order_by_id and (not attempted or retry_ids):
+            try:
+                fresh_order = fetch_order_by_id(order_id, force=True)
+            except Exception:
+                fresh_order = None
+            context = enrich_offer_context(order_id, fresh_order) or context
         order = context["order"]
         result = context["result"]
         job_id = context["job_id"]
@@ -306,7 +332,7 @@ def install_offer_panel(
         if account_error:
             warning += f"<div class='warn'>Список банковских счетов не загружен: {esc(account_error)}. Укажите ID вручную.</div>"
         if blockers:
-            warning += "<div class='warn'><b>Отправка заблокирована:</b><ul>" + "".join(f"<li>{esc(x)}</li>" for x in blockers) + "</ul></div>"
+            warning += "<div class='warn'><b>Отправка заблокирована:</b><ul>" + "".join(f"<li>{esc(x)}</li>" for x in blockers) + f"</ul><a href='/dashboard/order/{order_id}/offer?refresh_ids=1'>Повторить получение ID позиций из Закупай</a></div>"
         disabled = "disabled" if blockers else ""
         invoice_number = result.get("invoice_number") or context.get("invoice_number") or ""
         html = f"""<!doctype html><html lang='ru'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>Предложение {order_id}</title><style>body{{font-family:Arial;margin:24px;background:#f4f6f8;color:#202124}}.card{{background:#fff;padding:18px;border-radius:12px;margin-bottom:18px}}.grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:12px}}label{{display:block;font-size:12px;margin:6px 0 4px}}input,select,textarea{{width:100%;box-sizing:border-box;padding:8px}}table{{width:100%;border-collapse:collapse;font-size:13px}}th,td{{padding:8px;border-bottom:1px solid #ddd;vertical-align:top}}th{{text-align:left;background:#eee}}button{{padding:12px 18px;background:#c62828;color:white;border:0;border-radius:8px;font-weight:bold}}input[type=checkbox]{{width:auto}}.ok{{background:#edf8ef;padding:10px;border-radius:8px}}.warn{{background:#fff7df;padding:10px;border-radius:8px}}</style></head><body><p><a href='/dashboard/analysis/order/{order_id}'>← К заявке</a></p><h1>Создать предложение в Закупай</h1><div class='card'><div class='ok'>Форма загружена без внешних запросов. Юрлицо можно получить отдельной кнопкой, поэтому недоступность check/token больше не блокирует страницу.</div><p><b>Заявка:</b> {esc(order.get('id'))} — {esc(order.get('name'))}</p><form method='post' action='/dashboard/order/{order_id}/offer/submit' enctype='multipart/form-data'><div class='grid'><div><label>Файл счёта / предложения</label><input type='file' name='invoice_file' required></div><div><label>ID юрлица / банковского счёта</label><input name='destination_account_id' required placeholder='Вставь ID'><small><a target='_blank' href='/dashboard/order/{order_id}/offer/accounts'>Получить список юрлиц</a></small></div><div><label>Номер счёта</label><input name='producer_offer_number' required></div><div><label>Дата</label><input type='date' name='producer_offer_date' value='{date.today().isoformat()}' required></div><div><label>Валюта ID</label><input name='currency_id' value='{esc(DEFAULT_CURRENCY_ID)}' required></div><div><label>НДС</label><select name='vat_rate'><option value='0.2'>20%</option><option value='0.22'>22%</option><option value='0.1'>10%</option><option value='0'>Без НДС</option></select></div><div><label>Предоплата, %</label><input type='number' name='prepayment_percent' min='0' max='100' value='100'></div><div><label>Отсрочка, дней</label><input type='number' name='delay_days' min='0' value='0'></div><div><label>Доставка включена</label><select name='delivery_included'><option value='1'>Да</option><option value='0'>Нет</option></select></div><div><label>Рег. номер</label><input name='document_reg_num'></div></div><p><label>Комментарий покупателю</label><textarea name='comment'></textarea></p><h3>Позиции</h3><table><thead><tr><th></th><th>№</th><th>Позиция</th><th>Кол-во</th><th>Ед.</th><th>Цена за ед.</th><th>Наличие</th></tr></thead><tbody>{rows}</tbody></table><div class='warn'>Реальная отправка выполняется только после контрольного подтверждения.</div><p><label><input type='checkbox' name='confirm_send' value='SEND' required> Я проверил юрлицо, файл, позиции, количества и цены.</label></p><button type='submit'>Загрузить файл и создать предложение</button></form></div></body></html>"""
