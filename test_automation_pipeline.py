@@ -138,6 +138,7 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(first["result"]["prepayment_percent"], 100.0)
         self.assertTrue(first["result"]["delivery_included"])
         self.assertFalse(first["result"]["live_offer_created"])
+        self.assertTrue(first["result"]["zakupay_line_ids_complete"])
         with pipeline._connect() as conn:
             row = pipeline._execute(
                 conn, "SELECT order_json FROM automation_jobs WHERE id=?", (first["job_id"],)
