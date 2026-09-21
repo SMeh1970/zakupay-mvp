@@ -1,43 +1,17 @@
-name: Process Zakupay Gmail notifications via API
-# Replay marker: prepayment-email-v3-live
+name: Zakupay ingestion paused
+
+# Gmail ingestion and Zakupay API polling are intentionally disabled.
+# Existing saved applications and the Render dashboard are unaffected.
 
 on:
-  push:
-    branches:
-      - main
-      - ai-analysis-v1
-  schedule:
-    - cron: "0 * * * *"
   workflow_dispatch:
 
 permissions:
   contents: read
-  id-token: write
 
 jobs:
-  process:
+  paused:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
     steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Read notification IDs and process through Zakupay API
-        env:
-          GMAIL_IMAP_EMAIL: "1043324@gmail.com"
-          GMAIL_IMAP_APP_PASSWORD: ${{ secrets.GMAIL_IMAP_APP_PASSWORD }}
-          START_AFTER: "1789506000"
-          GMAIL_MAX_MESSAGES_PER_RUN: "5"
-          GMAIL_PROCESSED_LABEL: "ZakupayProcessedV3"
-        run: |
-          OIDC_TOKEN="$(curl --fail-with-body --show-error --silent \
-            -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
-            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=zakupay-mvp" \
-            | python -c 'import json,sys; print(json.load(sys.stdin)["value"])')"
-          export WEBHOOK_BEARER_TOKEN="${OIDC_TOKEN}"
-          python gmail_imap_forwarder.py
+      - name: Confirm paused state
+        run: echo "Gmail ingestion and Zakupay API polling are disabled."
