@@ -1,4 +1,7 @@
 import os
+import re
+import threading
+import time
 from dataclasses import dataclass, asdict
 from typing import Any
 
@@ -275,6 +278,271 @@ class VseinstrumentiAdapter(SupplierAdapter):
         return result
 
 
+class KrepKompAdapter(SupplierAdapter):
+    """Read-only adapter for the official KREP-KOMP 1C exchange API.
+
+    The upstream API does not provide free-text search.  We therefore cache the
+    compact ``get_items`` catalogue, rank it locally, and request prices and
+    stocks only for the small candidate set.  This keeps the supplier's daily
+    request limit under control and never invokes order-creation operations.
+    """
+
+    code = "krep_komp"
+    name = "КРЕП-КОМП"
+    _token_lock = threading.Lock()
+    _catalog_lock = threading.Lock()
+    _token: str | None = None
+    _token_expires_at = 0.0
+    _catalog: list[dict[str, Any]] | None = None
+    _catalog_expires_at = 0.0
+    _storage_ids: list[str] | None = None
+    _storage_ids_expires_at = 0.0
+
+    def __init__(self):
+        self.username = os.getenv("KREP_KOMP_API_USERNAME", "").strip()
+        self.password = os.getenv("KREP_KOMP_API_PASSWORD", "").strip()
+        self.base_url = os.getenv(
+            "KREP_KOMP_API_BASE_URL",
+            "https://1cwbsvc.krep-komp.ru:7333/torg1/hs/mp",
+        ).rstrip("/")
+        self.timeout = float(os.getenv("KREP_KOMP_API_TIMEOUT", "20"))
+        self.catalog_ttl = int(os.getenv("KREP_KOMP_CATALOG_TTL", "21600"))
+        names = os.getenv("KREP_KOMP_STORAGE_NAMES", "КОЛЕДИНО")
+        self.storage_names = {x.strip().casefold() for x in names.split(",") if x.strip()}
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self.username and self.password and self.base_url)
+
+    def status(self) -> dict[str, Any]:
+        data = super().status()
+        data.update({
+            "configured_username": bool(self.username),
+            "configured_password": bool(self.password),
+            "base_url": self.base_url,
+            "auth": "Basic -> short-lived Bearer",
+            "price_field": "Цена",
+            "price_semantics": "Индивидуальная цена ООО «АВИОР»",
+            "storages": sorted(self.storage_names),
+            "read_only": True,
+        })
+        return data
+
+    @staticmethod
+    def _num(value):
+        return VseinstrumentiAdapter._num(value)
+
+    @staticmethod
+    def _norm(value: str) -> str:
+        value = str(value or "").casefold().replace("ё", "е")
+        value = value.replace("×", "x").replace("х", "x")
+        return " ".join(re.findall(r"[a-zа-я0-9]+", value))
+
+    @classmethod
+    def _rank(cls, query: str, item: dict[str, Any]) -> tuple[int, float, str]:
+        q = cls._norm(query)
+        text = cls._norm(" ".join(str(item.get(k) or "") for k in (
+            "Наименование", "ПолноеНаименование", "Артикул", "Категория"
+        )))
+        article = cls._norm(item.get("Артикул") or "")
+        q_tokens = set(q.split())
+        text_tokens = set(text.split())
+        overlap = len(q_tokens & text_tokens) / max(len(q_tokens), 1)
+        exact_article = bool(article and article in q)
+        phrase = bool(q and q in text)
+        score = overlap + (2.0 if exact_article else 0.0) + (1.0 if phrase else 0.0)
+        return (1 if exact_article else 0, score, text)
+
+    def _token_value(self) -> str:
+        if not self.enabled:
+            raise RuntimeError("Не настроены KREP_KOMP_API_USERNAME/KREP_KOMP_API_PASSWORD")
+        now = time.time()
+        cls = type(self)
+        if cls._token and now < cls._token_expires_at:
+            return cls._token
+        with cls._token_lock:
+            now = time.time()
+            if cls._token and now < cls._token_expires_at:
+                return cls._token
+            response = requests.get(
+                f"{self.base_url}/generate_token",
+                auth=(self.username, self.password),
+                headers={"Accept": "application/json"},
+                timeout=self.timeout,
+            )
+            response.raise_for_status()
+            try:
+                payload = response.json()
+            except ValueError:
+                payload = response.text.strip().strip('"')
+            if isinstance(payload, dict):
+                token = payload.get("token") or payload.get("data")
+                if not token or payload.get("success") is False:
+                    raise RuntimeError(str(payload.get("info") or payload.get("Info") or payload))
+            else:
+                token = payload
+            token = str(token or "").strip().strip('"')
+            if not token:
+                raise RuntimeError("КРЕП-КОМП вернул пустой токен")
+            cls._token = token
+            # Documentation states 30 minutes. Refresh a little earlier.
+            cls._token_expires_at = now + 25 * 60
+            return token
+
+    def _get_data(self, operation: str, page: int = 1, parametrs: dict | None = None) -> dict:
+        body: dict[str, Any] = {"page": int(page)}
+        if parametrs:
+            body["parametrs"] = parametrs
+        response = requests.post(
+            f"{self.base_url}/get_data",
+            json=body,
+            headers={
+                "Authorization": f"Bearer {self._token_value()}",
+                "Operation": operation,
+                "Accept": "application/json",
+                "Accept-Encoding": "",
+            },
+            timeout=self.timeout,
+        )
+        if response.status_code == 401:
+            type(self)._token = None
+            type(self)._token_expires_at = 0
+        response.raise_for_status()
+        payload = response.json()
+        if not isinstance(payload, dict) or payload.get("success") is False:
+            info = payload.get("info") or payload.get("Info") if isinstance(payload, dict) else payload
+            raise RuntimeError(f"КРЕП-КОМП {operation}: {info}")
+        return payload
+
+    def _catalog_items(self) -> list[dict[str, Any]]:
+        cls = type(self)
+        now = time.time()
+        if cls._catalog is not None and now < cls._catalog_expires_at:
+            return cls._catalog
+        with cls._catalog_lock:
+            now = time.time()
+            if cls._catalog is not None and now < cls._catalog_expires_at:
+                return cls._catalog
+            items: list[dict[str, Any]] = []
+            page = 1
+            while True:
+                payload = self._get_data("get_items", page=page)
+                data = payload.get("data") or []
+                if isinstance(data, list):
+                    items.extend(x for x in data if isinstance(x, dict))
+                meta = payload.get("meta") or {}
+                last_page = int(meta.get("last_page") or page)
+                if page >= last_page:
+                    break
+                page += 1
+            cls._catalog = items
+            cls._catalog_expires_at = now + max(self.catalog_ttl, 300)
+            return items
+
+    def _enrich(self, items: list[dict[str, Any]]) -> list[SupplierQuote]:
+        codes = [str(x.get("Код") or "").strip() for x in items]
+        codes = [x for x in codes if x]
+        if not codes:
+            return []
+        prices_payload = self._get_data("get_price", parametrs={"СписокКодов": codes})
+        prices = {
+            str(x.get("Код") or "").strip(): x
+            for x in (prices_payload.get("data") or []) if isinstance(x, dict)
+        }
+        storage_ids: list[str] = []
+        if self.storage_names:
+            cls = type(self)
+            now = time.time()
+            if cls._storage_ids is None or now >= cls._storage_ids_expires_at:
+                storage_payload = self._get_data("get_storages")
+                cls._storage_ids = [
+                    str(x.get("Код") or "").strip()
+                    for x in (storage_payload.get("data") or [])
+                    if isinstance(x, dict)
+                    and str(x.get("Наименование") or "").strip().casefold() in self.storage_names
+                ]
+                cls._storage_ids_expires_at = now + 24 * 60 * 60
+            storage_ids = list(cls._storage_ids or [])
+        stock_params: dict[str, Any] = {"СписокКодов": codes}
+        if storage_ids:
+            stock_params["СписокСкладов"] = storage_ids
+        stocks_payload = self._get_data("get_stocks", parametrs=stock_params)
+        stocks: dict[str, float] = {}
+        stock_names: dict[str, list[str]] = {}
+        for row in stocks_payload.get("data") or []:
+            if not isinstance(row, dict):
+                continue
+            code = str(row.get("Код") or "").strip()
+            quantity = self._num(row.get("Остаток")) or 0.0
+            stocks[code] = stocks.get(code, 0.0) + quantity
+            warehouse = str(row.get("Склад") or "").strip()
+            if warehouse:
+                stock_names.setdefault(code, []).append(warehouse)
+
+        quotes: list[SupplierQuote] = []
+        for item in items:
+            code = str(item.get("Код") or "").strip()
+            price_row = prices.get(code) or {}
+            category = str(item.get("Категория") or "").strip()
+            warehouses = ", ".join(dict.fromkeys(stock_names.get(code) or []))
+            quotes.append(SupplierQuote(
+                supplier=self.name,
+                name=item.get("ПолноеНаименование") or item.get("Наименование") or code,
+                sku=code or None,
+                article=item.get("Артикул"),
+                brand=item.get("МаркаНаименование") or None,
+                unit=item.get("ЕдиницаИзмерения"),
+                price=self._num(price_row.get("Цена")),
+                base_price=self._num(price_row.get("ЦенаБазовая")),
+                stock=stocks.get(code),
+                pickup_date=warehouses or None,
+                breadcrumbs=[category] if category else None,
+                price_type="contractor_individual",
+            ))
+        return quotes
+
+    def diagnose(self) -> dict[str, Any]:
+        base = {"supplier": self.name, "enabled": self.enabled, "base_url": self.base_url}
+        if not self.enabled:
+            return {**base, "ok": False, "error": "Учётные данные не настроены"}
+        try:
+            token = self._token_value()
+            response = requests.get(
+                f"{self.base_url}/auth",
+                headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+                timeout=self.timeout,
+            )
+            payload = response.json()
+            return {**base, "ok": response.ok and payload.get("success") is not False,
+                    "http_status": response.status_code,
+                    "info": payload.get("Info") or payload.get("info")}
+        except Exception as exc:
+            return {**base, "ok": False, "error": str(exc)}
+
+    def search(self, query: str, limit: int = 5) -> list[SupplierQuote]:
+        query = (query or "").strip()
+        if not query:
+            return [SupplierQuote(supplier=self.name, name="", error="Пустой поисковый запрос")]
+        if not self.enabled:
+            return [SupplierQuote(supplier=self.name, name=query, error="API КРЕП-КОМП не настроен")]
+        try:
+            ranked = sorted(
+                self._catalog_items(),
+                key=lambda item: self._rank(query, item),
+                reverse=True,
+            )
+            query_tokens = set(self._norm(query).split())
+            candidates = [
+                item for item in ranked
+                if query_tokens & set(self._norm(" ".join(str(item.get(k) or "") for k in (
+                    "Наименование", "ПолноеНаименование", "Артикул", "Категория"
+                ))).split())
+            ][:min(max(int(limit), 1), 20)]
+            return self._enrich(candidates)
+        except (requests.RequestException, RuntimeError, ValueError) as exc:
+            return [SupplierQuote(supplier=self.name, name=query, error=f"Ошибка API КРЕП-КОМП: {exc}")]
+
+
 class DisabledAdapter(SupplierAdapter):
     def __init__(self, code: str, name: str, env_hint: str = ""):
         self.code = code
@@ -295,6 +563,7 @@ class DisabledAdapter(SupplierAdapter):
 def get_supplier_adapters() -> list[SupplierAdapter]:
     return [
         VseinstrumentiAdapter(),
+        KrepKompAdapter(),
         DisabledAdapter("ozon", "Ozon", "Нужен официальный API/партнёрский доступ для цен"),
         DisabledAdapter("stroy_dvor", "Строительный двор", "Нужна документация API/прайс-фид"),
         DisabledAdapter("teharmatura", "Техарматура", "Нужна документация API/прайс-фид"),
@@ -311,6 +580,10 @@ def supplier_statuses() -> list[dict[str, Any]]:
 
 def vseinstrumenti_diagnostic(query: str, limit: int = 5) -> dict[str, Any]:
     return VseinstrumentiAdapter().diagnose(query, limit)
+
+
+def krep_komp_diagnostic() -> dict[str, Any]:
+    return KrepKompAdapter().diagnose()
 
 
 def compare_suppliers(query: str, limit_per_supplier: int = 5) -> dict[str, Any]:
