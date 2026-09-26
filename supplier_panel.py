@@ -1,7 +1,12 @@
 from fastapi import Query
 from fastapi.responses import HTMLResponse, JSONResponse
 
-from supplier_adapters import compare_suppliers, supplier_statuses, vseinstrumenti_diagnostic
+from supplier_adapters import (
+    compare_suppliers,
+    krep_komp_diagnostic,
+    supplier_statuses,
+    vseinstrumenti_diagnostic,
+)
 from vi_order_match import match_order
 from main import fetch_order_by_id
 
@@ -18,6 +23,10 @@ def install_supplier_panel(app, esc):
     @app.get("/suppliers/debug/vseinstrumenti")
     def suppliers_debug_vseinstrumenti(q: str = Query(..., min_length=2), limit: int = 5):
         return vseinstrumenti_diagnostic(q, limit=limit)
+
+    @app.get("/suppliers/debug/krep-komp")
+    def suppliers_debug_krep_komp():
+        return krep_komp_diagnostic()
 
     @app.get("/analysis/order/{order_id}/vseinstrumenti")
     def vi_order_match_json(order_id: int, limit: int = 5):
