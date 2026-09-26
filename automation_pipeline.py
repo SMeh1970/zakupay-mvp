@@ -1316,15 +1316,17 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
 
     @app.post("/dashboard/automation/sync")
     def automation_dashboard_sync():
-        """Operator-triggered one-shot import; automatic polling stays disabled."""
+        """Operator-triggered import with a graceful fallback to saved data."""
         if fetch_all_orders is None:
-            raise HTTPException(status_code=503, detail="Получение заявок из Закупай не подключено")
+            return Response(status_code=303, headers={"Location": "/dashboard/automation?sync_error=not_configured"})
         try:
             orders = fetch_all_orders(force=True)
-        except HTTPException:
-            raise
+        except HTTPException as exc:
+            logger.warning("manual Zakupay sync unavailable: %s", exc.detail)
+            return Response(status_code=303, headers={"Location": "/dashboard/automation?sync_error=api_unavailable"})
         except Exception as exc:
-            raise HTTPException(status_code=502, detail=f"Закупай не вернул список заявок: {exc}")
+            logger.exception("manual Zakupay sync failed: %s", exc)
+            return Response(status_code=303, headers={"Location": "/dashboard/automation?sync_error=api_unavailable"})
         added = duplicates = skipped = 0
         for order in orders[:300]:
             if not _prepayment_confirmed(order):
@@ -1378,7 +1380,12 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
         return Response(status_code=303, headers={"Location": f"/dashboard/automation/jobs/{job_id}/review"})
 
     @app.get("/dashboard/automation")
-    def automation_dashboard(added: int = 0, duplicates: int = 0, skipped: int = 0):
+    def automation_dashboard(
+        added: int = 0,
+        duplicates: int = 0,
+        skipped: int = 0,
+        sync_error: str = "",
+    ):
         with _connect() as conn:
             rows = _execute(
                 conn,
@@ -1433,6 +1440,13 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
                 f"Обновление завершено: новых {added}, уже сохранённых {duplicates}, пропущено {skipped}."
                 "</p>"
             )
+        if sync_error:
+            sync_report += (
+                "<p style='padding:12px;background:#fff0e8;border-radius:8px'>"
+                "<b>Закупай временно не отдал список заявок.</b> Уже сохранённые заявки доступны ниже; "
+                "ничего не удалено. Повторите синхронизацию позже."
+                "</p>"
+            )
         return Response(content=(
             "<!doctype html><html lang='ru'><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
             "<title>Обработка заявок</title><style>body{font-family:Arial;margin:0;background:#f4f6f8;color:#202124}main{max-width:1200px;margin:auto;padding:28px}"
@@ -1440,7 +1454,7 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
             ".title{font-size:20px;font-weight:700;color:#174ea6;text-decoration:none}.meta{margin-top:8px;color:#5f6368}.actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.button{background:#1a73e8;color:#fff;padding:10px 13px;border-radius:7px;text-decoration:none;font-weight:700}.secondary{background:#5f6368}.send{background:#188038}.muted{color:#777}@media(max-width:760px){.card{display:block}.actions{margin-top:14px}}</style>"
             "<main><h1>Заявки Закупай</h1><p>Подбор у поставщиков, частичные счета и контроль перед отправкой.</p>"
             "<form method='post' action='/dashboard/automation/sync'><button class='button' type='submit'>Получить новые заявки из Закупай</button></form>"
-            "<p class='muted'>Запрос выполняется только по нажатию. Автоматический опрос остаётся выключенным.</p>"
+            "<p class='muted'>Ручная синхронизация запускается по нажатию; автоматический опрос выполняется каждый час.</p>"
             + sync_report + "".join(cards) + "</main></html>"
         ), media_type="text/html")
 
