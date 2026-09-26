@@ -25,6 +25,7 @@ def install_offer_panel(
     esc,
     fetch_order_by_id=None,
     load_offer_context=None,
+    enrich_offer_context=None,
     mark_offer_created=None,
     build_invoice=None,
 ):
@@ -327,12 +328,42 @@ def install_offer_panel(
         if account_error:
             warning += f"<div class='warn'>Список банковских счетов не загружен: {esc(account_error)}. Укажите ID вручную.</div>"
         if blockers:
-            warning += "<div class='warn'><b>Отправка заблокирована:</b><ul>" + "".join(f"<li>{esc(x)}</li>" for x in blockers) + "</ul>ID должны быть сохранены при первоначальном получении заявки. Страница подтверждения не обращается к Закупай повторно.</div>"
+            warning += (
+                "<div class='warn'><b>Отправка заблокирована:</b><ul>"
+                + "".join(f"<li>{esc(x)}</li>" for x in blockers)
+                + "</ul><p>ID должны сохраняться при первоначальном получении заявки. "
+                "Для старой заявки выполните один повторный запрос только за ID строк — подбор товаров и цены не изменятся.</p>"
+                f"<form method='post' action='/dashboard/order/{order_id}/offer/enrich-ids'>"
+                "<button type='submit' style='background:#1a73e8'>Получить ID позиций и разблокировать форму</button>"
+                "</form></div>"
+            )
         disabled = "disabled" if blockers else ""
         invoice_number = result.get("invoice_number") or context.get("invoice_number") or ""
         html = f"""<!doctype html><html lang='ru'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>Предложение {order_id}</title><style>body{{font-family:Arial;margin:24px;background:#f4f6f8;color:#202124}}.card{{background:#fff;padding:18px;border-radius:12px;margin-bottom:18px}}.grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:12px}}label{{display:block;font-size:12px;margin:6px 0 4px}}input,select,textarea{{width:100%;box-sizing:border-box;padding:8px}}table{{width:100%;border-collapse:collapse;font-size:13px}}th,td{{padding:8px;border-bottom:1px solid #ddd;vertical-align:top}}th{{text-align:left;background:#eee}}button{{padding:12px 18px;background:#c62828;color:white;border:0;border-radius:8px;font-weight:bold}}input[type=checkbox]{{width:auto}}.ok{{background:#edf8ef;padding:10px;border-radius:8px}}.warn{{background:#fff7df;padding:10px;border-radius:8px}}</style></head><body><p><a href='/dashboard/analysis/order/{order_id}'>← К заявке</a></p><h1>Создать предложение в Закупай</h1><div class='card'><div class='ok'>Форма загружена без внешних запросов. Юрлицо можно получить отдельной кнопкой, поэтому недоступность check/token больше не блокирует страницу.</div><p><b>Заявка:</b> {esc(order.get('id'))} — {esc(order.get('name'))}</p><form method='post' action='/dashboard/order/{order_id}/offer/submit' enctype='multipart/form-data'><div class='grid'><div><label>Файл счёта / предложения</label><input type='file' name='invoice_file' required></div><div><label>ID юрлица / банковского счёта</label><input name='destination_account_id' required placeholder='Вставь ID'><small><a target='_blank' href='/dashboard/order/{order_id}/offer/accounts'>Получить список юрлиц</a></small></div><div><label>Номер счёта</label><input name='producer_offer_number' required></div><div><label>Дата</label><input type='date' name='producer_offer_date' value='{date.today().isoformat()}' required></div><div><label>Валюта ID</label><input name='currency_id' value='{esc(DEFAULT_CURRENCY_ID)}' required></div><div><label>НДС</label><select name='vat_rate'><option value='0.2'>20%</option><option value='0.22'>22%</option><option value='0.1'>10%</option><option value='0'>Без НДС</option></select></div><div><label>Предоплата, %</label><input type='number' name='prepayment_percent' min='0' max='100' value='100'></div><div><label>Отсрочка, дней</label><input type='number' name='delay_days' min='0' value='0'></div><div><label>Доставка включена</label><select name='delivery_included'><option value='1'>Да</option><option value='0'>Нет</option></select></div><div><label>Рег. номер</label><input name='document_reg_num'></div></div><p><label>Комментарий покупателю</label><textarea name='comment'></textarea></p><h3>Позиции</h3><table><thead><tr><th></th><th>№</th><th>Позиция</th><th>Кол-во</th><th>Ед.</th><th>Цена за ед.</th><th>Наличие</th></tr></thead><tbody>{rows}</tbody></table><div class='warn'>Реальная отправка выполняется только после контрольного подтверждения.</div><p><label><input type='checkbox' name='confirm_send' value='SEND' required> Я проверил юрлицо, файл, позиции, количества и цены.</label></p><button type='submit'>Загрузить файл и создать предложение</button></form></div></body></html>"""
         html = f"""<!doctype html><html lang='ru'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>Предложение {order_id}</title><style>body{{font-family:Arial;margin:24px;background:#f4f6f8;color:#202124}}.card{{background:#fff;padding:18px;border-radius:12px;margin-bottom:18px}}.grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:12px}}label{{display:block;font-size:12px;margin:6px 0 4px}}input,select,textarea{{width:100%;box-sizing:border-box;padding:8px}}table{{width:100%;border-collapse:collapse;font-size:13px}}th,td{{padding:8px;border-bottom:1px solid #ddd;vertical-align:top}}th{{text-align:left;background:#eee}}button{{padding:12px 18px;background:#c62828;color:white;border:0;border-radius:8px;font-weight:bold}}button:disabled{{background:#999}}input[type=checkbox]{{width:auto}}.ok{{background:#edf8ef;padding:10px;border-radius:8px}}.warn{{background:#fff0e8;padding:10px;border-radius:8px;margin:10px 0}}</style></head><body><p><a href='/dashboard/automation/jobs/{job_id}/review'>← К проверке заявки</a></p><h1>Подтверждение предложения в Закупай</h1><div class='card'><div class='ok'>Используется сохранённая заявка и последний проверенный подбор. Повторного получения заявки из Закупай нет. Счёт сформируется автоматически.</div>{warning}<p><b>Заявка:</b> {esc(order.get('id'))} — {esc(order.get('name'))}<br><b>Позиций к отправке:</b> {len(included)}</p><form method='post' action='/dashboard/order/{order_id}/offer/submit'><div class='grid'><div><label>Банковский счёт ООО «АВИОР»</label>{account_field}</div><div><label>Номер счёта</label><input name='producer_offer_number' value='{esc(invoice_number)}' required></div><div><label>Дата</label><input type='date' name='producer_offer_date' value='{date.today().isoformat()}' required></div><div><label>Валюта ID</label><input name='currency_id' value='{esc(DEFAULT_CURRENCY_ID)}' required></div><div><label>НДС</label><select name='vat_rate'><option value='0.22' selected>22%</option><option value='0.2'>20%</option><option value='0.1'>10%</option><option value='0'>Без НДС</option></select></div><div><label>Предоплата, %</label><input type='number' name='prepayment_percent' min='0' max='100' value='100'></div><div><label>Отсрочка, дней</label><input type='number' name='delay_days' min='0' value='0'></div><div><label>Доставка включена</label><select name='delivery_included'><option value='1' selected>Да</option><option value='0'>Нет</option></select></div></div><p><label>Комментарий покупателю</label><textarea name='comment'>Частичное или полное предложение по подтверждённым позициям. Доставка включена в стоимость.</textarea></p><h3>Позиции</h3><table><thead><tr><th>Включить</th><th>№</th><th>Заявка / предложение</th><th>Кол-во</th><th>Ед.</th><th>Цена за ед.</th><th>Наличие и срок</th></tr></thead><tbody>{rows}</tbody></table><div class='warn'>После нажатия кнопки счёт будет загружен, а предложение реально создано в Закупай. Повторная отправка этой обработки будет заблокирована.</div><p><label><input type='checkbox' name='confirm_send' value='SEND' required> Я проверил счёт, позиции, количества, цены и подтверждаю отправку.</label></p><button type='submit' {disabled}>Выставить счёт и отправить предложение</button></form></div></body></html>"""
         return HTMLResponse(html)
+
+    @app.post("/dashboard/order/{order_id}/offer/enrich-ids")
+    def enrich_offer_line_ids(order_id: int):
+        """Explicit one-shot repair for old snapshots saved without line IDs."""
+        _get_context(order_id)
+        if fetch_order_by_id is None or enrich_offer_context is None:
+            raise HTTPException(status_code=503, detail="Получение ID позиций не подключено")
+        try:
+            fresh_order = fetch_order_by_id(order_id, force=True)
+            context = enrich_offer_context(order_id, fresh_order)
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"Не удалось получить ID позиций: {exc}")
+        found = bool(context and (context.get("result") or {}).get("order_id_enrichment_found"))
+        suffix = "ids=found" if found else "ids=missing"
+        return HTMLResponse(
+            "<html><head><meta http-equiv='refresh' content='0;url="
+            f"/dashboard/order/{order_id}/offer?{suffix}'></head></html>",
+            status_code=303,
+            headers={"Location": f"/dashboard/order/{order_id}/offer?{suffix}"},
+        )
 
     @app.post("/dashboard/order/{order_id}/offer/submit", response_class=HTMLResponse)
     async def submit_offer(order_id: int, request: Request):
