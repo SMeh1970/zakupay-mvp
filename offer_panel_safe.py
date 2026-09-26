@@ -388,7 +388,20 @@ def install_offer_panel(
         order = context["order"]
         result = context["result"]
         if result.get("live_offer_created"):
-            raise HTTPException(status_code=409, detail="Предложение по этой обработке уже создано")
+            offer_id = result.get("live_offer_id") or "—"
+            invoice_number = result.get("invoice_number") or context.get("invoice_number") or "—"
+            return HTMLResponse(
+                "<!doctype html><html lang='ru'><meta charset='utf-8'>"
+                "<title>Предложение уже отправлено</title>"
+                "<body style='font-family:Arial;margin:32px'>"
+                "<h1>Предложение уже отправлено</h1>"
+                f"<p>Заявка № {order_id}</p><p>Счёт № {esc(invoice_number)}</p>"
+                f"<p>ID предложения Закупай: {esc(offer_id)}</p>"
+                "<p>Повторное предложение не создано — защита от дублей сработала.</p>"
+                f"<p><a href='/dashboard/automation/jobs/{context['job_id']}/review'>Вернуться к заявке</a></p>"
+                "</body></html>",
+                status_code=409,
+            )
         form = await request.form()
         if form.get("confirm_send") != "SEND":
             raise HTTPException(status_code=400, detail="Реальная отправка не подтверждена")
