@@ -250,7 +250,49 @@ class PipelineTests(unittest.TestCase):
         )]
         item = pipeline.build_vi_draft(order)["items"][0]
         self.assertNotEqual(item["decision"], "auto_ready")
-        self.assertIn("не совпадает модель/артикул", item["replacement_details"])
+        self.assertIsNone(item["selected"])
+        self.assertEqual(item["match_status"], "не соответствует")
+        self.assertIn("не совпадает модель/артикул", item["rejected_candidates"][0]["hard_conflicts"])
+
+    @patch.object(pipeline.VseinstrumentiAdapter, "search")
+    def test_different_product_type_is_rejected_even_when_number_matches(self, search):
+        order = {
+            "id": 37299999,
+            "orderItems": [{"id": 1, "goodName": "Мешки 230 л", "count": 30, "unit": {"name": "шт"}}],
+        }
+        search.return_value = [SupplierQuote(
+            supplier="ВИ",
+            name="Компрессор Вихрь КМП-230/24",
+            sku="12345",
+            price=10048,
+            stock=5,
+        )]
+        item = pipeline.build_vi_draft(order)["items"][0]
+        self.assertIsNone(item["selected"])
+        self.assertEqual(item["match_status"], "не соответствует")
+        self.assertTrue(any("не совпадает тип товара" in x for x in item["rejected_candidates"][0]["hard_conflicts"]))
+
+    @patch.object(pipeline.VseinstrumentiAdapter, "search")
+    def test_manual_repeat_search_excludes_previously_shown_candidate(self, search):
+        search.return_value = [
+            SupplierQuote(supplier="ВИ", name="Мешки для мусора 230 л", sku="old", price=100, stock=50),
+            SupplierQuote(supplier="ВИ", name="Мешки строительные 230 л", sku="new", price=120, stock=50),
+        ]
+        item = {"id": 1, "goodName": "Мешки 230 л", "count": 30, "unit": {"name": "шт"}}
+        excluded = {pipeline._candidate_key({"supplier": "ВИ", "sku": "old"})}
+        row = pipeline._build_match_row(1, item, [pipeline.VseinstrumentiAdapter()], excluded)
+        self.assertEqual(row["selected"]["sku"], "new")
+        self.assertIn(excluded.pop(), row["excluded_candidate_keys"])
+
+    def test_manual_import_saves_order_without_supplier_search(self):
+        outcome = pipeline.save_api_order_for_manual_start(ORDER)
+        self.assertFalse(outcome["duplicate"])
+        with pipeline._connect() as conn:
+            row = pipeline._execute(conn, "SELECT * FROM automation_jobs WHERE id=?", (outcome["job_id"],)).fetchone()
+        result = json.loads(row["result_json"])
+        self.assertEqual(row["status"], "pending_search")
+        self.assertEqual(result["summary"]["positions"], 1)
+        self.assertEqual(result["items"], [])
 
     def test_operator_approved_row_is_included_in_partial_invoice(self):
         draft = {
