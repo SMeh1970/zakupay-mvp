@@ -1,3 +1,4 @@
+import base64
 import os
 import re
 import threading
@@ -364,10 +365,18 @@ class KrepKompAdapter(SupplierAdapter):
             now = time.time()
             if cls._token and now < cls._token_expires_at:
                 return cls._token
+            # requests' auth=(user, password) encodes Basic credentials as
+            # latin-1. KREP-KOMP issues Cyrillic usernames, so construct the
+            # RFC 7617 header explicitly from UTF-8 bytes.
+            basic = base64.b64encode(
+                f"{self.username}:{self.password}".encode("utf-8")
+            ).decode("ascii")
             response = requests.get(
                 f"{self.base_url}/generate_token",
-                auth=(self.username, self.password),
-                headers={"Accept": "application/json"},
+                headers={
+                    "Authorization": f"Basic {basic}",
+                    "Accept": "application/json",
+                },
                 timeout=self.timeout,
             )
             response.raise_for_status()
