@@ -28,16 +28,22 @@ def _identifiers(s):
     """Model/article-like fragments: RT-IB150, 80661, DIN7504-O, RF-TC7005."""
     raw = (s or "").upper().replace("Ё", "Е")
     values = set(re.findall(r"(?<![A-ZА-Я0-9])(?=[A-ZА-Я0-9./_-]{4,})(?=[A-ZА-Я0-9./_-]*\d)[A-ZА-Я0-9]+(?:[-_/][A-ZА-Я0-9]+)*(?![A-ZА-Я0-9])", raw))
-    return {re.sub(r"[^A-ZА-Я0-9]", "", x) for x in values if len(re.sub(r"[^A-ZА-Я0-9]", "", x)) >= 4}
+    normalized = {re.sub(r"[^A-ZА-Я0-9]", "", x) for x in values}
+    measurement_only = re.compile(r"^\d+(?:ММ|СМ|М|МЛ|Л|Г|КГ|ВТ|КВТ|В|А|БАР)$")
+    return {x for x in normalized if len(x) >= 4 and not measurement_only.fullmatch(x)}
 
 
 def _measurements(s):
     """Comparable measurements while keeping the unit (10x160 mm, 2 inch, 500 g)."""
     text = (s or "").lower().replace("×", "x").replace("*", "x").replace(",", ".")
     found = set()
-    for dims, unit in re.findall(r"(\d+(?:\.\d+)?(?:\s*x\s*\d+(?:\.\d+)?){0,2})\s*(мм|mm|см|cm|м|m|г|гр|g|кг|kg|дюйм(?:а|ов)?|inch|\")", text):
+    for dims, unit in re.findall(r"(\d+(?:\.\d+)?(?:\s*x\s*\d+(?:\.\d+)?){0,2})\s*(мм|mm|см|cm|мл|ml|м|m|л|l|г|гр|g|кг|kg|вт|w|квт|kw|в|v|а|a|бар|bar|дюйм(?:а|ов)?|inch|\")", text):
         nums = "x".join(part.strip().lstrip("0") or "0" for part in dims.split("x"))
-        unit = {"mm": "мм", "cm": "см", "m": "м", "гр": "г", "g": "г", "kg": "кг", "inch": "дюйм", '"': "дюйм"}.get(unit, unit)
+        unit = {
+            "mm": "мм", "cm": "см", "m": "м", "ml": "мл", "l": "л",
+            "гр": "г", "g": "г", "kg": "кг", "w": "вт", "kw": "квт",
+            "v": "в", "a": "а", "bar": "бар", "inch": "дюйм", '"': "дюйм",
+        }.get(unit, unit)
         if unit.startswith("дюйм"):
             unit = "дюйм"
         found.add(f"{nums}{unit}")
