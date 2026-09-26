@@ -263,6 +263,51 @@ def _unit_name(item):
     return str(unit)
 
 
+def _order_item_id(item: dict | None):
+    """Return a Zakupay line ID across payload variants used by its APIs."""
+    item = item or {}
+    for key in ("id", "orderItemId", "order_item_id", "itemId"):
+        value = item.get(key)
+        if value not in (None, ""):
+            return value
+    nested = item.get("orderItem")
+    if isinstance(nested, dict) and nested.get("id") not in (None, ""):
+        return nested.get("id")
+    return None
+
+
+def _merge_line_ids(order: dict, detailed: dict | None) -> dict:
+    """Merge IDs from one exact lookup without replacing the saved request."""
+    if not detailed:
+        return order
+    source_items = list(detailed.get("orderItems") or [])
+    if not source_items:
+        return order
+    merged = dict(order)
+    target_items = [dict(item) for item in (order.get("orderItems") or [])]
+    unused = set(range(len(source_items)))
+    for position, item in enumerate(target_items):
+        if _order_item_id(item) is not None:
+            continue
+        requested = _norm(item.get("goodName") or "")
+        match_index = next((
+            idx for idx in unused
+            if requested and _norm(source_items[idx].get("goodName") or "") == requested
+        ), None)
+        if match_index is None and position < len(source_items):
+            candidate = _norm(source_items[position].get("goodName") or "")
+            if requested and candidate and (requested in candidate or candidate in requested):
+                match_index = position
+        if match_index is None:
+            continue
+        line_id = _order_item_id(source_items[match_index])
+        if line_id is not None:
+            item["id"] = line_id
+            unused.discard(match_index)
+    merged["orderItems"] = target_items
+    return merged
+
+
 def _search_variants(requested: str) -> list[str]:
     """Search exact identifiers first, then progressively broader text variants."""
     variants = []
@@ -563,7 +608,7 @@ def _build_match_row(position: int, item: dict, suppliers, excluded_keys: set[st
     offer_price = round(unit_purchase_price * (1 + DEFAULT_MARKUP), 2) if unit_purchase_price is not None else None
     return {
         "position": position,
-        "order_item_id": item.get("id"),
+        "order_item_id": _order_item_id(item),
         "requested_name": requested,
         "quantity": item.get("count"),
         "unit": requested_unit,
@@ -615,7 +660,7 @@ def build_vi_draft(order: dict, invoice_number: int | None = None) -> dict:
                 item = items[position - 1]
                 rows_by_position[position] = {
                     "position": position,
-                    "order_item_id": item.get("id"),
+                    "order_item_id": _order_item_id(item),
                     "requested_name": item.get("goodName") or "",
                     "quantity": item.get("count"),
                     "unit": _unit_name(item),
@@ -633,7 +678,7 @@ def build_vi_draft(order: dict, invoice_number: int | None = None) -> dict:
         "order_id": order.get("id"),
         "order_name": order.get("name"),
         "customer": order.get("customer") or {},
-        "zakupay_line_ids_complete": bool(items) and all(item.get("id") is not None for item in items),
+        "zakupay_line_ids_complete": bool(items) and all(_order_item_id(item) is not None for item in items),
         "order_source": order.get("source") or "zakupay_api",
         "status": status,
         "live_offer_created": False,
@@ -819,7 +864,7 @@ def enrich_automation_offer_context(order_id: int, fresh_order: dict | None) -> 
                     match_index = position
             if match_index is None:
                 continue
-            item_id = fresh_items[match_index].get("id")
+            item_id = _order_item_id(fresh_items[match_index])
             if item_id is None:
                 continue
             row["order_item_id"] = item_id
@@ -827,7 +872,7 @@ def enrich_automation_offer_context(order_id: int, fresh_order: dict | None) -> 
 
         if all(row.get("order_item_id") is not None for row in result_items):
             result["order_id_enrichment_found"] = True
-        saved_order = dict(fresh_order)
+        saved_order = _merge_line_ids(saved_order, fresh_order)
         saved_order["source"] = "zakupay_api_enrichment"
 
     updated = datetime.now(timezone.utc).isoformat()
@@ -1123,6 +1168,18 @@ def process_api_order(order: dict) -> dict:
 
 
 def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, has_my_offer=None):
+    def order_with_line_ids(order: dict) -> dict:
+        """Perform one exact lookup at intake when the collection omits line IDs."""
+        items = list(order.get("orderItems") or [])
+        if not items or all(_order_item_id(item) is not None for item in items):
+            return order
+        try:
+            detailed = fetch_order_by_id(int(order.get("id")), force=True)
+        except Exception as exc:
+            logger.warning("line id lookup deferred order=%s error=%s", order.get("id"), type(exc).__name__)
+            return order
+        return _merge_line_ids(order, detailed)
+
     @app.post("/automation/email/ingest")
     async def ingest_zakupay_email(
         request: Request,
@@ -1208,6 +1265,7 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
             if attempted >= max_orders:
                 break
             try:
+                order = order_with_line_ids(order)
                 outcome = process_api_order(order)
                 if outcome.get("duplicate"):
                     duplicates += 1
@@ -1278,6 +1336,7 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
             if not order.get("orderItems"):
                 skipped += 1
                 continue
+            order = order_with_line_ids(order)
             outcome = save_api_order_for_manual_start(order)
             if outcome.get("duplicate"):
                 duplicates += 1
