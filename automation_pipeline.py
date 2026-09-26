@@ -26,7 +26,7 @@ from email.parser import BytesParser
 from fastapi import Header, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 
-from supplier_adapters import VseinstrumentiAdapter
+from supplier_adapters import KrepKompAdapter, VseinstrumentiAdapter
 from vi_order_match import _identifiers, _label, _measurements, _norm, _score_details
 from zakupay_email import parse_zakupay_email
 from invoice_generator import build_invoice_xlsx
@@ -259,16 +259,23 @@ def _search_variants(requested: str) -> list[str]:
     return list(dict.fromkeys(value for value in variants if value.strip()))
 
 
-def _search_candidates(vi, requested: str) -> list:
+def _search_candidates(suppliers, requested: str) -> list:
+    if not isinstance(suppliers, (list, tuple)):
+        suppliers = [suppliers]
     quotes = []
     seen = set()
-    for query in _search_variants(requested):
-        for quote in vi.search(query, limit=VI_CANDIDATE_LIMIT):
-            key = quote.sku or (quote.article, quote.name)
-            if key in seen:
-                continue
-            seen.add(key)
-            quotes.append(quote)
+    for supplier in suppliers:
+        # KREP-KOMP ranks a cached full catalogue locally. Repeating VI-style
+        # text variants would only duplicate price/stock API calls and consume
+        # the supplier's 1000-request daily allowance.
+        queries = [requested] if getattr(supplier, "code", "") == "krep_komp" else _search_variants(requested)
+        for query in queries:
+            for quote in supplier.search(query, limit=VI_CANDIDATE_LIMIT):
+                key = (quote.supplier, quote.sku or quote.article or quote.name)
+                if key in seen:
+                    continue
+                seen.add(key)
+                quotes.append(quote)
     return quotes
 
 
@@ -283,11 +290,13 @@ def _pack_size(name: str, supplier_unit: str | None, requested_unit: str) -> int
 
 
 def _purchase_label(candidate: dict, requested_unit: str) -> str:
-    """Human-readable VI purchase price with its sales-unit context."""
-    name = str(candidate.get("name") or "Товар ВИ")
+    """Human-readable supplier purchase price with its sales-unit context."""
+    # Historical saved drafts did not persist a supplier field and were VI-only.
+    supplier = str(candidate.get("supplier") or "ВсеИнструменты.ру")
+    name = str(candidate.get("name") or "Товар")
     price = candidate.get("price")
     if price is None:
-        return f"{name} — закупочная цена ВИ не передана"
+        return f"{name} — закупочная цена {supplier} не передана"
     numeric_price = float(price)
     price_text = (
         str(int(numeric_price))
@@ -300,7 +309,8 @@ def _purchase_label(candidate: dict, requested_unit: str) -> str:
     else:
         supplier_unit = str(candidate.get("unit") or requested_unit or "ед.").strip()
         price_basis = f"за 1 {supplier_unit}"
-    return f"{name} — закупка ВИ: {price_text} ₽ {price_basis}"
+    supplier_label = "ВИ" if supplier == "ВсеИнструменты.ру" else supplier
+    return f"{name} — закупка {supplier_label}: {price_text} ₽ {price_basis}"
 
 
 def _hard_conflicts(requested: str, selected: dict) -> list[str]:
@@ -319,14 +329,17 @@ def _hard_conflicts(requested: str, selected: dict) -> list[str]:
 
 
 def build_vi_draft(order: dict, invoice_number: int | None = None) -> dict:
-    """Build a conservative, reviewable offer draft from VI search results."""
-    vi = VseinstrumentiAdapter()
+    """Build a conservative, reviewable draft from all configured suppliers."""
+    suppliers = [VseinstrumentiAdapter()]
+    krep_komp = KrepKompAdapter()
+    if krep_komp.enabled:
+        suppliers.append(krep_komp)
     items = list(order.get("orderItems") or [])
     rows_by_position = {}
 
     def match_item(position, item):
         requested = str(item.get("goodName") or "").strip()
-        quotes = _search_candidates(vi, requested)
+        quotes = _search_candidates(suppliers, requested)
         candidates = []
         for quote in quotes:
             if quote.error:
@@ -1066,7 +1079,7 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
             "<title>Обработка заявок</title><style>body{font-family:Arial;margin:0;background:#f4f6f8;color:#202124}main{max-width:1200px;margin:auto;padding:28px}"
             ".card{display:flex;justify-content:space-between;gap:20px;background:#fff;border-left:7px solid #9aa0a6;border-radius:12px;padding:18px;margin:12px 0;box-shadow:0 2px 8px #0001}.card.ok{border-color:#188038}.card.warn{border-color:#f9ab00}.card.bad{border-color:#d93025}"
             ".title{font-size:20px;font-weight:700;color:#174ea6;text-decoration:none}.meta{margin-top:8px;color:#5f6368}.actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.button{background:#1a73e8;color:#fff;padding:10px 13px;border-radius:7px;text-decoration:none;font-weight:700}.secondary{background:#5f6368}.send{background:#188038}.muted{color:#777}@media(max-width:760px){.card{display:block}.actions{margin-top:14px}}</style>"
-            "<main><h1>Заявки Закупай</h1><p>Подбор ВИ, частичные счета и контроль перед отправкой.</p>" + "".join(cards) + "</main></html>"
+            "<main><h1>Заявки Закупай</h1><p>Подбор у поставщиков, частичные счета и контроль перед отправкой.</p>" + "".join(cards) + "</main></html>"
         ), media_type="text/html")
 
     @app.get("/dashboard/automation/jobs/{job_id}/review")
@@ -1131,8 +1144,8 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
                 "<p><a href='/dashboard/automation'>← Все заявки</a></p>"
                 f"<h1>Заявка Закупай № {row['order_id']}</h1>"
                 f"<p>Счёт № {row['invoice_number']} · статус: {html.escape(str(row['status']))}</p>"
-                f"<form method='post' action='/dashboard/automation/jobs/{job_id}/refresh'><p><button class='button' type='submit'>Повторить поиск в ВИ</button></p></form>{search_report}"
-                f"<form method='post' action='/dashboard/automation/jobs/{job_id}/review'><table><tr><th>Включить</th><th>№</th><th>Заявка</th><th>Подбор ВИ<br><small>(закупочная цена)</small></th><th>Количество</th><th>Наша цена<br><small>за единицу заявки (+5%)</small></th>"
+                f"<form method='post' action='/dashboard/automation/jobs/{job_id}/refresh'><p><button class='button' type='submit'>Повторить поиск у поставщиков</button></p></form>{search_report}"
+                f"<form method='post' action='/dashboard/automation/jobs/{job_id}/review'><table><tr><th>Включить</th><th>№</th><th>Заявка</th><th>Подбор поставщика<br><small>(закупочная цена)</small></th><th>Количество</th><th>Наша цена<br><small>за единицу заявки (+5%)</small></th>"
                 "<th>Статус подбора</th><th>Замена</th><th>Наличие</th><th>Срок</th><th>Решение</th></tr>"
                 + "".join(table_rows) + "</table><p><button type='submit'>Сохранить и пересчитать счёт</button></p></form>" + invoice_link + offer_link + "</main></body></html>"
             ),
