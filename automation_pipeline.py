@@ -132,6 +132,20 @@ def _connect():
         )
         conn.execute("ALTER TABLE automation_jobs ADD COLUMN IF NOT EXISTS order_json TEXT")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_automation_jobs_order ON automation_jobs(order_id, created_at)")
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS match_feedback (
+                id BIGSERIAL PRIMARY KEY,
+                request_key TEXT NOT NULL,
+                candidate_key TEXT NOT NULL,
+                action TEXT NOT NULL,
+                requested_name TEXT NOT NULL,
+                candidate_json TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(request_key, candidate_key)
+            )"""
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_match_feedback_request ON match_feedback(request_key, action)")
         conn.commit()
         return conn
     conn = sqlite3.connect(DB_PATH, timeout=30)
@@ -156,6 +170,19 @@ def _connect():
         );
         CREATE INDEX IF NOT EXISTS idx_automation_jobs_order
             ON automation_jobs(order_id, created_at);
+        CREATE TABLE IF NOT EXISTS match_feedback (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            request_key TEXT NOT NULL,
+            candidate_key TEXT NOT NULL,
+            action TEXT NOT NULL,
+            requested_name TEXT NOT NULL,
+            candidate_json TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(request_key, candidate_key)
+        );
+        CREATE INDEX IF NOT EXISTS idx_match_feedback_request
+            ON match_feedback(request_key, action);
         """
     )
     columns = {row[1] for row in conn.execute("PRAGMA table_info(automation_jobs)")}
@@ -170,6 +197,48 @@ def _execute(conn, sql: str, params=()):
     if DATABASE_URL:
         sql = sql.replace("?", "%s")
     return conn.execute(sql, params)
+
+
+def _save_match_feedback(requested_name: str, candidate: dict, action: str) -> None:
+    if action not in {"approved", "excluded"} or not candidate:
+        return
+    request_key = _norm(requested_name)
+    candidate_key = _candidate_key(candidate)
+    if not request_key or not candidate_key:
+        return
+    now = datetime.now(timezone.utc).isoformat()
+    payload = json.dumps(candidate, ensure_ascii=False)
+    with _lock, _connect() as conn:
+        if DATABASE_URL:
+            _execute(
+                conn,
+                """INSERT INTO match_feedback
+                   (request_key,candidate_key,action,requested_name,candidate_json,created_at,updated_at)
+                   VALUES (?,?,?,?,?,?,?)
+                   ON CONFLICT (request_key,candidate_key) DO UPDATE SET
+                   action=EXCLUDED.action, candidate_json=EXCLUDED.candidate_json, updated_at=EXCLUDED.updated_at""",
+                (request_key, candidate_key, action, requested_name, payload, now, now),
+            )
+        else:
+            _execute(
+                conn,
+                """INSERT INTO match_feedback
+                   (request_key,candidate_key,action,requested_name,candidate_json,created_at,updated_at)
+                   VALUES (?,?,?,?,?,?,?)
+                   ON CONFLICT(request_key,candidate_key) DO UPDATE SET
+                   action=excluded.action, candidate_json=excluded.candidate_json, updated_at=excluded.updated_at""",
+                (request_key, candidate_key, action, requested_name, payload, now, now),
+            )
+
+
+def _excluded_feedback_keys(requested_name: str) -> set[str]:
+    with _connect() as conn:
+        rows = _execute(
+            conn,
+            "SELECT candidate_key FROM match_feedback WHERE request_key=? AND action='excluded'",
+            (_norm(requested_name),),
+        ).fetchall()
+    return {str(row["candidate_key"]) for row in rows}
 
 
 def _message_id(raw_email: bytes) -> str:
@@ -313,19 +382,207 @@ def _purchase_label(candidate: dict, requested_unit: str) -> str:
     return f"{name} — закупка {supplier_label}: {price_text} ₽ {price_basis}"
 
 
+_PRODUCT_TYPE_MARKERS = {
+    "мешок": ("мешок", "мешки", "пакет для мусора"),
+    "компрессор": ("компрессор",),
+    "анкер": ("анкер",),
+    "болт": ("болт",),
+    "гайка": ("гайка",),
+    "шайба": ("шайба",),
+    "саморез": ("саморез", "винт самонарезающий"),
+    "дюбель": ("дюбель",),
+    "диск": ("диск отрезной", "диск алмазный", "круг отрезной"),
+    "бур": ("бур ", "бур sds"),
+    "сверло": ("сверло",),
+    "коронка": ("коронка", "пила кольцевая"),
+    "валик": ("валик", "мини валик"),
+    "кисть": ("кисть",),
+    "перчатки": ("перчат",),
+    "нарукавники": ("нарукавник",),
+    "очки": ("очки защит",),
+    "стекло": ("стекло защит", "светофильтр"),
+    "маркер": ("маркер",),
+    "отвертка": ("отвертк",),
+    "ключ": ("ключ рожков", "ключ трубн", "ключ гаечн"),
+    "молоток": ("молоток",),
+    "ножницы": ("ножницы",),
+    "резак": ("резак",),
+    "адаптер": ("адаптер", "держатель для корон"),
+    "пленка": ("пленк",),
+    "скотч": ("скотч", "лента клейк"),
+    "фартук": ("фартук",),
+    "зарядное устройство": ("зарядное устройство", "зарядник"),
+}
+
+
+def _product_types(text: str) -> set[str]:
+    """Return conservative product classes; unknown is safer than a false class."""
+    normalized = f" {_norm(text)} "
+    found = set()
+    for product_type, markers in _PRODUCT_TYPE_MARKERS.items():
+        if any(_norm(marker) in normalized for marker in markers):
+            found.add(product_type)
+    return found
+
+
+def _candidate_key(candidate: dict) -> str:
+    supplier = _norm(str(candidate.get("supplier") or ""))
+    identity = str(candidate.get("sku") or candidate.get("article") or candidate.get("name") or "")
+    return f"{supplier}:{_norm(identity)}"
+
+
 def _hard_conflicts(requested: str, selected: dict) -> list[str]:
     conflicts = []
-    candidate_text = " ".join(str(selected.get(key) or "") for key in ("name", "article", "sku"))
+    candidate_text = " ".join(str(selected.get(key) or "") for key in (
+        "name", "article", "sku", "technical_specifications", "breadcrumbs"
+    ))
+    requested_types = _product_types(requested)
+    candidate_types = _product_types(candidate_text)
+    if requested_types and candidate_types and requested_types.isdisjoint(candidate_types):
+        conflicts.append(
+            "не совпадает тип товара: требуется "
+            + "/".join(sorted(requested_types))
+            + ", найдено "
+            + "/".join(sorted(candidate_types))
+        )
     requested_ids = _identifiers(requested)
     candidate_ids = _identifiers(candidate_text)
-    if requested_ids and candidate_ids and not (requested_ids & candidate_ids):
+    if requested_ids and not candidate_ids:
+        conflicts.append("в найденном товаре отсутствует обязательная модель/артикул")
+    elif requested_ids and not (requested_ids & candidate_ids):
         conflicts.append("не совпадает модель/артикул")
     requested_measures = _measurements(requested)
-    candidate_measures = _measurements(selected.get("name") or "")
-    if requested_measures and candidate_measures and not requested_measures.issubset(candidate_measures):
+    candidate_measures = _measurements(candidate_text)
+    if requested_measures and not candidate_measures:
+        conflicts.append("в найденном товаре отсутствуют обязательные размеры/характеристики")
+    elif requested_measures and not requested_measures.issubset(candidate_measures):
         missing = ", ".join(sorted(requested_measures - candidate_measures))
         conflicts.append(f"не совпадают размеры: {missing}")
     return conflicts
+
+
+def _match_status(requested: str, candidate: dict | None, score: float, conflicts: list[str]) -> str:
+    if not candidate:
+        return "не соответствует"
+    if conflicts:
+        return "не соответствует"
+    candidate_text = " ".join(str(candidate.get(key) or "") for key in ("name", "article", "sku"))
+    exact_identifier = bool(_identifiers(requested) & _identifiers(candidate_text))
+    if exact_identifier or score >= AUTO_MATCH_THRESHOLD:
+        return "точное"
+    if score >= REVIEW_MATCH_THRESHOLD:
+        return "аналог"
+    if score >= 0.48:
+        return "сомнительное"
+    return "не соответствует"
+
+
+def _supplier_balanced_candidates(candidates: list[dict], per_supplier: int = 3, limit: int = 8) -> list[dict]:
+    """Keep good alternatives from every supplier instead of only the global top 3."""
+    selected = []
+    counts = {}
+    for candidate in candidates:
+        supplier = str(candidate.get("supplier") or "не указан")
+        if counts.get(supplier, 0) >= per_supplier:
+            continue
+        selected.append(candidate)
+        counts[supplier] = counts.get(supplier, 0) + 1
+        if len(selected) >= limit:
+            break
+    return selected
+
+
+def _build_match_row(position: int, item: dict, suppliers, excluded_keys: set[str] | None = None) -> dict:
+    requested = str(item.get("goodName") or "").strip()
+    excluded_keys = set(excluded_keys or ())
+    quotes = _search_candidates(suppliers, requested)
+    candidates = []
+    rejected = []
+    for quote in quotes:
+        if quote.error:
+            rejected.append({"error": quote.error})
+            continue
+        score, reasons = _score_details(requested, quote)
+        candidate = quote.to_dict()
+        candidate.update({
+            "match_score": score,
+            "match_level": _label(score),
+            "match_reasons": reasons,
+        })
+        key = _candidate_key(candidate)
+        conflicts = _hard_conflicts(requested, candidate)
+        candidate["candidate_key"] = key
+        candidate["hard_conflicts"] = conflicts
+        if key in excluded_keys:
+            candidate["rejection_reason"] = "уже показывался в этой позиции"
+            rejected.append(candidate)
+        elif conflicts:
+            candidate["rejection_reason"] = "; ".join(conflicts)
+            rejected.append(candidate)
+        else:
+            candidates.append(candidate)
+    candidates.sort(key=lambda x: (
+        -(x.get("match_score") or 0),
+        x.get("price") if x.get("price") is not None else float("inf"),
+    ))
+    rejected.sort(key=lambda x: (x.get("error") is not None, -(x.get("match_score") or 0)))
+    # Candidates below the minimum semantic threshold remain visible only in
+    # diagnostics; they must never become the selected invoice line.
+    acceptable = [x for x in candidates if (x.get("match_score") or 0) >= 0.48]
+    rejected.extend(x for x in candidates if (x.get("match_score") or 0) < 0.48)
+    candidates = acceptable
+    best = candidates[0] if candidates else None
+    score = (best or {}).get("match_score") or 0
+    requested_qty = float(item.get("count") or 0)
+    stock = (best or {}).get("stock")
+    requested_unit = _unit_name(item)
+    pack_size = _pack_size((best or {}).get("name") or "", (best or {}).get("unit"), requested_unit)
+    purchase_units = math.ceil(requested_qty / pack_size) if requested_qty else 0
+    enough_stock = stock is not None and stock >= purchase_units
+    courier_date = (best or {}).get("courier_date")
+    pickup_date = (best or {}).get("pickup_date")
+    dated_availability = stock is None and bool(courier_date or pickup_date)
+    conflicts = _hard_conflicts(requested, best or {}) if best else []
+    match_status = _match_status(requested, best, score, conflicts)
+    availability_status = (
+        "количество подтверждено" if enough_stock else
+        "доступно к заказу, количество не подтверждено" if courier_date else
+        "доступно к самовывозу, количество не подтверждено" if pickup_date else
+        "подтвержденного количества недостаточно" if stock is not None else
+        "наличие не подтверждено"
+    )
+    can_auto = match_status == "точное"
+    if can_auto and (enough_stock or dated_availability) and best.get("price") is not None:
+        decision = "auto_ready"
+    elif match_status in {"аналог", "сомнительное"}:
+        decision = "review"
+    else:
+        decision = "manual"
+    purchase_price = (best or {}).get("price")
+    unit_purchase_price = purchase_price / pack_size if purchase_price is not None else None
+    offer_price = round(unit_purchase_price * (1 + DEFAULT_MARKUP), 2) if unit_purchase_price is not None else None
+    return {
+        "position": position,
+        "order_item_id": item.get("id"),
+        "requested_name": requested,
+        "quantity": item.get("count"),
+        "unit": requested_unit,
+        "decision": decision,
+        "selected": best,
+        "purchase_price": purchase_price,
+        "proposed_unit_price": offer_price,
+        "stock_confirmed": enough_stock,
+        "availability_status": availability_status,
+        "courier_date": courier_date,
+        "pickup_date": pickup_date,
+        "pack_size": pack_size,
+        "purchase_units": purchase_units,
+        "match_status": match_status,
+        "replacement_details": conflicts,
+        "candidates": _supplier_balanced_candidates(candidates),
+        "rejected_candidates": rejected[:20],
+        "excluded_candidate_keys": sorted(excluded_keys),
+    }
 
 
 def build_vi_draft(order: dict, invoice_number: int | None = None) -> dict:
@@ -336,84 +593,13 @@ def build_vi_draft(order: dict, invoice_number: int | None = None) -> dict:
         suppliers.append(krep_komp)
     items = list(order.get("orderItems") or [])
     rows_by_position = {}
+    feedback_exclusions = {
+        position: _excluded_feedback_keys(str(item.get("goodName") or ""))
+        for position, item in enumerate(items, 1)
+    }
 
     def match_item(position, item):
-        requested = str(item.get("goodName") or "").strip()
-        quotes = _search_candidates(suppliers, requested)
-        candidates = []
-        for quote in quotes:
-            if quote.error:
-                candidates.append({"error": quote.error})
-                continue
-            score, reasons = _score_details(requested, quote)
-            candidate = quote.to_dict()
-            candidate.update({
-                "match_score": score,
-                "match_level": _label(score),
-                "match_reasons": reasons,
-            })
-            candidates.append(candidate)
-        candidates.sort(key=lambda x: (
-            x.get("error") is not None,
-            -(x.get("match_score") or 0),
-            x.get("price") if x.get("price") is not None else float("inf"),
-        ))
-        best = next((x for x in candidates if not x.get("error")), None)
-        score = (best or {}).get("match_score") or 0
-        requested_qty = float(item.get("count") or 0)
-        stock = (best or {}).get("stock")
-        requested_unit = _unit_name(item)
-        pack_size = _pack_size((best or {}).get("name") or "", (best or {}).get("unit"), requested_unit)
-        purchase_units = math.ceil(requested_qty / pack_size) if requested_qty else 0
-        enough_stock = stock is not None and stock >= purchase_units
-        courier_date = (best or {}).get("courier_date")
-        pickup_date = (best or {}).get("pickup_date")
-        dated_availability = stock is None and bool(courier_date or pickup_date)
-        conflicts = _hard_conflicts(requested, best or {}) if best else []
-        exact_identifier = bool(
-            _identifiers(requested)
-            & _identifiers(" ".join(str((best or {}).get(k) or "") for k in ("name", "article", "sku")))
-        )
-        match_status = "точное соответствие" if not conflicts and (exact_identifier or score >= AUTO_MATCH_THRESHOLD) else "замена"
-        if conflicts:
-            match_status = "сомнительное соответствие"
-        availability_status = (
-            "количество подтверждено" if enough_stock else
-            "доступно к заказу, количество не подтверждено" if courier_date else
-            "доступно к самовывозу, количество не подтверждено" if pickup_date else
-            "подтвержденного количества недостаточно" if stock is not None else
-            "наличие не подтверждено"
-        )
-        can_auto = not conflicts and (exact_identifier or score >= AUTO_MATCH_THRESHOLD)
-        if can_auto and (enough_stock or dated_availability) and best.get("price") is not None:
-            decision = "auto_ready"
-        elif score >= REVIEW_MATCH_THRESHOLD:
-            decision = "review"
-        else:
-            decision = "manual"
-        purchase_price = (best or {}).get("price")
-        unit_purchase_price = purchase_price / pack_size if purchase_price is not None else None
-        offer_price = round(unit_purchase_price * (1 + DEFAULT_MARKUP), 2) if unit_purchase_price is not None else None
-        return {
-            "position": position,
-            "order_item_id": item.get("id"),
-            "requested_name": requested,
-            "quantity": item.get("count"),
-            "unit": _unit_name(item),
-            "decision": decision,
-            "selected": best,
-            "purchase_price": purchase_price,
-            "proposed_unit_price": offer_price,
-            "stock_confirmed": enough_stock,
-            "availability_status": availability_status,
-            "courier_date": courier_date,
-            "pickup_date": pickup_date,
-            "pack_size": pack_size,
-            "purchase_units": purchase_units,
-            "match_status": match_status,
-            "replacement_details": conflicts,
-            "candidates": candidates[:3],
-        }
+        return _build_match_row(position, item, suppliers, feedback_exclusions.get(position))
 
     workers = max(1, min(int(os.getenv("AUTO_VI_WORKERS", "8")), 12, len(items) or 1))
     with ThreadPoolExecutor(max_workers=workers) as pool:
@@ -795,6 +981,45 @@ def process_email(raw_email: bytes, fetch_order_by_id) -> dict:
     }
 
 
+def save_api_order_for_manual_start(order: dict) -> dict:
+    """Persist a Zakupay application without starting supplier searches."""
+    order_id = int(order.get("id") or 0)
+    items = list(order.get("orderItems") or [])
+    if not order_id or not items:
+        raise ValueError("Заявка не содержит ID или позиций")
+    key = _api_dedupe_key(order_id)
+    now = datetime.now(timezone.utc).isoformat()
+    pending_result = {
+        "order_id": order_id,
+        "order_name": order.get("name"),
+        "customer": order.get("customer") or {},
+        "status": "pending_search",
+        "live_offer_created": False,
+        "invoice_number": None,
+        "summary": {
+            "positions": len(items), "auto_ready": 0, "review": 0, "manual": 0,
+            "included_in_invoice": 0, "excluded_from_invoice": len(items),
+        },
+        "items": [],
+    }
+    with _lock, _connect() as conn:
+        existing = _execute(conn, "SELECT * FROM automation_jobs WHERE dedupe_key=?", (key,)).fetchone()
+        if existing:
+            return {"duplicate": True, "job_id": existing["id"], "status": existing["status"]}
+        insert_sql = """INSERT INTO automation_jobs
+            (dedupe_key,message_id,order_id,event_type,subject,sender,status,error,order_json,result_json,created_at,updated_at,invoice_number)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)"""
+        if DATABASE_URL:
+            insert_sql += " RETURNING id"
+        cursor = _execute(conn, insert_sql, (
+            key, None, order_id, "api_manual", order.get("name") or f"Заявка {order_id}",
+            "Zakupay API", "pending_search", None, json.dumps(order, ensure_ascii=False),
+            json.dumps(pending_result, ensure_ascii=False), now, now, None,
+        ))
+        job_id = cursor.fetchone()["id"] if DATABASE_URL else cursor.lastrowid
+    return {"duplicate": False, "job_id": job_id, "status": "pending_search"}
+
+
 def process_api_order(order: dict) -> dict:
     """Create one persistent review job from a Zakupay API order."""
     order_id = int(order.get("id") or 0)
@@ -1031,8 +1256,70 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
             ).fetchall()
         return {"count": len(rows), "jobs": [dict(row) for row in rows]}
 
+    @app.post("/dashboard/automation/sync")
+    def automation_dashboard_sync():
+        """Operator-triggered one-shot import; automatic polling stays disabled."""
+        if fetch_all_orders is None:
+            raise HTTPException(status_code=503, detail="Получение заявок из Закупай не подключено")
+        try:
+            orders = fetch_all_orders(force=True)
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"Закупай не вернул список заявок: {exc}")
+        added = duplicates = skipped = 0
+        for order in orders[:300]:
+            if not _prepayment_confirmed(order):
+                skipped += 1
+                continue
+            if has_my_offer and has_my_offer(order):
+                skipped += 1
+                continue
+            if not order.get("orderItems"):
+                skipped += 1
+                continue
+            outcome = save_api_order_for_manual_start(order)
+            if outcome.get("duplicate"):
+                duplicates += 1
+            else:
+                added += 1
+        return Response(
+            status_code=303,
+            headers={"Location": f"/dashboard/automation?added={added}&duplicates={duplicates}&skipped={skipped}"},
+        )
+
+    @app.post("/dashboard/automation/jobs/{job_id}/start")
+    def automation_dashboard_start(job_id: int):
+        with _connect() as conn:
+            row = _execute(conn, "SELECT * FROM automation_jobs WHERE id=?", (job_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Заявка не найдена")
+        old_result = json.loads(row["result_json"]) if row["result_json"] else {}
+        if old_result.get("live_offer_created"):
+            raise HTTPException(status_code=409, detail="Предложение уже отправлено")
+        order = _saved_order_snapshot(row, old_result)
+        if not order:
+            raise HTTPException(status_code=409, detail="Состав заявки не сохранён")
+        result = build_vi_draft(order, invoice_number=row["invoice_number"])
+        invoice_number = row["invoice_number"]
+        if result["summary"]["auto_ready"] > 0 and invoice_number is None:
+            with _lock, _connect() as conn:
+                last_row = _execute(conn, "SELECT MAX(invoice_number) AS max_invoice FROM automation_jobs").fetchone()
+                last_number = last_row["max_invoice"] if DATABASE_URL else last_row[0]
+                invoice_number = max(INVOICE_NUMBER_START, (last_number or INVOICE_NUMBER_START - 1) + 1)
+                _execute(conn, "UPDATE automation_jobs SET invoice_number=? WHERE id=?", (invoice_number, job_id))
+            result["invoice_number"] = invoice_number
+        updated = datetime.now(timezone.utc).isoformat()
+        with _lock, _connect() as conn:
+            _execute(
+                conn,
+                "UPDATE automation_jobs SET status=?, error=NULL, result_json=?, updated_at=? WHERE id=?",
+                (result["status"], json.dumps(result, ensure_ascii=False), updated, job_id),
+            )
+        return Response(status_code=303, headers={"Location": f"/dashboard/automation/jobs/{job_id}/review"})
+
     @app.get("/dashboard/automation")
-    def automation_dashboard():
+    def automation_dashboard(added: int = 0, duplicates: int = 0, skipped: int = 0):
         with _connect() as conn:
             rows = _execute(
                 conn,
@@ -1059,6 +1346,7 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
             if excluded:
                 parts.append(f"{excluded} исключено")
             cls = "ok" if total and ready == total else "warn" if ready else "bad"
+            pending = row["status"] == "pending_search"
             invoice = (
                 f"<a class='button secondary' href='/dashboard/automation/jobs/{row['id']}/invoice.xlsx'>Скачать счёт</a>"
                 if ready else ""
@@ -1068,18 +1356,33 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
                 if ready else "<span class='muted'>Нет позиций для отправки</span>"
             )
             order_label = f" / {html.escape(str(result.get('order_name')))}" if result.get("order_name") else ""
+            primary_action = (
+                f"<form method='post' action='/dashboard/automation/jobs/{row['id']}/start'><button class='button' type='submit'>Начать подбор</button></form>"
+                if pending else
+                f"<a class='button' href='/dashboard/automation/jobs/{row['id']}/review'>Открыть</a>"
+            )
             cards.append(
                 f"<section class='card {cls}'><div><a class='title' href='/dashboard/automation/jobs/{row['id']}/review'>"
                 f"Заявка №{row['order_id']}{order_label}</a><div class='meta'>{html.escape(' · '.join(parts))}</div>"
                 f"<div class='meta'>Статус: {html.escape(str(row['status']))} · счёт: {row['invoice_number'] or '—'}</div></div>"
-                f"<div class='actions'><a class='button' href='/dashboard/automation/jobs/{row['id']}/review'>Открыть</a>{invoice}{send}</div></section>"
+                f"<div class='actions'>{primary_action}{invoice}{send}</div></section>"
+            )
+        sync_report = ""
+        if added or duplicates or skipped:
+            sync_report = (
+                "<p style='padding:12px;background:#e6f4ea;border-radius:8px'>"
+                f"Обновление завершено: новых {added}, уже сохранённых {duplicates}, пропущено {skipped}."
+                "</p>"
             )
         return Response(content=(
             "<!doctype html><html lang='ru'><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
             "<title>Обработка заявок</title><style>body{font-family:Arial;margin:0;background:#f4f6f8;color:#202124}main{max-width:1200px;margin:auto;padding:28px}"
             ".card{display:flex;justify-content:space-between;gap:20px;background:#fff;border-left:7px solid #9aa0a6;border-radius:12px;padding:18px;margin:12px 0;box-shadow:0 2px 8px #0001}.card.ok{border-color:#188038}.card.warn{border-color:#f9ab00}.card.bad{border-color:#d93025}"
             ".title{font-size:20px;font-weight:700;color:#174ea6;text-decoration:none}.meta{margin-top:8px;color:#5f6368}.actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.button{background:#1a73e8;color:#fff;padding:10px 13px;border-radius:7px;text-decoration:none;font-weight:700}.secondary{background:#5f6368}.send{background:#188038}.muted{color:#777}@media(max-width:760px){.card{display:block}.actions{margin-top:14px}}</style>"
-            "<main><h1>Заявки Закупай</h1><p>Подбор у поставщиков, частичные счета и контроль перед отправкой.</p>" + "".join(cards) + "</main></html>"
+            "<main><h1>Заявки Закупай</h1><p>Подбор у поставщиков, частичные счета и контроль перед отправкой.</p>"
+            "<form method='post' action='/dashboard/automation/sync'><button class='button' type='submit'>Получить новые заявки из Закупай</button></form>"
+            "<p class='muted'>Запрос выполняется только по нажатию. Автоматический опрос остаётся выключенным.</p>"
+            + sync_report + "".join(cards) + "</main></html>"
         ), media_type="text/html")
 
     @app.get("/dashboard/automation/jobs/{job_id}/review")
@@ -1092,6 +1395,7 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
         if not result:
             raise HTTPException(status_code=409, detail=row["error"] or "Расчёт ещё не готов")
         table_rows = []
+        row_search_forms = []
         for item in result.get("items") or []:
             selected = item.get("selected") or {}
             candidates = item.get("candidates") or []
@@ -1101,16 +1405,30 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
             for idx, candidate in enumerate(usable_candidates):
                 key = str(candidate.get("sku") or candidate.get("article") or candidate.get("name") or "")
                 label = _purchase_label(candidate, str(item.get("unit") or ""))
-                candidate_options.append(f"<option value='{idx}' {'selected' if key == selected_sku else ''}>{html.escape(label)}</option>")
+                pack_size = _pack_size(candidate.get("name") or "", candidate.get("unit"), str(item.get("unit") or ""))
+                purchase_price = candidate.get("price")
+                offer_price = round(float(purchase_price) / pack_size * (1 + DEFAULT_MARKUP), 2) if purchase_price is not None else ""
+                candidate_options.append(
+                    f"<option value='{idx}' data-price='{offer_price}' {'selected' if key == selected_sku else ''}>"
+                    f"{html.escape(label)}</option>"
+                )
             checked = "checked" if _included(item) else ""
+            pos = item.get("position")
+            search_form_id = f"search-position-{pos}"
+            row_search_forms.append(
+                f"<form id='{search_form_id}' method='post' action='/dashboard/automation/jobs/{job_id}/items/{pos}/refresh'></form>"
+            )
+            rejected_count = len(item.get("rejected_candidates") or [])
             table_rows.append(
                 "<tr>"
-                f"<td><input type='checkbox' name='include_{item.get('position')}' value='1' {checked}></td>"
-                f"<td>{item.get('position')}</td>"
+                f"<td><input form='review-form' type='checkbox' name='include_{pos}' value='1' {checked}></td>"
+                f"<td>{pos}</td>"
                 f"<td>{html.escape(str(item.get('requested_name') or ''))}</td>"
-                f"<td><select name='candidate_{item.get('position')}'>{''.join(candidate_options) or '<option>Не найден</option>'}</select></td>"
-                f"<td><input class='qty' name='quantity_{item.get('position')}' type='number' step='0.001' value='{html.escape(str(item.get('quantity') or ''))}'> {html.escape(str(item.get('unit') or ''))}</td>"
-                f"<td><input class='price' name='price_{item.get('position')}' type='number' step='0.01' value='{html.escape(str(item.get('proposed_unit_price') or ''))}'></td>"
+                f"<td><select form='review-form' name='candidate_{pos}' onchange=\"document.getElementById('price-{pos}').value=this.options[this.selectedIndex].dataset.price||''\">{''.join(candidate_options) or '<option>Не найден</option>'}</select>"
+                f"<div><button class='row-search' form='{search_form_id}' type='submit'>Искать другие варианты</button>"
+                f"<small> ранее отклонено: {rejected_count}</small></div></td>"
+                f"<td><input form='review-form' class='qty' name='quantity_{pos}' type='number' step='0.001' value='{html.escape(str(item.get('quantity') or ''))}'> {html.escape(str(item.get('unit') or ''))}</td>"
+                f"<td><input form='review-form' id='price-{pos}' class='price' name='price_{pos}' type='number' step='0.01' value='{html.escape(str(item.get('proposed_unit_price') or ''))}'></td>"
                 f"<td>{html.escape(str(item.get('match_status') or '—'))}</td>"
                 f"<td>{html.escape(', '.join(item.get('replacement_details') or []) or 'нет')}</td>"
                 f"<td>{html.escape(str(item.get('availability_status') or '—'))}</td>"
@@ -1140,14 +1458,14 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
                 "<!doctype html><html lang='ru'><meta charset='utf-8'>"
                 "<title>Проверка заявки</title><style>body{font-family:Arial;margin:24px;background:#f4f6f8}main{background:#fff;padding:20px;border-radius:12px;overflow:auto}"
                 "table{border-collapse:collapse;width:100%}td,th{border:1px solid #ccc;padding:8px}"
-                "th{background:#eee}select{min-width:280px}.qty{width:90px}.price{width:100px}button,.button{display:inline-block;padding:11px 16px;background:#1a73e8;color:white;border:0;border-radius:7px;text-decoration:none;font-weight:bold}.send{background:#188038}</style><body><main>"
+                "th{background:#eee}select{min-width:280px}.qty{width:90px}.price{width:100px}button,.button{display:inline-block;padding:11px 16px;background:#1a73e8;color:white;border:0;border-radius:7px;text-decoration:none;font-weight:bold}.row-search{margin-top:7px;padding:7px 10px;background:#5f6368}.send{background:#188038}</style><body><main>"
                 "<p><a href='/dashboard/automation'>← Все заявки</a></p>"
                 f"<h1>Заявка Закупай № {row['order_id']}</h1>"
                 f"<p>Счёт № {row['invoice_number']} · статус: {html.escape(str(row['status']))}</p>"
                 f"<form method='post' action='/dashboard/automation/jobs/{job_id}/refresh'><p><button class='button' type='submit'>Повторить поиск у поставщиков</button></p></form>{search_report}"
-                f"<form method='post' action='/dashboard/automation/jobs/{job_id}/review'><table><tr><th>Включить</th><th>№</th><th>Заявка</th><th>Подбор поставщика<br><small>(закупочная цена)</small></th><th>Количество</th><th>Наша цена<br><small>за единицу заявки (+5%)</small></th>"
+                f"<form id='review-form' method='post' action='/dashboard/automation/jobs/{job_id}/review'></form>{''.join(row_search_forms)}<table><tr><th>Включить</th><th>№</th><th>Заявка</th><th>Подбор поставщика<br><small>(закупочная цена)</small></th><th>Количество</th><th>Наша цена<br><small>за единицу заявки (+5%)</small></th>"
                 "<th>Статус подбора</th><th>Замена</th><th>Наличие</th><th>Срок</th><th>Решение</th></tr>"
-                + "".join(table_rows) + "</table><p><button type='submit'>Сохранить и пересчитать счёт</button></p></form>" + invoice_link + offer_link + "</main></body></html>"
+                + "".join(table_rows) + "</table><p><button form='review-form' type='submit'>Сохранить и пересчитать счёт</button></p>" + invoice_link + offer_link + "</main></body></html>"
             ),
             media_type="text/html",
         )
@@ -1189,9 +1507,64 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
             )
         return Response(status_code=303, headers={"Location": f"/dashboard/automation/jobs/{job_id}/review"})
 
+    @app.post("/dashboard/automation/jobs/{job_id}/items/{position}/refresh")
+    def automation_review_refresh_position(job_id: int, position: int):
+        with _connect() as conn:
+            row = _execute(conn, "SELECT * FROM automation_jobs WHERE id=?", (job_id,)).fetchone()
+        if not row or not row["result_json"]:
+            raise HTTPException(status_code=404, detail="Заявка или результат подбора не найдены")
+        result = json.loads(row["result_json"])
+        if result.get("live_offer_created"):
+            raise HTTPException(status_code=409, detail="Предложение уже отправлено; повторный подбор заблокирован")
+        result_items = result.get("items") or []
+        current_index = next(
+            (idx for idx, item in enumerate(result_items) if int(item.get("position") or 0) == position),
+            None,
+        )
+        current = result_items[current_index] if current_index is not None else None
+        if not current:
+            raise HTTPException(status_code=404, detail="Позиция заявки не найдена")
+        order = _saved_order_snapshot(row, result)
+        if not order:
+            raise HTTPException(status_code=409, detail="Состав заявки не был сохранён")
+        order_items = list(order.get("orderItems") or [])
+        if position < 1 or position > len(order_items):
+            raise HTTPException(status_code=404, detail="Исходная позиция заявки не найдена")
+
+        excluded = set(current.get("excluded_candidate_keys") or [])
+        for candidate in current.get("candidates") or []:
+            if not candidate.get("error"):
+                excluded.add(_candidate_key(candidate))
+        if current.get("selected"):
+            excluded.add(_candidate_key(current["selected"]))
+        excluded |= _excluded_feedback_keys(current.get("requested_name") or "")
+
+        suppliers = [VseinstrumentiAdapter()]
+        krep_komp = KrepKompAdapter()
+        if krep_komp.enabled:
+            suppliers.append(krep_komp)
+        refreshed = _build_match_row(position, order_items[position - 1], suppliers, excluded)
+        refreshed["search_history"] = list(current.get("search_history") or []) + [{
+            "searched_at": datetime.now(timezone.utc).isoformat(),
+            "excluded_candidate_keys": sorted(excluded),
+            "previous_selected": current.get("selected"),
+        }]
+        result["items"][current_index] = refreshed
+        result["last_search_at"] = datetime.now(timezone.utc).isoformat()
+        result["last_search_position"] = position
+        _refresh_summary(result)
+        with _lock, _connect() as conn:
+            _execute(
+                conn,
+                "UPDATE automation_jobs SET status=?, result_json=?, updated_at=? WHERE id=?",
+                (result["status"], json.dumps(result, ensure_ascii=False), result["last_search_at"], job_id),
+            )
+        return Response(status_code=303, headers={"Location": f"/dashboard/automation/jobs/{job_id}/review"})
+
     @app.post("/dashboard/automation/jobs/{job_id}/review")
     async def automation_review_save(job_id: int, request: Request):
         form = await request.form()
+        feedback = []
         with _lock, _connect() as conn:
             row = _execute(conn, "SELECT * FROM automation_jobs WHERE id=?", (job_id,)).fetchone()
             if not row or not row["result_json"]:
@@ -1203,6 +1576,16 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
                 candidates = [x for x in (item.get("candidates") or []) if not x.get("error")]
                 if raw_idx.isdigit() and int(raw_idx) < len(candidates):
                     item["selected"] = candidates[int(raw_idx)]
+                    selected = item["selected"]
+                    conflicts = _hard_conflicts(item.get("requested_name") or "", selected)
+                    item["match_status"] = _match_status(
+                        item.get("requested_name") or "",
+                        selected,
+                        float(selected.get("match_score") or 0),
+                        conflicts,
+                    )
+                    item["replacement_details"] = conflicts
+                    item["purchase_price"] = selected.get("price")
                 try:
                     item["quantity"] = float(form.get(f"quantity_{pos}") or item.get("quantity") or 0)
                     item["proposed_unit_price"] = float(form.get(f"price_{pos}") or 0)
@@ -1211,11 +1594,15 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
                 include = form.get(f"include_{pos}") == "1"
                 item["decision"] = "approved" if include and item.get("selected") and item.get("proposed_unit_price") is not None else "excluded"
                 item["operator_included"] = include
+                if item.get("selected"):
+                    feedback.append((item.get("requested_name") or "", item["selected"], item["decision"]))
             _refresh_summary(result)
             _execute(conn,
                 "UPDATE automation_jobs SET status=?, result_json=?, updated_at=? WHERE id=?",
                 (result["status"], json.dumps(result, ensure_ascii=False), datetime.now(timezone.utc).isoformat(), job_id),
             )
+        for requested_name, candidate, action in feedback:
+            _save_match_feedback(requested_name, candidate, action)
         return Response(status_code=303, headers={"Location": f"/dashboard/automation/jobs/{job_id}/review"})
 
     @app.get("/dashboard/automation/jobs/{job_id}/invoice.xlsx")
