@@ -1,6 +1,8 @@
 import json
+import logging
 import mimetypes
 import os
+import threading
 import uuid
 import xml.etree.ElementTree as ET
 from datetime import date
@@ -15,6 +17,7 @@ FILE_UPLOAD_PATH = os.getenv("ZAKUPAY_FILE_UPLOAD_PATH", "/core/files/upload?for
 OFFER_CREATE_PATH = os.getenv("ZAKUPAY_OFFER_CREATE_PATH", "/core/offers/new/from/1c?format=xml")
 MODULE_VERSION = os.getenv("ZAKUPAY_MODULE_VERSION", "zakupay-mvp-0.2")
 DEFAULT_CURRENCY_ID = os.getenv("ZAKUPAY_CURRENCY_ID", "643")
+logger = logging.getLogger(__name__)
 
 
 def install_offer_panel(
@@ -327,6 +330,12 @@ def install_offer_panel(
         warning = ""
         if ids == "found":
             warning += "<div class='ok'>ID позиций получены и сохранены. Форму можно проверять и отправлять.</div>"
+        elif ids == "started":
+            warning += (
+                "<div class='ok'><b>Запрос за ID позиций запущен в фоне.</b> "
+                "Страница больше не ждёт медленный ответ Закупай. "
+                f"<a href='/dashboard/order/{order_id}/offer'>Проверить результат</a></div>"
+            )
         elif ids == "missing":
             warning += "<div class='warn'><b>Закупай не вернул ID строк.</b> Подбор и цены сохранены, но отправка предложения через API пока невозможна.</div>"
         if account_error:
@@ -349,24 +358,28 @@ def install_offer_panel(
 
     @app.post("/dashboard/order/{order_id}/offer/enrich-ids")
     def enrich_offer_line_ids(order_id: int):
-        """Explicit one-shot repair for old snapshots saved without line IDs."""
+        """Queue a one-shot repair without holding the browser on a slow API."""
         _get_context(order_id)
         if fetch_order_by_id is None or enrich_offer_context is None:
             raise HTTPException(status_code=503, detail="Получение ID позиций не подключено")
-        try:
-            fresh_order = fetch_order_by_id(order_id, force=True)
-            context = enrich_offer_context(order_id, fresh_order)
-        except HTTPException:
-            raise
-        except Exception as exc:
-            raise HTTPException(status_code=502, detail=f"Не удалось получить ID позиций: {exc}")
-        found = bool(context and (context.get("result") or {}).get("order_id_enrichment_found"))
-        suffix = "ids=found" if found else "ids=missing"
+
+        def repair():
+            try:
+                fresh_order = fetch_order_by_id(order_id, force=True)
+                enrich_offer_context(order_id, fresh_order)
+            except Exception:
+                logger.exception("background line ID repair failed order=%s", order_id)
+
+        threading.Thread(
+            target=repair,
+            name=f"zakupay-line-ids-{order_id}",
+            daemon=True,
+        ).start()
         return HTMLResponse(
             "<html><head><meta http-equiv='refresh' content='0;url="
-            f"/dashboard/order/{order_id}/offer?{suffix}'></head></html>",
+            f"/dashboard/order/{order_id}/offer?ids=started'></head></html>",
             status_code=303,
-            headers={"Location": f"/dashboard/order/{order_id}/offer?{suffix}"},
+            headers={"Location": f"/dashboard/order/{order_id}/offer?ids=started"},
         )
 
     @app.post("/dashboard/order/{order_id}/offer/submit", response_class=HTMLResponse)
