@@ -343,6 +343,16 @@ class PipelineTests(unittest.TestCase):
         self.assertTrue(context["result"]["order_id_enrichment_found"])
         self.assertEqual(context["order"]["orderItems"][0]["id"], 10)
 
+    def test_line_ids_accept_documented_payload_variants(self):
+        self.assertEqual(pipeline._order_item_id({"orderItemId": 41}), 41)
+        self.assertEqual(pipeline._order_item_id({"itemId": "42"}), "42")
+        self.assertEqual(pipeline._order_item_id({"orderItem": {"id": 43}}), 43)
+        merged = pipeline._merge_line_ids(
+            {"orderItems": [{"goodName": "Анкер-клин 6x60"}]},
+            {"orderItems": [{"goodName": "Анкер-клин 6x60", "orderItemId": 44}]},
+        )
+        self.assertEqual(merged["orderItems"][0]["id"], 44)
+
     @patch.object(pipeline, "build_vi_draft")
     def test_failed_api_order_can_be_retried(self, build):
         build.side_effect = RuntimeError("temporary")
