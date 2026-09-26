@@ -269,7 +269,7 @@ def install_offer_panel(
         return HTMLResponse(f"<h1>Юрлица и банковские счета</h1><table border='1' cellpadding='8'><tr><th>ID</th><th>Юрлицо / банк</th></tr>{rows}</table><p>Скопируй нужный ID в форму предложения.</p><p><a href='/dashboard/order/{order_id}/offer'>← Назад</a></p>")
 
     @app.get("/dashboard/order/{order_id}/offer", response_class=HTMLResponse)
-    def offer_builder(order_id: int):
+    def offer_builder(order_id: int, ids: str = ""):
         context = _get_context(order_id)
         order = context["order"]
         result = context["result"]
@@ -325,6 +325,10 @@ def install_offer_panel(
         else:
             account_field = f"<input name='destination_account_id' value='{esc(configured_account)}' required placeholder='ID юрлица / банковского счёта'>"
         warning = ""
+        if ids == "found":
+            warning += "<div class='ok'>ID позиций получены и сохранены. Форму можно проверять и отправлять.</div>"
+        elif ids == "missing":
+            warning += "<div class='warn'><b>Закупай не вернул ID строк.</b> Подбор и цены сохранены, но отправка предложения через API пока невозможна.</div>"
         if account_error:
             warning += f"<div class='warn'>Список банковских счетов не загружен: {esc(account_error)}. Укажите ID вручную.</div>"
         if blockers:
