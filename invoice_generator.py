@@ -24,6 +24,10 @@ SELLER = {
     "director": "Баталова Елена Геннадьевна",
 }
 
+AVAILABILITY_CONFIRMATION_NOTE = (
+    "Перед согласованием счёта просим запросить у нас подтверждение актуального наличия товаров."
+)
+
 
 def _customer_text(customer: dict | None) -> str:
     customer = customer or {}
@@ -127,12 +131,17 @@ def build_invoice_xlsx(draft: dict) -> bytes:
 
     ws.merge_cells(start_row=footer + 1, start_column=1, end_row=footer + 1, end_column=6)
     ws.cell(footer + 1, 1, "Оплата: 100% предоплата. Доставка включена в стоимость.")
+    ws.merge_cells(start_row=footer + 2, start_column=1, end_row=footer + 2, end_column=6)
+    ws.cell(footer + 2, 1, AVAILABILITY_CONFIRMATION_NOTE)
+    ws.cell(footer + 2, 1).alignment = Alignment(wrap_text=True)
     excluded = len(all_rows) - len(rows)
+    signature_row = footer + 3
     if excluded:
-        ws.merge_cells(start_row=footer + 2, start_column=1, end_row=footer + 2, end_column=6)
-        ws.cell(footer + 2, 1, f"Частичный счёт: не включено неподтверждённых позиций — {excluded}.")
-    ws.merge_cells(start_row=footer + 3, start_column=1, end_row=footer + 3, end_column=3)
-    ws.cell(footer + 3, 1, f"Руководитель: __________________ / {SELLER['director']} /")
+        ws.merge_cells(start_row=footer + 3, start_column=1, end_row=footer + 3, end_column=6)
+        ws.cell(footer + 3, 1, f"Частичный счёт: не включено неподтверждённых позиций — {excluded}.")
+        signature_row += 1
+    ws.merge_cells(start_row=signature_row, start_column=1, end_row=signature_row, end_column=3)
+    ws.cell(signature_row, 1, f"Руководитель: __________________ / {SELLER['director']} /")
     ws.freeze_panes = "A12"
     ws.page_setup.orientation = "landscape"
     ws.page_setup.fitToWidth = 1
