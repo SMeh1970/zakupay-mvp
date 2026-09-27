@@ -24,6 +24,7 @@ from offer_panel_safe import install_offer_panel
 from invoice_generator import build_invoice_xlsx
 from price_estimator import analyze_order_v2
 from supplier_panel import install_supplier_panel
+from procurement import install_procurement
 from security import OAUTH_SCOPE, PANEL_USERNAME, _origin, _sign_payload, current_mcp_resource
 from abacus_mcp import install_abacus_mcp
 
@@ -234,6 +235,7 @@ install_automation_pipeline(
     fetch_all_orders=fetch_all_orders,
     has_my_offer=has_my_offer,
 )
+install_procurement(app)
 install_abacus_mcp(
     app,
     fetch_all_orders=fetch_all_orders,
