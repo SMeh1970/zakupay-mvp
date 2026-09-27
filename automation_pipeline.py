@@ -41,6 +41,9 @@ EMAIL_INGEST_ENABLED = os.getenv("ENABLE_ZAKUPAY_EMAIL_INGEST", "false").lower()
 API_POLL_ENABLED = os.getenv("ENABLE_ZAKUPAY_API_POLL", "false").lower() in {
     "1", "true", "yes", "on",
 }
+BACKGROUND_QUEUE_ENABLED = os.getenv("BACKGROUND_QUEUE_ENABLED", "false").lower() in {
+    "1", "true", "yes", "on",
+}
 AUTO_MATCH_THRESHOLD = float(os.getenv("AUTO_MATCH_THRESHOLD", "0.88"))
 REVIEW_MATCH_THRESHOLD = float(os.getenv("REVIEW_MATCH_THRESHOLD", "0.72"))
 DEFAULT_MARKUP = float(os.getenv("AUTO_OFFER_MARKUP", "0.05"))
@@ -1167,6 +1170,55 @@ def process_api_order(order: dict) -> dict:
     }
 
 
+def process_saved_automation_job(job_id: int) -> dict:
+    """Run supplier matching from the immutable application snapshot."""
+    with _connect() as conn:
+        row = _execute(conn, "SELECT * FROM automation_jobs WHERE id=?", (job_id,)).fetchone()
+    if not row:
+        raise ValueError(f"Задание {job_id} не найдено")
+    old_result = json.loads(row["result_json"]) if row["result_json"] else {}
+    if old_result.get("live_offer_created"):
+        raise ValueError("Предложение уже отправлено")
+    order = _saved_order_snapshot(row, old_result)
+    if not order:
+        raise ValueError("Состав заявки не сохранён")
+    now = datetime.now(timezone.utc).isoformat()
+    with _lock, _connect() as conn:
+        _execute(conn, "UPDATE automation_jobs SET status='processing',error=NULL,updated_at=? WHERE id=?", (now, job_id))
+    try:
+        result = build_vi_draft(order, invoice_number=row["invoice_number"])
+        invoice_number = row["invoice_number"]
+        if result["summary"]["auto_ready"] > 0 and invoice_number is None:
+            with _lock, _connect() as conn:
+                last_row = _execute(conn, "SELECT MAX(invoice_number) AS max_invoice FROM automation_jobs").fetchone()
+                last_number = last_row["max_invoice"] if DATABASE_URL else last_row[0]
+                invoice_number = max(INVOICE_NUMBER_START, (last_number or INVOICE_NUMBER_START - 1) + 1)
+                _execute(conn, "UPDATE automation_jobs SET invoice_number=? WHERE id=?", (invoice_number, job_id))
+            result["invoice_number"] = invoice_number
+        result["last_search_at"] = datetime.now(timezone.utc).isoformat()
+        result["last_search_source"] = order.get("source") or "zakupay_api"
+        result["last_search_found_positions"] = sum(bool(item.get("selected")) for item in result.get("items") or [])
+        updated = datetime.now(timezone.utc).isoformat()
+        with _lock, _connect() as conn:
+            _execute(conn, "UPDATE automation_jobs SET status=?,error=NULL,result_json=?,updated_at=? WHERE id=?",
+                     (result["status"], json.dumps(result, ensure_ascii=False), updated, job_id))
+        return {"job_id": job_id, "status": result["status"], "summary": result.get("summary") or {}}
+    except Exception as exc:
+        with _lock, _connect() as conn:
+            _execute(conn, "UPDATE automation_jobs SET status='failed',error=?,updated_at=? WHERE id=?",
+                     (f"{type(exc).__name__}: {exc}", datetime.now(timezone.utc).isoformat(), job_id))
+        raise
+
+
+def enqueue_saved_automation_job(job_id: int, reason: str = "manual") -> dict:
+    from job_queue import enqueue_task
+    queued = enqueue_task("match_saved_job", {"job_id": job_id, "reason": reason}, f"match-job:{job_id}")
+    with _lock, _connect() as conn:
+        _execute(conn, "UPDATE automation_jobs SET status='queued',error=NULL,updated_at=? WHERE id=?",
+                 (datetime.now(timezone.utc).isoformat(), job_id))
+    return queued
+
+
 def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, has_my_offer=None):
     def order_with_line_ids(order: dict) -> dict:
         """Perform one exact lookup at intake when the collection omits line IDs."""
@@ -1361,6 +1413,9 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
         order = _saved_order_snapshot(row, old_result)
         if not order:
             raise HTTPException(status_code=409, detail="Состав заявки не сохранён")
+        if BACKGROUND_QUEUE_ENABLED:
+            enqueue_saved_automation_job(job_id, "start")
+            return Response(status_code=303, headers={"Location": f"/dashboard/automation/jobs/{job_id}/review"})
         result = build_vi_draft(order, invoice_number=row["invoice_number"])
         invoice_number = row["invoice_number"]
         if result["summary"]["auto_ready"] > 0 and invoice_number is None:
@@ -1538,7 +1593,9 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
                 f"<form method='post' action='/dashboard/automation/jobs/{job_id}/refresh'><p><button class='button' type='submit'>Повторить поиск у поставщиков</button></p></form>{search_report}"
                 f"<form id='review-form' method='post' action='/dashboard/automation/jobs/{job_id}/review'></form>{''.join(row_search_forms)}<table><tr><th>Включить</th><th>№</th><th>Заявка</th><th>Подбор поставщика<br><small>(закупочная цена)</small></th><th>Количество</th><th>Наша цена<br><small>за единицу заявки (+5%)</small></th>"
                 "<th>Статус подбора</th><th>Замена</th><th>Наличие</th><th>Срок</th><th>Решение</th></tr>"
-                + "".join(table_rows) + "</table><p><button form='review-form' type='submit'>Сохранить и пересчитать счёт</button></p>" + invoice_link + offer_link + "</main></body></html>"
+                + "".join(table_rows) + "</table><p><button form='review-form' type='submit'>Сохранить и пересчитать счёт</button></p>" + invoice_link + offer_link
+                + f"<form method='post' action='/dashboard/automation/jobs/{job_id}/procurement/build'><p><button class='send' type='submit'>Сформировать черновики заказов поставщикам</button></p></form>"
+                + "</main></body></html>"
             ),
             media_type="text/html",
         )
@@ -1556,6 +1613,9 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
         order = _saved_order_snapshot(row, old_result)
         if not order:
             raise HTTPException(status_code=409, detail="Состав заявки не был сохранён")
+        if BACKGROUND_QUEUE_ENABLED:
+            enqueue_saved_automation_job(job_id, "full_refresh")
+            return Response(status_code=303, headers={"Location": f"/dashboard/automation/jobs/{job_id}/review"})
         result = build_vi_draft(order, invoice_number=row["invoice_number"])
         result["last_search_at"] = datetime.now(timezone.utc).isoformat()
         result["last_search_source"] = order.get("source") or "zakupay_api"
