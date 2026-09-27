@@ -1,0 +1,27 @@
+services:
+  - type: worker
+    name: zakupay-mvp-worker
+    runtime: python
+    plan: starter
+    branch: ai-analysis-v1
+    autoDeployTrigger: commit
+    buildCommand: pip install -r requirements.txt
+    startCommand: python worker.py
+    maxShutdownDelaySeconds: 300
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: VSEINSTRUMENTI_API_TOKEN
+        sync: false
+      - key: VSEINSTRUMENTI_REGION_ID
+        sync: false
+      - key: KREP_KOMP_API_USERNAME
+        sync: false
+      - key: KREP_KOMP_API_PASSWORD
+        sync: false
+      - key: AUTO_OFFER_MARKUP
+        value: "0.05"
+      - key: AUTO_OFFER_VAT_RATE
+        value: "0.22"
+      - key: AUTO_INVOICE_NUMBER_START
+        value: "240"
