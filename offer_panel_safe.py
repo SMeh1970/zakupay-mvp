@@ -283,6 +283,7 @@ def install_offer_panel(
                 f"<h1>Предложение уже создано</h1><p>Заявка № {order_id}, предложение Закупай: {esc(offer_id)}.</p>"
                 f"<p><a href='/dashboard/automation/jobs/{job_id}/review'>Вернуться к обработке</a></p>",
                 status_code=409,
+                headers={"Cache-Control": "no-store, max-age=0", "Pragma": "no-cache"},
             )
         original_items = {str(item.get("id")): item for item in order.get("orderItems") or [] if item.get("id") is not None}
         rows = ""
@@ -446,5 +447,6 @@ def install_offer_panel(
             "<div class='actions'>"
             "<a class='button' href='/dashboard/automation'>← Вернуться на главную</a>"
             f"<a class='button secondary' href='/dashboard/automation/jobs/{context['job_id']}/review'>Вернуться к обработке</a>"
-            "</div></body></html>"
+            "</div></body></html>",
+            headers={"Cache-Control": "no-store, max-age=0", "Pragma": "no-cache"},
         )
