@@ -276,6 +276,15 @@ def _order_item_id(item: dict | None):
     return None
 
 
+def _order_with_selected_positions(order: dict, selected_positions: set[int]) -> dict:
+    """Return an order snapshot containing only operator-selected 1-based rows."""
+    items = list((order or {}).get("orderItems") or [])
+    chosen = [item for index, item in enumerate(items, 1) if index in selected_positions]
+    selected_order = dict(order or {})
+    selected_order["orderItems"] = chosen
+    return selected_order
+
+
 def _merge_line_ids(order: dict, detailed: dict | None) -> dict:
     """Merge IDs from one exact lookup without replacing the saved request."""
     if not detailed:
@@ -1352,7 +1361,7 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
         )
 
     @app.post("/dashboard/automation/jobs/{job_id}/start")
-    def automation_dashboard_start(job_id: int):
+    async def automation_dashboard_start(job_id: int, request: Request):
         with _connect() as conn:
             row = _execute(conn, "SELECT * FROM automation_jobs WHERE id=?", (job_id,)).fetchone()
         if not row:
@@ -1365,6 +1374,14 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
         order = _saved_order_snapshot(row, old_result)
         if not order:
             raise HTTPException(status_code=409, detail="Состав заявки не сохранён")
+        form = await request.form()
+        selected_positions = {
+            int(value) for value in form.getlist("selected_position")
+            if str(value).isdigit() and int(value) > 0
+        }
+        order = _order_with_selected_positions(order, selected_positions)
+        if not order.get("orderItems"):
+            raise HTTPException(status_code=400, detail="Отметьте хотя бы одну позицию для поиска цен")
         with _lock, _connect() as conn:
             _execute(
                 conn,
@@ -1450,12 +1467,12 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
                 )
             order_label = f" / {html.escape(str(result.get('order_name')))}" if result.get("order_name") else ""
             primary_action = (
-                f"<form method='post' action='/dashboard/automation/jobs/{row['id']}/start'><button class='button' type='submit'>Начать подбор</button></form>"
+                f"<a class='button' target='_blank' rel='noopener' href='/dashboard/automation/jobs/{row['id']}/review'>Выбрать позиции</a>"
                 if pending else
-                f"<a class='button' href='/dashboard/automation/jobs/{row['id']}/review'>Открыть</a>"
+                f"<a class='button' target='_blank' rel='noopener' href='/dashboard/automation/jobs/{row['id']}/review'>Открыть</a>"
             )
             cards.append(
-                f"<section class='card {cls}'><div><a class='title' href='/dashboard/automation/jobs/{row['id']}/review'>"
+                f"<section class='card {cls}'><div><a class='title' target='_blank' rel='noopener' href='/dashboard/automation/jobs/{row['id']}/review'>"
                 f"Заявка №{row['order_id']}{order_label}</a><div class='meta'>{html.escape(' · '.join(parts))}</div>"
                 f"<div class='meta'>Статус: {'предложение выставлено' if offer_created else html.escape(str(row['status']))} · счёт: {row['invoice_number'] or '—'}</div></div>"
                 f"<div class='actions'>{primary_action}{invoice}{send}</div></section>"
@@ -1514,6 +1531,7 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
             source_items = list(order.get("orderItems") or [])
             pending_rows = "".join(
                 "<tr>"
+                f"<td><input class='position-checkbox' type='checkbox' name='selected_position' value='{index}' checked></td>"
                 f"<td>{index}</td>"
                 f"<td>{html.escape(str(item.get('goodName') or item.get('name') or ''))}</td>"
                 f"<td>{html.escape(str(item.get('count') or item.get('quantity') or ''))}</td>"
@@ -1526,14 +1544,15 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
                     "<!doctype html><html lang='ru'><meta charset='utf-8'>"
                     "<title>Начать подбор</title><style>body{font-family:Arial;margin:24px;background:#f4f6f8}main{background:#fff;padding:20px;border-radius:12px}"
                     "table{width:100%;border-collapse:collapse;margin:18px 0}td,th{border:1px solid #ccc;padding:8px}th{background:#eee}"
-                    "button{padding:12px 18px;background:#1a73e8;color:#fff;border:0;border-radius:7px;font-weight:bold;cursor:pointer}</style><body><main>"
+                    "button{padding:12px 18px;background:#1a73e8;color:#fff;border:0;border-radius:7px;font-weight:bold;cursor:pointer}input[type=checkbox]{width:20px;height:20px}</style><body><main>"
                     "<p><a href='/dashboard/automation'>← Все заявки</a></p>"
                     f"<h1>Заявка Закупай № {row['order_id']}</h1>"
-                    f"<p>Получено и сохранено позиций: <b>{len(source_items)}</b>. Поиск цен у поставщиков ещё не запускался.</p>"
-                    "<table><tr><th>№</th><th>Позиция заявки</th><th>Количество</th><th>Ед.</th></tr>"
-                    f"{pending_rows}</table>"
+                    f"<p>Получено и сохранено позиций: <b>{len(source_items)}</b>. Отметьте строки, для которых нужно найти цены и подготовить предложение.</p>"
                     f"<form method='post' action='/dashboard/automation/jobs/{job_id}/start'>"
-                    "<button type='submit'>Начать подбор товаров и цен</button></form>"
+                    "<p><label><input id='select-all' type='checkbox' checked onchange=\"document.querySelectorAll('.position-checkbox').forEach(x=>x.checked=this.checked)\"> Выбрать все позиции</label></p>"
+                    "<table><tr><th>Выбрать</th><th>№</th><th>Позиция заявки</th><th>Количество</th><th>Ед.</th></tr>"
+                    f"{pending_rows}</table>"
+                    "<button type='submit'>Найти цены по выбранным позициям</button></form>"
                     "</main></body></html>"
                 ),
                 media_type="text/html",
