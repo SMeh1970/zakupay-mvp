@@ -104,6 +104,29 @@ def install_offer_panel(
                     return found
         return None
 
+    def _find_first_named_value(obj, wanted):
+        """Find the first scalar value by any case-insensitive nested key."""
+        wanted = {str(key).lower() for key in wanted}
+        if isinstance(obj, dict):
+            for key, value in obj.items():
+                if str(key).lower() in wanted:
+                    if not isinstance(value, (dict, list)) and str(value).strip():
+                        return str(value).strip()
+                    if isinstance(value, dict):
+                        for label_key in ("name", "fullName", "shortName", "title"):
+                            label = value.get(label_key)
+                            if label is not None and str(label).strip():
+                                return str(label).strip()
+                found = _find_first_named_value(value, wanted)
+                if found:
+                    return found
+        elif isinstance(obj, list):
+            for value in obj:
+                found = _find_first_named_value(value, wanted)
+                if found:
+                    return found
+        return None
+
     def _unit_name(item):
         unit = item.get("unit") or item.get("unitName") or "шт."
         if isinstance(unit, dict):
@@ -148,16 +171,22 @@ def install_offer_panel(
             fields = {
                 "id": account_id,
                 "name": node.get("name"),
-                "bankName": node.get("bankName"),
+                "bankName": _find_first_named_value(
+                    node, {"bankName", "bank_name", "bank", "bankTitle", "bankFullName"}
+                ),
+                "accountNumber": _find_first_named_value(
+                    node, {"accountNumber", "settlementAccount", "checkingAccount", "currentAccount", "rs"}
+                ),
                 "company_name": company_data.get("name"),
                 "company_shortName": company_data.get("shortName"),
                 "currency_id": currency_data.get("id"),
                 "currency_name": currency_data.get("name"),
             }
             company = fields.get("company_shortName") or fields.get("company_name") or "Юрлицо"
-            bank = fields.get("bankName") or "банк не указан"
+            bank = fields.get("bankName") or "банковский счёт Закупай"
             account_name = fields.get("name") or "счёт"
-            fields["label"] = f"{company} / {bank} ({account_name})"
+            number = f" № {fields.get('accountNumber')}" if fields.get("accountNumber") else ""
+            fields["label"] = f"{company} / {bank}{number} ({account_name})"
             accounts.append(fields)
         if not accounts:
             return [], "Ответ check/token получен, но банковские счета в нём не найдены"
