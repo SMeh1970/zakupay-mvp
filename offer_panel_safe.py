@@ -399,6 +399,7 @@ def install_offer_panel(
                 f"<p>ID предложения Закупай: {esc(offer_id)}</p>"
                 "<p>Повторное предложение не создано — защита от дублей сработала.</p>"
                 f"<p><a href='/dashboard/automation/jobs/{context['job_id']}/review'>Вернуться к заявке</a></p>"
+                "<p><a href='/dashboard/automation'>Вернуться на главную</a></p>"
                 "</body></html>",
                 status_code=409,
             )
@@ -429,4 +430,21 @@ def install_offer_panel(
         offer_id = _find_first_key(data, "id")
         if mark_offer_created:
             mark_offer_created(context["job_id"], offer_id=offer_id, file_id=file_id, response=data)
-        return HTMLResponse(f"<h1>Предложение создано</h1><p>Заявка: {order_id}</p><p>Счёт: № {esc(invoice_number)}</p><p>ID файла: {esc(file_id)}</p><p>ID предложения: {esc(offer_id)}</p><pre>{esc(json.dumps(data, ensure_ascii=False, indent=2))}</pre><p><a href='/dashboard/automation/jobs/{context['job_id']}/review'>Вернуться к обработке</a></p>")
+        return HTMLResponse(
+            "<!doctype html><html lang='ru'><meta charset='utf-8'>"
+            "<title>Предложение создано</title>"
+            "<style>body{font-family:Arial;margin:32px}.actions{display:flex;gap:12px;flex-wrap:wrap;margin:24px 0}"
+            ".button{display:inline-block;padding:11px 16px;border-radius:7px;background:#1a73e8;color:#fff;text-decoration:none;font-weight:bold}"
+            ".secondary{background:#5f6368}</style><body>"
+            "<div class='actions'>"
+            "<a class='button' href='/dashboard/automation'>← Вернуться на главную</a>"
+            f"<a class='button secondary' href='/dashboard/automation/jobs/{context['job_id']}/review'>Вернуться к обработке</a>"
+            "</div>"
+            f"<h1>Предложение создано</h1><p>Заявка: {order_id}</p><p>Счёт: № {esc(invoice_number)}</p>"
+            f"<p>ID файла: {esc(file_id)}</p><p>ID предложения: {esc(offer_id)}</p>"
+            f"<pre>{esc(json.dumps(data, ensure_ascii=False, indent=2))}</pre>"
+            "<div class='actions'>"
+            "<a class='button' href='/dashboard/automation'>← Вернуться на главную</a>"
+            f"<a class='button secondary' href='/dashboard/automation/jobs/{context['job_id']}/review'>Вернуться к обработке</a>"
+            "</div></body></html>"
+        )
