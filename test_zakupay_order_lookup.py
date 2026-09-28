@@ -43,36 +43,25 @@ class ZakupayOrderLookupTests(unittest.TestCase):
         self.assertEqual(get.call_args.kwargs["params"]["ids"], 37217190)
         post.assert_not_called()
 
-    @patch("main.requests.post")
     @patch("main.request_orders_page")
-    def test_all_orders_uses_registry_when_public_collection_is_empty(self, page, post):
+    def test_empty_official_collection_stays_empty(self, page):
         page.return_value = {"orders": []}
-        post.return_value = Mock(
-            status_code=200,
-            ok=True,
-            json=lambda: [{"id": 37217190, "delay": 0, "orderItems": [{"id": 10}]}],
-        )
         main._orders_cache.update({"ts": 0.0, "key": "", "orders": []})
 
         orders = main.fetch_all_orders(force=True)
 
-        self.assertEqual([order["id"] for order in orders], [37217190])
-        self.assertEqual(post.call_args.args[0], f"{main.ZAKUPAY_BASE_URL}/core/supplier/getorders")
+        self.assertEqual(orders, [])
 
-    @patch("main.requests.post")
     @patch("main.request_orders_page")
-    def test_all_orders_uses_registry_when_public_api_times_out(self, page, post):
+    def test_official_api_timeout_is_reported_without_registry_fallback(self, page):
         page.side_effect = main.HTTPException(status_code=502, detail="timeout")
-        post.return_value = Mock(
-            status_code=200,
-            ok=True,
-            json=lambda: [{"id": 37217191, "delay": 0, "orderItems": [{"id": 11}]}],
-        )
         main._orders_cache.update({"ts": 0.0, "key": "", "orders": []})
 
-        orders = main.fetch_all_orders(force=True)
+        with self.assertRaises(main.HTTPException) as context:
+            main.fetch_all_orders(force=True)
 
-        self.assertEqual([order["id"] for order in orders], [37217191])
+        self.assertEqual(context.exception.status_code, 503)
+        self.assertIn("Официальный API Закупай", context.exception.detail)
 
 
 if __name__ == "__main__":
