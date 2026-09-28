@@ -355,7 +355,7 @@ def zakupay_health():
     checks = {}
     probes = (
         ("token", "/api/v1/util/check/token", {}),
-        ("orders", "/api/v1/orders", {"format": "json", "count": 1, "page": 1}),
+        ("orders", "/api/v1/orders", {"format": "json", "isoDate": "true", "count": 25, "page": 1}),
     )
     for name, path, params in probes:
         started = time.monotonic()
@@ -370,13 +370,15 @@ def zakupay_health():
                 payload = response.json()
                 api_result = payload.get("result") if isinstance(payload, dict) else None
                 api_error = payload.get("errorMessage") if isinstance(payload, dict) else None
+                orders_count = len(_orders_from_payload(payload)) if name == "orders" else None
             except ValueError:
-                api_result, api_error = None, "ответ не является JSON"
+                api_result, api_error, orders_count = None, "ответ не является JSON", None
             checks[name] = {
                 "ok": response.ok and api_result is not False,
                 "status": response.status_code,
                 "elapsed_seconds": round(time.monotonic() - started, 2),
                 "api_result": api_result,
+                "orders_count": orders_count,
                 "error": api_error,
             }
         except requests.RequestException as exc:
