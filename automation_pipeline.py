@@ -18,6 +18,7 @@ import math
 import re
 import sqlite3
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from email import policy
@@ -387,11 +388,14 @@ def _search_candidates(suppliers, requested: str) -> list:
         suppliers = [suppliers]
     quotes = []
     seen = set()
+    max_variants = max(1, int(os.getenv("AUTO_SEARCH_VARIANT_LIMIT", "8")))
+    enough_candidates = max(VI_CANDIDATE_LIMIT, int(os.getenv("AUTO_SEARCH_ENOUGH_CANDIDATES", "12")))
     for supplier in suppliers:
         # KREP-KOMP ranks a cached full catalogue locally. Repeating VI-style
         # text variants would only duplicate price/stock API calls and consume
         # the supplier's 1000-request daily allowance.
-        queries = [requested] if getattr(supplier, "code", "") == "krep_komp" else _search_variants(requested)
+        queries = [requested] if getattr(supplier, "code", "") == "krep_komp" else _search_variants(requested)[:max_variants]
+        supplier_found = 0
         for query in queries:
             for quote in supplier.search(query, limit=VI_CANDIDATE_LIMIT):
                 key = (quote.supplier, quote.sku or quote.article or quote.name)
@@ -399,6 +403,11 @@ def _search_candidates(suppliers, requested: str) -> list:
                     continue
                 seen.add(key)
                 quotes.append(quote)
+                supplier_found += 1
+            # A relevant API page already provides enough alternatives for
+            # scoring. Avoid issuing every synonym/inflection query needlessly.
+            if supplier_found >= enough_candidates:
+                break
     return quotes
 
 
@@ -1390,6 +1399,8 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
             )
 
         def run_search():
+            started_at = time.monotonic()
+            logger.info("supplier search started job=%s positions=%s", job_id, len(order.get("orderItems") or []))
             try:
                 result = build_vi_draft(order, invoice_number=row["invoice_number"])
                 invoice_number = row["invoice_number"]
@@ -1406,6 +1417,7 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
                         "UPDATE automation_jobs SET status=?, error=NULL, result_json=?, updated_at=? WHERE id=?",
                         (result["status"], json.dumps(result, ensure_ascii=False), datetime.now(timezone.utc).isoformat(), job_id),
                     )
+                logger.info("supplier search completed job=%s seconds=%.1f", job_id, time.monotonic() - started_at)
             except Exception as exc:
                 logger.exception("background supplier search failed job=%s", job_id)
                 with _lock, _connect() as conn:
@@ -1513,6 +1525,29 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
             raise HTTPException(status_code=409, detail=row["error"] or "Расчёт ещё не готов")
         offer_created = bool(result.get("live_offer_created") or row["status"] == "offer_created")
         if row["status"] == "processing":
+            try:
+                updated_at = datetime.fromisoformat(str(row["updated_at"]).replace("Z", "+00:00"))
+                if updated_at.tzinfo is None:
+                    updated_at = updated_at.replace(tzinfo=timezone.utc)
+                processing_age = (datetime.now(timezone.utc) - updated_at).total_seconds()
+            except (TypeError, ValueError):
+                processing_age = 0
+            stale_after = max(60, int(os.getenv("AUTO_SEARCH_STALE_SECONDS", "180")))
+            if processing_age > stale_after:
+                with _lock, _connect() as conn:
+                    _execute(
+                        conn,
+                        "UPDATE automation_jobs SET status='pending_search', error=?, updated_at=? WHERE id=? AND status='processing'",
+                        (
+                            "Предыдущий поиск был прерван перезапуском сервиса. Выберите позиции и запустите его повторно.",
+                            datetime.now(timezone.utc).isoformat(),
+                            job_id,
+                        ),
+                    )
+                return Response(
+                    status_code=303,
+                    headers={"Location": f"/dashboard/automation/jobs/{job_id}/review"},
+                )
             return Response(
                 content=(
                     "<!doctype html><html lang='ru'><meta charset='utf-8'><meta http-equiv='refresh' content='5'>"
