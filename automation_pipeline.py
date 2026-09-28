@@ -128,10 +128,12 @@ def _connect():
                 result_json TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
+                viewed_at TEXT,
                 invoice_number BIGINT
             )"""
         )
         conn.execute("ALTER TABLE automation_jobs ADD COLUMN IF NOT EXISTS order_json TEXT")
+        conn.execute("ALTER TABLE automation_jobs ADD COLUMN IF NOT EXISTS viewed_at TEXT")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_automation_jobs_order ON automation_jobs(order_id, created_at)")
         conn.execute(
             """CREATE TABLE IF NOT EXISTS match_feedback (
@@ -191,6 +193,8 @@ def _connect():
         conn.execute("ALTER TABLE automation_jobs ADD COLUMN invoice_number INTEGER")
     if "order_json" not in columns:
         conn.execute("ALTER TABLE automation_jobs ADD COLUMN order_json TEXT")
+    if "viewed_at" not in columns:
+        conn.execute("ALTER TABLE automation_jobs ADD COLUMN viewed_at TEXT")
     return conn
 
 
@@ -1495,6 +1499,7 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
         cards = []
         for row in rows:
             result = json.loads(row["result_json"]) if row["result_json"] else {}
+            viewed = bool(row["viewed_at"])
             offer_created = bool(result.get("live_offer_created") or row["status"] == "offer_created")
             summary = result.get("summary") or {}
             total = summary.get("positions", 0)
@@ -1528,14 +1533,23 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
                     if ready else "<span class='muted'>Нет позиций для отправки</span>"
                 )
             order_label = f" / {html.escape(str(result.get('order_name')))}" if result.get("order_name") else ""
+            supplier_names = []
+            for item in result.get("items") or []:
+                options = [item.get("selected")] + list(item.get("candidates") or [])
+                for option in options:
+                    supplier = str((option or {}).get("supplier") or "").strip()
+                    if supplier and supplier not in supplier_names:
+                        supplier_names.append(supplier)
+            suppliers_label = ", ".join(supplier_names) if supplier_names else "подбор ещё не выполнен"
             primary_action = (
                 f"<a class='button' target='_blank' rel='noopener' href='/dashboard/automation/jobs/{row['id']}/review'>Выбрать позиции</a>"
                 if pending else
                 f"<a class='button' target='_blank' rel='noopener' href='/dashboard/automation/jobs/{row['id']}/review'>Открыть</a>"
             )
             cards.append(
-                f"<section class='card {cls}'><div><a class='title' target='_blank' rel='noopener' href='/dashboard/automation/jobs/{row['id']}/review'>"
+                f"<section class='card {cls} {'read' if viewed else 'unread'}'><div><a class='title' target='_blank' rel='noopener' href='/dashboard/automation/jobs/{row['id']}/review'>"
                 f"Заявка №{row['order_id']}{order_label}</a><div class='meta'>{html.escape(' · '.join(parts))}</div>"
+                f"<div class='meta'><b>Поставщики:</b> {html.escape(suppliers_label)}</div>"
                 f"<div class='meta'>Статус: {'предложение выставлено' if offer_created else html.escape(str(row['status']))} · счёт: {row['invoice_number'] or '—'}</div></div>"
                 f"<div class='actions'>{primary_action}{invoice}{send}</div></section>"
             )
@@ -1556,7 +1570,7 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
         return Response(content=(
             "<!doctype html><html lang='ru'><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
             "<title>Обработка заявок</title><style>body{font-family:Arial;margin:0;background:#f4f6f8;color:#202124}main{max-width:1200px;margin:auto;padding:28px}"
-            ".card{display:flex;justify-content:space-between;gap:20px;background:#fff;border-left:7px solid #9aa0a6;border-radius:12px;padding:18px;margin:12px 0;box-shadow:0 2px 8px #0001}.card.ok{border-color:#188038}.card.warn{border-color:#f9ab00}.card.bad{border-color:#d93025}"
+            ".card{display:flex;justify-content:space-between;gap:20px;background:#fff;border-left:7px solid #9aa0a6;border-radius:12px;padding:18px;margin:12px 0;box-shadow:0 2px 8px #0001}.card.read{background:#e9eef3}.card.unread{background:#fff}.card.ok{border-color:#188038}.card.warn{border-color:#f9ab00}.card.bad{border-color:#d93025}"
             ".title{font-size:20px;font-weight:700;color:#174ea6;text-decoration:none}.meta{margin-top:8px;color:#5f6368}.actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.button{background:#1a73e8;color:#fff;padding:10px 13px;border-radius:7px;text-decoration:none;font-weight:700}.secondary{background:#5f6368}.send{background:#188038}.sent{display:inline-block;padding:10px 13px;background:#e6f4ea;color:#137333;border-radius:7px;font-weight:700}.muted{color:#777}@media(max-width:760px){.card{display:block}.actions{margin-top:14px}}</style>"
             "<main><h1>Заявки Закупай</h1><p>Подбор у поставщиков, частичные счета и контроль перед отправкой.</p>"
             "<form method='post' action='/dashboard/automation/sync'><button class='button' type='submit'>Получить новые заявки из Закупай</button></form>"
@@ -1568,6 +1582,12 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
     def automation_review(job_id: int):
         with _connect() as conn:
             row = _execute(conn, "SELECT * FROM automation_jobs WHERE id=?", (job_id,)).fetchone()
+            if row and not row["viewed_at"]:
+                _execute(
+                    conn,
+                    "UPDATE automation_jobs SET viewed_at=? WHERE id=?",
+                    (datetime.now(timezone.utc).isoformat(), job_id),
+                )
         if not row:
             raise HTTPException(status_code=404, detail="Задание не найдено")
         result = json.loads(row["result_json"]) if row["result_json"] else None
