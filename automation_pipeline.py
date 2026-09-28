@@ -1469,6 +1469,35 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
         result = json.loads(row["result_json"]) if row["result_json"] else None
         if not result:
             raise HTTPException(status_code=409, detail=row["error"] or "Расчёт ещё не готов")
+        if row["status"] == "pending_search" or not (result.get("items") or []):
+            order = _saved_order_snapshot(row, result) or {}
+            source_items = list(order.get("orderItems") or [])
+            pending_rows = "".join(
+                "<tr>"
+                f"<td>{index}</td>"
+                f"<td>{html.escape(str(item.get('goodName') or item.get('name') or ''))}</td>"
+                f"<td>{html.escape(str(item.get('count') or item.get('quantity') or ''))}</td>"
+                f"<td>{html.escape(str((item.get('unit') or {}).get('name') if isinstance(item.get('unit'), dict) else item.get('unit') or ''))}</td>"
+                "</tr>"
+                for index, item in enumerate(source_items, 1)
+            )
+            return Response(
+                content=(
+                    "<!doctype html><html lang='ru'><meta charset='utf-8'>"
+                    "<title>Начать подбор</title><style>body{font-family:Arial;margin:24px;background:#f4f6f8}main{background:#fff;padding:20px;border-radius:12px}"
+                    "table{width:100%;border-collapse:collapse;margin:18px 0}td,th{border:1px solid #ccc;padding:8px}th{background:#eee}"
+                    "button{padding:12px 18px;background:#1a73e8;color:#fff;border:0;border-radius:7px;font-weight:bold;cursor:pointer}</style><body><main>"
+                    "<p><a href='/dashboard/automation'>← Все заявки</a></p>"
+                    f"<h1>Заявка Закупай № {row['order_id']}</h1>"
+                    f"<p>Получено и сохранено позиций: <b>{len(source_items)}</b>. Поиск цен у поставщиков ещё не запускался.</p>"
+                    "<table><tr><th>№</th><th>Позиция заявки</th><th>Количество</th><th>Ед.</th></tr>"
+                    f"{pending_rows}</table>"
+                    f"<form method='post' action='/dashboard/automation/jobs/{job_id}/start'>"
+                    "<button type='submit'>Начать подбор товаров и цен</button></form>"
+                    "</main></body></html>"
+                ),
+                media_type="text/html",
+            )
         table_rows = []
         row_search_forms = []
         for item in result.get("items") or []:
