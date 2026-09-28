@@ -47,6 +47,32 @@ class PipelineTests(unittest.TestCase):
         self.assertIn("нарукавники", variants)
         self.assertIn("36641496", variants)
 
+    def test_supplier_search_returns_position_diagnostics(self):
+        class Supplier:
+            code = "test"
+            name = "Тестовый поставщик"
+
+            def search(self, query, limit=8):
+                return [SupplierQuote(
+                    supplier="Тестовый поставщик",
+                    sku="sku-1",
+                    article="a-1",
+                    name="Маркер черный 1 мм",
+                    price=10.0,
+                    unit="шт",
+                )]
+
+        quotes, diagnostics, timed_out = pipeline._search_candidates(
+            Supplier(), "Маркер черный 1 мм", time_budget_seconds=5,
+        )
+
+        self.assertFalse(timed_out)
+        self.assertEqual(len(quotes), 1)
+        self.assertEqual(diagnostics[0]["supplier"], "Тестовый поставщик")
+        self.assertGreaterEqual(diagnostics[0]["queries"], 1)
+        self.assertEqual(diagnostics[0]["candidates"], 1)
+        self.assertIn("seconds", diagnostics[0])
+
     def test_purchase_label_explains_pack_and_unit_price_basis(self):
         packed = pipeline._purchase_label(
             {"name": "Саморезы, 1000 шт.", "price": 1339.0, "unit": "Упаковка"},

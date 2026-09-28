@@ -296,6 +296,8 @@ class KrepKompAdapter(SupplierAdapter):
     _token_expires_at = 0.0
     _catalog: list[dict[str, Any]] | None = None
     _catalog_expires_at = 0.0
+    _catalog_loading = False
+    _catalog_warm_lock = threading.Lock()
     _storage_ids: list[str] | None = None
     _storage_ids_expires_at = 0.0
 
@@ -306,7 +308,7 @@ class KrepKompAdapter(SupplierAdapter):
             "KREP_KOMP_API_BASE_URL",
             "https://1cwbsvc.krep-komp.ru:7333/torg1/hs/mp",
         ).rstrip("/")
-        self.timeout = float(os.getenv("KREP_KOMP_API_TIMEOUT", "20"))
+        self.timeout = float(os.getenv("KREP_KOMP_API_TIMEOUT", "8"))
         self.catalog_ttl = int(os.getenv("KREP_KOMP_CATALOG_TTL", "21600"))
         names = os.getenv("KREP_KOMP_STORAGE_NAMES", "КОЛЕДИНО")
         self.storage_names = {x.strip().casefold() for x in names.split(",") if x.strip()}
@@ -447,6 +449,33 @@ class KrepKompAdapter(SupplierAdapter):
             cls._catalog = items
             cls._catalog_expires_at = now + max(self.catalog_ttl, 300)
             return items
+
+    @classmethod
+    def catalog_ready(cls) -> bool:
+        return cls._catalog is not None and time.time() < cls._catalog_expires_at
+
+    def warm_catalog_async(self) -> bool:
+        """Warm the large catalogue once without blocking an interactive order."""
+        cls = type(self)
+        if not self.enabled or cls.catalog_ready():
+            return False
+        with cls._catalog_warm_lock:
+            if cls._catalog_loading or cls.catalog_ready():
+                return False
+            cls._catalog_loading = True
+
+        def warm():
+            try:
+                self._catalog_items()
+            except Exception:
+                # Interactive VI matching must continue even if this optional
+                # catalogue cannot be warmed at the moment.
+                pass
+            finally:
+                cls._catalog_loading = False
+
+        threading.Thread(target=warm, name="krep-komp-catalog-warmup", daemon=True).start()
+        return True
 
     def _enrich(self, items: list[dict[str, Any]]) -> list[SupplierQuote]:
         codes = [str(x.get("Код") or "").strip() for x in items]

@@ -383,32 +383,57 @@ def _search_variants(requested: str) -> list[str]:
     return list(dict.fromkeys(value for value in variants if value.strip()))
 
 
-def _search_candidates(suppliers, requested: str) -> list:
+def _search_candidates(suppliers, requested: str, time_budget_seconds: float | None = None) -> tuple[list, list[dict], bool]:
     if not isinstance(suppliers, (list, tuple)):
         suppliers = [suppliers]
     quotes = []
     seen = set()
     max_variants = max(1, int(os.getenv("AUTO_SEARCH_VARIANT_LIMIT", "8")))
     enough_candidates = max(VI_CANDIDATE_LIMIT, int(os.getenv("AUTO_SEARCH_ENOUGH_CANDIDATES", "12")))
+    deadline = time.monotonic() + time_budget_seconds if time_budget_seconds else None
+    diagnostics = []
+    timed_out = False
     for supplier in suppliers:
+        supplier_started = time.monotonic()
+        supplier_queries = 0
+        supplier_errors = []
         # KREP-KOMP ranks a cached full catalogue locally. Repeating VI-style
         # text variants would only duplicate price/stock API calls and consume
         # the supplier's 1000-request daily allowance.
         queries = [requested] if getattr(supplier, "code", "") == "krep_komp" else _search_variants(requested)[:max_variants]
         supplier_found = 0
         for query in queries:
-            for quote in supplier.search(query, limit=VI_CANDIDATE_LIMIT):
+            if deadline is not None and time.monotonic() >= deadline:
+                timed_out = True
+                break
+            supplier_queries += 1
+            supplier_quotes = supplier.search(query, limit=VI_CANDIDATE_LIMIT)
+            for quote in supplier_quotes:
+                if quote.error:
+                    supplier_errors.append(quote.error)
                 key = (quote.supplier, quote.sku or quote.article or quote.name)
                 if key in seen:
                     continue
                 seen.add(key)
                 quotes.append(quote)
-                supplier_found += 1
+                if not quote.error:
+                    supplier_found += 1
             # A relevant API page already provides enough alternatives for
             # scoring. Avoid issuing every synonym/inflection query needlessly.
             if supplier_found >= enough_candidates:
                 break
-    return quotes
+        elapsed = round(time.monotonic() - supplier_started, 3)
+        diagnostics.append({
+            "supplier": getattr(supplier, "name", getattr(supplier, "code", "поставщик")),
+            "queries": supplier_queries,
+            "candidates": supplier_found,
+            "seconds": elapsed,
+            "errors": list(dict.fromkeys(supplier_errors))[:3],
+            "timed_out": timed_out,
+        })
+        if timed_out:
+            break
+    return quotes, diagnostics, timed_out
 
 
 def _pack_size(name: str, supplier_unit: str | None, requested_unit: str) -> int:
@@ -558,7 +583,11 @@ def _supplier_balanced_candidates(candidates: list[dict], per_supplier: int = 3,
 def _build_match_row(position: int, item: dict, suppliers, excluded_keys: set[str] | None = None) -> dict:
     requested = str(item.get("goodName") or "").strip()
     excluded_keys = set(excluded_keys or ())
-    quotes = _search_candidates(suppliers, requested)
+    position_started = time.monotonic()
+    position_budget = max(6.0, float(os.getenv("AUTO_POSITION_SEARCH_TIMEOUT", "45")))
+    quotes, search_diagnostics, search_timed_out = _search_candidates(
+        suppliers, requested, time_budget_seconds=position_budget,
+    )
     candidates = []
     rejected = []
     for quote in quotes:
@@ -645,6 +674,9 @@ def _build_match_row(position: int, item: dict, suppliers, excluded_keys: set[st
         "candidates": _supplier_balanced_candidates(candidates),
         "rejected_candidates": rejected[:20],
         "excluded_candidate_keys": sorted(excluded_keys),
+        "search_elapsed_seconds": round(time.monotonic() - position_started, 3),
+        "search_timed_out": search_timed_out,
+        "search_diagnostics": search_diagnostics,
     }
 
 
@@ -652,8 +684,13 @@ def build_vi_draft(order: dict, invoice_number: int | None = None) -> dict:
     """Build a conservative, reviewable draft from all configured suppliers."""
     suppliers = [VseinstrumentiAdapter()]
     krep_komp = KrepKompAdapter()
+    deferred_suppliers = []
     if krep_komp.enabled:
-        suppliers.append(krep_komp)
+        if krep_komp.catalog_ready():
+            suppliers.append(krep_komp)
+        else:
+            krep_komp.warm_catalog_async()
+            deferred_suppliers.append("КРЕП-КОМП: каталог загружается в фоне")
     items = list(order.get("orderItems") or [])
     rows_by_position = {}
     feedback_exclusions = {
@@ -674,6 +711,12 @@ def build_vi_draft(order: dict, invoice_number: int | None = None) -> dict:
             position = futures[future]
             try:
                 rows_by_position[position] = future.result()
+                row = rows_by_position[position]
+                logger.warning(
+                    "supplier position completed order=%s position=%s seconds=%s timeout=%s suppliers=%s",
+                    order.get("id"), position, row.get("search_elapsed_seconds"), row.get("search_timed_out"),
+                    json.dumps(row.get("search_diagnostics") or [], ensure_ascii=False),
+                )
             except Exception as exc:
                 item = items[position - 1]
                 rows_by_position[position] = {
@@ -706,6 +749,7 @@ def build_vi_draft(order: dict, invoice_number: int | None = None) -> dict:
         "vat_included": True,
         "prepayment_percent": DEFAULT_PREPAYMENT_PERCENT,
         "delivery_included": DEFAULT_DELIVERY_INCLUDED,
+        "deferred_suppliers": deferred_suppliers,
         "summary": {
             "positions": len(rows),
             "auto_ready": len(ready),
@@ -1400,7 +1444,10 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
 
         def run_search():
             started_at = time.monotonic()
-            logger.info("supplier search started job=%s positions=%s", job_id, len(order.get("orderItems") or []))
+            logger.warning(
+                "supplier search started job=%s order=%s positions=%s",
+                job_id, order.get("id"), len(order.get("orderItems") or []),
+            )
             try:
                 result = build_vi_draft(order, invoice_number=row["invoice_number"])
                 invoice_number = row["invoice_number"]
@@ -1417,7 +1464,10 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
                         "UPDATE automation_jobs SET status=?, error=NULL, result_json=?, updated_at=? WHERE id=?",
                         (result["status"], json.dumps(result, ensure_ascii=False), datetime.now(timezone.utc).isoformat(), job_id),
                     )
-                logger.info("supplier search completed job=%s seconds=%.1f", job_id, time.monotonic() - started_at)
+                logger.warning(
+                    "supplier search completed job=%s order=%s seconds=%.1f",
+                    job_id, order.get("id"), time.monotonic() - started_at,
+                )
             except Exception as exc:
                 logger.exception("background supplier search failed job=%s", job_id)
                 with _lock, _connect() as conn:
@@ -1628,7 +1678,8 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
                 f"<small> ранее отклонено: {rejected_count}</small></div></td>"
                 f"<td><input form='review-form' class='qty' name='quantity_{pos}' type='number' step='0.001' value='{html.escape(str(item.get('quantity') or ''))}' {disabled}> {html.escape(str(item.get('unit') or ''))}</td>"
                 f"<td><input form='review-form' id='price-{pos}' class='price' name='price_{pos}' type='number' step='0.01' value='{html.escape(str(item.get('proposed_unit_price') or ''))}' {disabled}></td>"
-                f"<td>{html.escape(str(item.get('match_status') or '—'))}</td>"
+                f"<td>{html.escape(str(item.get('match_status') or '—'))}<br><small>поиск: {html.escape(str(item.get('search_elapsed_seconds') or '—'))} сек."
+                f"{' · лимит времени' if item.get('search_timed_out') else ''}</small></td>"
                 f"<td>{html.escape(', '.join(item.get('replacement_details') or []) or 'нет')}</td>"
                 f"<td>{html.escape(str(item.get('availability_status') or '—'))}</td>"
                 f"<td>{html.escape(str(item.get('courier_date') or item.get('pickup_date') or '—'))}</td>"
@@ -1655,8 +1706,14 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
             top_controls = f"<form method='post' action='/dashboard/automation/jobs/{job_id}/refresh'><p><button class='button' type='submit'>Повторить поиск у поставщиков</button></p></form>"
             save_control = "<p><button form='review-form' type='submit'>Сохранить и пересчитать счёт</button></p>"
         search_report = ""
+        if result.get("deferred_suppliers"):
+            search_report += (
+                "<p style='padding:10px;background:#fff7df;border-radius:7px'>"
+                + html.escape("; ".join(result.get("deferred_suppliers") or []))
+                + ". Текущий результат сформирован без ожидания загрузки большого каталога.</p>"
+            )
         if result.get("last_search_at"):
-            search_report = (
+            search_report += (
                 "<p style='padding:10px;background:#e6f4ea;border-radius:7px'>"
                 f"Последний повторный поиск: {html.escape(str(result.get('last_search_at')))} · "
                 f"найдены кандидаты для {int(result.get('last_search_found_positions') or 0)} "
