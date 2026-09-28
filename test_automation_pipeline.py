@@ -294,6 +294,19 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(result["summary"]["positions"], 1)
         self.assertEqual(result["items"], [])
 
+    def test_order_selection_keeps_only_checked_positions(self):
+        order = {
+            "id": 77,
+            "orderItems": [
+                {"goodName": "Первая"},
+                {"goodName": "Вторая"},
+                {"goodName": "Третья"},
+            ],
+        }
+        selected = pipeline._order_with_selected_positions(order, {1, 3})
+        self.assertEqual([item["goodName"] for item in selected["orderItems"]], ["Первая", "Третья"])
+        self.assertEqual(len(order["orderItems"]), 3)
+
     def test_operator_approved_row_is_included_in_partial_invoice(self):
         draft = {
             "invoice_number": 240,
