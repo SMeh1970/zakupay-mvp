@@ -684,7 +684,7 @@ def _build_match_row(position: int, item: dict, suppliers, excluded_keys: set[st
     }
 
 
-def build_vi_draft(order: dict, invoice_number: int | None = None) -> dict:
+def build_vi_draft(order: dict, invoice_number: int | None = None, progress_callback=None) -> dict:
     """Build a conservative, reviewable draft from all configured suppliers."""
     suppliers = [VseinstrumentiAdapter()]
     krep_komp = KrepKompAdapter()
@@ -736,6 +736,12 @@ def build_vi_draft(order: dict, invoice_number: int | None = None) -> dict:
                     "stock_confirmed": False,
                     "candidates": [{"error": f"{type(exc).__name__}: {exc}"}],
                 }
+            if progress_callback:
+                progress_callback(
+                    len(rows_by_position),
+                    len(items),
+                    rows_by_position[position],
+                )
     rows = [rows_by_position[position] for position in sorted(rows_by_position)]
     ready = [row for row in rows if row["decision"] == "auto_ready"]
     status = "ready_for_review" if ready else "needs_review"
@@ -1439,11 +1445,17 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
         order = _order_with_selected_positions(order, selected_positions)
         if not order.get("orderItems"):
             raise HTTPException(status_code=400, detail="Отметьте хотя бы одну позицию для поиска цен")
+        progress_result = dict(old_result)
+        progress_result["processing_progress"] = {
+            "completed": 0,
+            "total": len(order.get("orderItems") or []),
+            "last_position": None,
+        }
         with _lock, _connect() as conn:
             _execute(
                 conn,
-                "UPDATE automation_jobs SET status='processing', error=NULL, updated_at=? WHERE id=?",
-                (datetime.now(timezone.utc).isoformat(), job_id),
+                "UPDATE automation_jobs SET status='processing', error=NULL, result_json=?, updated_at=? WHERE id=?",
+                (json.dumps(progress_result, ensure_ascii=False), datetime.now(timezone.utc).isoformat(), job_id),
             )
 
         def run_search():
@@ -1453,7 +1465,29 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
                 job_id, order.get("id"), len(order.get("orderItems") or []),
             )
             try:
-                result = build_vi_draft(order, invoice_number=row["invoice_number"])
+                def save_progress(completed, total, completed_row):
+                    progress_result["processing_progress"] = {
+                        "completed": completed,
+                        "total": total,
+                        "last_position": completed_row.get("position"),
+                        "last_name": completed_row.get("requested_name"),
+                    }
+                    with _lock, _connect() as conn:
+                        _execute(
+                            conn,
+                            "UPDATE automation_jobs SET result_json=?, updated_at=? WHERE id=? AND status='processing'",
+                            (
+                                json.dumps(progress_result, ensure_ascii=False),
+                                datetime.now(timezone.utc).isoformat(),
+                                job_id,
+                            ),
+                        )
+
+                result = build_vi_draft(
+                    order,
+                    invoice_number=row["invoice_number"],
+                    progress_callback=save_progress,
+                )
                 invoice_number = row["invoice_number"]
                 if result["summary"]["auto_ready"] > 0 and invoice_number is None:
                     with _lock, _connect() as conn:
@@ -1497,6 +1531,7 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
                 "SELECT * FROM automation_jobs WHERE status != 'skipped_not_prepayment' ORDER BY id DESC LIMIT 300",
             ).fetchall()
         cards = []
+        has_processing = any(row["status"] == "processing" for row in rows)
         for row in rows:
             result = json.loads(row["result_json"]) if row["result_json"] else {}
             viewed = bool(row["viewed_at"])
@@ -1509,7 +1544,14 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
             manual = summary.get("manual", 0)
             excluded = summary.get("excluded", 0)
             ready = summary.get("included_in_invoice", exact + approved)
-            parts = [f"{total} позиций", f"{exact} точных"]
+            progress = result.get("processing_progress") or {}
+            is_processing = row["status"] == "processing"
+            if is_processing:
+                completed = int(progress.get("completed") or 0)
+                progress_total = int(progress.get("total") or total or 0)
+                parts = [f"идёт подбор: {completed} из {progress_total} позиций"]
+            else:
+                parts = [f"{total} позиций", f"{exact} точных"]
             if approved:
                 parts.append(f"{approved} подтверждено вручную")
             if review:
@@ -1518,7 +1560,7 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
                 parts.append(f"{manual} не найдено")
             if excluded:
                 parts.append(f"{excluded} исключено")
-            cls = "ok" if offer_created or (total and ready == total) else "warn" if ready else "bad"
+            cls = "processing" if is_processing else "ok" if offer_created or (total and ready == total) else "warn" if ready else "bad"
             pending = row["status"] == "pending_search"
             invoice = (
                 f"<a class='button secondary' href='/dashboard/automation/jobs/{row['id']}/invoice.xlsx'>Скачать счёт</a>"
@@ -1541,6 +1583,12 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
                     if supplier and supplier not in supplier_names:
                         supplier_names.append(supplier)
             suppliers_label = ", ".join(supplier_names) if supplier_names else "подбор ещё не выполнен"
+            progress_bar = ""
+            if is_processing:
+                completed = int(progress.get("completed") or 0)
+                progress_total = max(1, int(progress.get("total") or 1))
+                progress_percent = min(100, round(completed * 100 / progress_total))
+                progress_bar = f"<div class='progress'><span style='width:{progress_percent}%'></span></div>"
             primary_action = (
                 f"<a class='button' target='_blank' rel='noopener' href='/dashboard/automation/jobs/{row['id']}/review'>Выбрать позиции</a>"
                 if pending else
@@ -1549,6 +1597,7 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
             cards.append(
                 f"<section class='card {cls} {'read' if viewed else 'unread'}'><div><a class='title' target='_blank' rel='noopener' href='/dashboard/automation/jobs/{row['id']}/review'>"
                 f"Заявка №{row['order_id']}{order_label}</a><div class='meta'>{html.escape(' · '.join(parts))}</div>"
+                f"{progress_bar}"
                 f"<div class='meta'><b>Поставщики:</b> {html.escape(suppliers_label)}</div>"
                 f"<div class='meta'>Статус: {'предложение выставлено' if offer_created else html.escape(str(row['status']))} · счёт: {row['invoice_number'] or '—'}</div></div>"
                 f"<div class='actions'>{primary_action}{invoice}{send}</div></section>"
@@ -1569,8 +1618,9 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
             )
         return Response(content=(
             "<!doctype html><html lang='ru'><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
+            + ("<meta http-equiv='refresh' content='5'>" if has_processing else "") +
             "<title>Обработка заявок</title><style>body{font-family:Arial;margin:0;background:#f4f6f8;color:#202124}main{max-width:1200px;margin:auto;padding:28px}"
-            ".card{display:flex;justify-content:space-between;gap:20px;background:#fff;border-left:7px solid #9aa0a6;border-radius:12px;padding:18px;margin:12px 0;box-shadow:0 2px 8px #0001}.card.read{background:#e9eef3}.card.unread{background:#fff}.card.ok{border-color:#188038}.card.warn{border-color:#f9ab00}.card.bad{border-color:#d93025}"
+            ".card{display:flex;justify-content:space-between;gap:20px;background:#fff;border-left:7px solid #9aa0a6;border-radius:12px;padding:18px;margin:12px 0;box-shadow:0 2px 8px #0001}.card.read{background:#e9eef3}.card.unread{background:#fff}.card.ok{border-color:#188038}.card.warn{border-color:#f9ab00}.card.bad{border-color:#d93025}.card.processing{border-color:#1a73e8;background:#e8f0fe}.progress{height:8px;max-width:460px;background:#c7d5ec;border-radius:5px;margin-top:9px;overflow:hidden}.progress span{display:block;height:100%;background:#1a73e8}"
             ".title{font-size:20px;font-weight:700;color:#174ea6;text-decoration:none}.meta{margin-top:8px;color:#5f6368}.actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.button{background:#1a73e8;color:#fff;padding:10px 13px;border-radius:7px;text-decoration:none;font-weight:700}.secondary{background:#5f6368}.send{background:#188038}.sent{display:inline-block;padding:10px 13px;background:#e6f4ea;color:#137333;border-radius:7px;font-weight:700}.muted{color:#777}@media(max-width:760px){.card{display:block}.actions{margin-top:14px}}</style>"
             "<main><h1>Заявки Закупай</h1><p>Подбор у поставщиков, частичные счета и контроль перед отправкой.</p>"
             "<form method='post' action='/dashboard/automation/sync'><button class='button' type='submit'>Получить новые заявки из Закупай</button></form>"
@@ -1595,6 +1645,13 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
             raise HTTPException(status_code=409, detail=row["error"] or "Расчёт ещё не готов")
         offer_created = bool(result.get("live_offer_created") or row["status"] == "offer_created")
         if row["status"] == "processing":
+            progress = (result or {}).get("processing_progress") or {}
+            completed = int(progress.get("completed") or 0)
+            total = int(progress.get("total") or 0)
+            last_name = str(progress.get("last_name") or "").strip()
+            progress_text = f"Обработано позиций: <b>{completed} из {total}</b>." if total else "Подготовка поиска."
+            if last_name:
+                progress_text += f"<br>Последняя обработанная позиция: {html.escape(last_name)}."
             try:
                 updated_at = datetime.fromisoformat(str(row["updated_at"]).replace("Z", "+00:00"))
                 if updated_at.tzinfo is None:
@@ -1626,6 +1683,7 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
                     "<p><a href='/dashboard/automation'>← Все заявки</a></p>"
                     f"<h1>Заявка Закупай № {row['order_id']}</h1>"
                     "<div class='status'><b>Идёт подбор товаров и цен у поставщиков.</b><br>"
+                    f"{progress_text}<br>"
                     "Можно закрыть эту страницу. Она обновляется автоматически каждые 5 секунд, а подбор продолжится в фоне.</div>"
                     "</main></body></html>"
                 ),
