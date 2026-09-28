@@ -95,6 +95,7 @@ def install_procurement(app) -> None:
         ensure_procurement_schema()
         with _connect() as conn:
             drafts = _execute(conn, "SELECT * FROM procurement_drafts WHERE automation_job_id=? ORDER BY id", (job_id,)).fetchall()
+            job = _execute(conn, "SELECT order_id FROM automation_jobs WHERE id=?", (job_id,)).fetchone()
             sections = []
             for draft in drafts:
                 lines = _execute(conn, "SELECT * FROM procurement_lines WHERE draft_id=? ORDER BY position", (draft["id"],)).fetchall()
@@ -110,7 +111,16 @@ def install_procurement(app) -> None:
                 sections.append(f"<section><h2>{html.escape(draft['supplier'])}</h2><p>Статус: {draft['status']} · сумма: {draft['total']:.2f} ₽</p>"
                     f"<table><tr><th>№</th><th>Заявка</th><th>Товар поставщика</th><th>Кол-во</th><th>Цена</th><th>Сумма</th><th>Наличие</th><th>Срок</th></tr>{rows}</table>{action}</section>")
         body = "".join(sections) or "<p>Черновики ещё не созданы.</p>"
-        return Response(content=f"<!doctype html><meta charset='utf-8'><style>body{{font-family:Arial;margin:24px;background:#f4f6f8}}section{{background:white;padding:18px;margin:15px 0;border-radius:10px}}table{{width:100%;border-collapse:collapse}}td,th{{border:1px solid #ddd;padding:8px}}button{{padding:10px;background:#188038;color:white;border:0;border-radius:6px}}</style><p><a href='/dashboard/automation/jobs/{job_id}/review'>← К заявке</a></p><h1>Черновики заказов поставщикам</h1><p>Подтверждение пока не отправляет заказ поставщику: подключение методов создания/отмены заказа выполняется отдельно после проверки API.</p>{body}", media_type="text/html")
+        order_id = job["order_id"] if job else None
+        next_action = (
+            f"<a class='button primary' href='/dashboard/order/{order_id}/offer'>Перейти к выставлению счёта в Закупай →</a>"
+            if order_id else ""
+        )
+        navigation = (
+            f"<div class='actions'><a class='button secondary' href='/dashboard/automation/jobs/{job_id}/review'>← Вернуться к проверке</a>"
+            f"{next_action}</div>"
+        )
+        return Response(content=f"<!doctype html><meta charset='utf-8'><style>body{{font-family:Arial;margin:24px;background:#f4f6f8}}section{{background:white;padding:18px;margin:15px 0;border-radius:10px}}table{{width:100%;border-collapse:collapse}}td,th{{border:1px solid #ddd;padding:8px}}button,.button{{display:inline-block;padding:11px 16px;background:#188038;color:white;border:0;border-radius:7px;text-decoration:none;font-weight:bold;cursor:pointer}}.actions{{display:flex;gap:12px;flex-wrap:wrap;margin:18px 0}}.primary{{background:#1a73e8}}.secondary{{background:#5f6368}}</style>{navigation}<h1>Черновики заказов поставщикам</h1><p>Подтверждение пока не отправляет заказ поставщику: подключение методов создания/отмены заказа выполняется отдельно после проверки API.</p>{body}{navigation}", media_type="text/html")
 
     @app.post("/dashboard/automation/procurement/{draft_id}/confirm")
     def procurement_confirm(draft_id: int):
