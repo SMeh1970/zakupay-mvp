@@ -1416,6 +1416,7 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
         cards = []
         for row in rows:
             result = json.loads(row["result_json"]) if row["result_json"] else {}
+            offer_created = bool(result.get("live_offer_created") or row["status"] == "offer_created")
             summary = result.get("summary") or {}
             total = summary.get("positions", 0)
             exact = summary.get("auto_ready", 0)
@@ -1433,16 +1434,20 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
                 parts.append(f"{manual} не найдено")
             if excluded:
                 parts.append(f"{excluded} исключено")
-            cls = "ok" if total and ready == total else "warn" if ready else "bad"
+            cls = "ok" if offer_created or (total and ready == total) else "warn" if ready else "bad"
             pending = row["status"] == "pending_search"
             invoice = (
                 f"<a class='button secondary' href='/dashboard/automation/jobs/{row['id']}/invoice.xlsx'>Скачать счёт</a>"
                 if ready else ""
             )
-            send = (
-                f"<a class='button send' href='/dashboard/order/{row['order_id']}/offer'>Отправить {ready} поз.</a>"
-                if ready else "<span class='muted'>Нет позиций для отправки</span>"
-            )
+            if offer_created:
+                offer_id = html.escape(str(result.get("live_offer_id") or "—"))
+                send = f"<span class='sent'>Предложение отправлено · ID {offer_id}</span>"
+            else:
+                send = (
+                    f"<a class='button send' href='/dashboard/order/{row['order_id']}/offer'>Отправить {ready} поз.</a>"
+                    if ready else "<span class='muted'>Нет позиций для отправки</span>"
+                )
             order_label = f" / {html.escape(str(result.get('order_name')))}" if result.get("order_name") else ""
             primary_action = (
                 f"<form method='post' action='/dashboard/automation/jobs/{row['id']}/start'><button class='button' type='submit'>Начать подбор</button></form>"
@@ -1452,7 +1457,7 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
             cards.append(
                 f"<section class='card {cls}'><div><a class='title' href='/dashboard/automation/jobs/{row['id']}/review'>"
                 f"Заявка №{row['order_id']}{order_label}</a><div class='meta'>{html.escape(' · '.join(parts))}</div>"
-                f"<div class='meta'>Статус: {html.escape(str(row['status']))} · счёт: {row['invoice_number'] or '—'}</div></div>"
+                f"<div class='meta'>Статус: {'предложение выставлено' if offer_created else html.escape(str(row['status']))} · счёт: {row['invoice_number'] or '—'}</div></div>"
                 f"<div class='actions'>{primary_action}{invoice}{send}</div></section>"
             )
         sync_report = ""
@@ -1473,12 +1478,12 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
             "<!doctype html><html lang='ru'><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
             "<title>Обработка заявок</title><style>body{font-family:Arial;margin:0;background:#f4f6f8;color:#202124}main{max-width:1200px;margin:auto;padding:28px}"
             ".card{display:flex;justify-content:space-between;gap:20px;background:#fff;border-left:7px solid #9aa0a6;border-radius:12px;padding:18px;margin:12px 0;box-shadow:0 2px 8px #0001}.card.ok{border-color:#188038}.card.warn{border-color:#f9ab00}.card.bad{border-color:#d93025}"
-            ".title{font-size:20px;font-weight:700;color:#174ea6;text-decoration:none}.meta{margin-top:8px;color:#5f6368}.actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.button{background:#1a73e8;color:#fff;padding:10px 13px;border-radius:7px;text-decoration:none;font-weight:700}.secondary{background:#5f6368}.send{background:#188038}.muted{color:#777}@media(max-width:760px){.card{display:block}.actions{margin-top:14px}}</style>"
+            ".title{font-size:20px;font-weight:700;color:#174ea6;text-decoration:none}.meta{margin-top:8px;color:#5f6368}.actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.button{background:#1a73e8;color:#fff;padding:10px 13px;border-radius:7px;text-decoration:none;font-weight:700}.secondary{background:#5f6368}.send{background:#188038}.sent{display:inline-block;padding:10px 13px;background:#e6f4ea;color:#137333;border-radius:7px;font-weight:700}.muted{color:#777}@media(max-width:760px){.card{display:block}.actions{margin-top:14px}}</style>"
             "<main><h1>Заявки Закупай</h1><p>Подбор у поставщиков, частичные счета и контроль перед отправкой.</p>"
             "<form method='post' action='/dashboard/automation/sync'><button class='button' type='submit'>Получить новые заявки из Закупай</button></form>"
             "<p class='muted'>Ручная синхронизация запускается по нажатию; автоматический опрос выполняется каждый час.</p>"
             + sync_report + "".join(cards) + "</main></html>"
-        ), media_type="text/html")
+        ), media_type="text/html", headers={"Cache-Control": "no-store, max-age=0", "Pragma": "no-cache"})
 
     @app.get("/dashboard/automation/jobs/{job_id}/review")
     def automation_review(job_id: int):
@@ -1489,6 +1494,7 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
         result = json.loads(row["result_json"]) if row["result_json"] else None
         if not result:
             raise HTTPException(status_code=409, detail=row["error"] or "Расчёт ещё не готов")
+        offer_created = bool(result.get("live_offer_created") or row["status"] == "offer_created")
         if row["status"] == "processing":
             return Response(
                 content=(
@@ -1551,6 +1557,7 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
                     f"{html.escape(label)}</option>"
                 )
             checked = "checked" if _included(item) else ""
+            disabled = "disabled" if offer_created else ""
             pos = item.get("position")
             search_form_id = f"search-position-{pos}"
             row_search_forms.append(
@@ -1559,14 +1566,14 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
             rejected_count = len(item.get("rejected_candidates") or [])
             table_rows.append(
                 "<tr>"
-                f"<td><input form='review-form' type='checkbox' name='include_{pos}' value='1' {checked}></td>"
+                f"<td><input form='review-form' type='checkbox' name='include_{pos}' value='1' {checked} {disabled}></td>"
                 f"<td>{pos}</td>"
                 f"<td>{html.escape(str(item.get('requested_name') or ''))}</td>"
-                f"<td><select form='review-form' name='candidate_{pos}' onchange=\"document.getElementById('price-{pos}').value=this.options[this.selectedIndex].dataset.price||''\">{''.join(candidate_options) or '<option>Не найден</option>'}</select>"
-                f"<div><button class='row-search' form='{search_form_id}' type='submit'>Искать другие варианты</button>"
+                f"<td><select form='review-form' name='candidate_{pos}' {disabled} onchange=\"document.getElementById('price-{pos}').value=this.options[this.selectedIndex].dataset.price||''\">{''.join(candidate_options) or '<option>Не найден</option>'}</select>"
+                f"<div>{'' if offer_created else f'''<button class='row-search' form='{search_form_id}' type='submit'>Искать другие варианты</button>'''}"
                 f"<small> ранее отклонено: {rejected_count}</small></div></td>"
-                f"<td><input form='review-form' class='qty' name='quantity_{pos}' type='number' step='0.001' value='{html.escape(str(item.get('quantity') or ''))}'> {html.escape(str(item.get('unit') or ''))}</td>"
-                f"<td><input form='review-form' id='price-{pos}' class='price' name='price_{pos}' type='number' step='0.01' value='{html.escape(str(item.get('proposed_unit_price') or ''))}'></td>"
+                f"<td><input form='review-form' class='qty' name='quantity_{pos}' type='number' step='0.001' value='{html.escape(str(item.get('quantity') or ''))}' {disabled}> {html.escape(str(item.get('unit') or ''))}</td>"
+                f"<td><input form='review-form' id='price-{pos}' class='price' name='price_{pos}' type='number' step='0.01' value='{html.escape(str(item.get('proposed_unit_price') or ''))}' {disabled}></td>"
                 f"<td>{html.escape(str(item.get('match_status') or '—'))}</td>"
                 f"<td>{html.escape(', '.join(item.get('replacement_details') or []) or 'нет')}</td>"
                 f"<td>{html.escape(str(item.get('availability_status') or '—'))}</td>"
@@ -1579,9 +1586,20 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
             if result.get("status") == "ready_for_review" else
             "<p><b>Счёт пока не сформирован: имеются позиции для проверки.</b></p>"
         )
-        offer_link = (
-            f"<p><a href='/dashboard/order/{row['order_id']}/offer'>Перейти к подтверждению предложения в Закупай</a></p>"
-        )
+        if offer_created:
+            offer_id = html.escape(str(result.get("live_offer_id") or "—"))
+            sent_notice = (
+                "<div class='sent-notice'><b>Предложение уже выставлено в Закупай.</b><br>"
+                f"ID предложения: {offer_id}. Повторная отправка заблокирована.</div>"
+            )
+            offer_link = ""
+            top_controls = ""
+            save_control = ""
+        else:
+            sent_notice = ""
+            offer_link = f"<p><a href='/dashboard/order/{row['order_id']}/offer'>Перейти к подтверждению предложения в Закупай</a></p>"
+            top_controls = f"<form method='post' action='/dashboard/automation/jobs/{job_id}/refresh'><p><button class='button' type='submit'>Повторить поиск у поставщиков</button></p></form>"
+            save_control = "<p><button form='review-form' type='submit'>Сохранить и пересчитать счёт</button></p>"
         search_report = ""
         if result.get("last_search_at"):
             search_report = (
@@ -1596,16 +1614,17 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
                 "<!doctype html><html lang='ru'><meta charset='utf-8'>"
                 "<title>Проверка заявки</title><style>body{font-family:Arial;margin:24px;background:#f4f6f8}main{background:#fff;padding:20px;border-radius:12px;overflow:auto}"
                 "table{border-collapse:collapse;width:100%}td,th{border:1px solid #ccc;padding:8px}"
-                "th{background:#eee}select{min-width:280px}.qty{width:90px}.price{width:100px}button,.button{display:inline-block;padding:11px 16px;background:#1a73e8;color:white;border:0;border-radius:7px;text-decoration:none;font-weight:bold}.row-search{margin-top:7px;padding:7px 10px;background:#5f6368}.send{background:#188038}</style><body><main>"
+                "th{background:#eee}select{min-width:280px}.qty{width:90px}.price{width:100px}button,.button{display:inline-block;padding:11px 16px;background:#1a73e8;color:white;border:0;border-radius:7px;text-decoration:none;font-weight:bold}.row-search{margin-top:7px;padding:7px 10px;background:#5f6368}.sent-notice{padding:14px;background:#e6f4ea;color:#137333;border-radius:8px;margin:14px 0}</style><body><main>"
                 "<p><a href='/dashboard/automation'>← Все заявки</a></p>"
                 f"<h1>Заявка Закупай № {row['order_id']}</h1>"
-                f"<p>Счёт № {row['invoice_number']} · статус: {html.escape(str(row['status']))}</p>"
-                f"<form method='post' action='/dashboard/automation/jobs/{job_id}/refresh'><p><button class='button' type='submit'>Повторить поиск у поставщиков</button></p></form>{search_report}"
+                f"<p>Счёт № {row['invoice_number']} · статус: {'предложение выставлено' if offer_created else html.escape(str(row['status']))}</p>"
+                f"{sent_notice}{top_controls}{search_report}"
                 f"<form id='review-form' method='post' action='/dashboard/automation/jobs/{job_id}/review'></form>{''.join(row_search_forms)}<table><tr><th>Включить</th><th>№</th><th>Заявка</th><th>Подбор поставщика<br><small>(закупочная цена)</small></th><th>Количество</th><th>Наша цена<br><small>за единицу заявки (+5%)</small></th>"
                 "<th>Статус подбора</th><th>Замена</th><th>Наличие</th><th>Срок</th><th>Решение</th></tr>"
-                + "".join(table_rows) + "</table><p><button form='review-form' type='submit'>Сохранить и пересчитать счёт</button></p>" + invoice_link + offer_link + "</main></body></html>"
+                + "".join(table_rows) + "</table>" + save_control + invoice_link + offer_link + "</main></body></html>"
             ),
             media_type="text/html",
+            headers={"Cache-Control": "no-store, max-age=0", "Pragma": "no-cache"},
         )
 
     @app.post("/dashboard/automation/jobs/{job_id}/refresh")
