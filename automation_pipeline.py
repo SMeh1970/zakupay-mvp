@@ -1360,25 +1360,45 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
         old_result = json.loads(row["result_json"]) if row["result_json"] else {}
         if old_result.get("live_offer_created"):
             raise HTTPException(status_code=409, detail="Предложение уже отправлено")
+        if row["status"] == "processing":
+            return Response(status_code=303, headers={"Location": f"/dashboard/automation/jobs/{job_id}/review"})
         order = _saved_order_snapshot(row, old_result)
         if not order:
             raise HTTPException(status_code=409, detail="Состав заявки не сохранён")
-        result = build_vi_draft(order, invoice_number=row["invoice_number"])
-        invoice_number = row["invoice_number"]
-        if result["summary"]["auto_ready"] > 0 and invoice_number is None:
-            with _lock, _connect() as conn:
-                last_row = _execute(conn, "SELECT MAX(invoice_number) AS max_invoice FROM automation_jobs").fetchone()
-                last_number = last_row["max_invoice"] if DATABASE_URL else last_row[0]
-                invoice_number = max(INVOICE_NUMBER_START, (last_number or INVOICE_NUMBER_START - 1) + 1)
-                _execute(conn, "UPDATE automation_jobs SET invoice_number=? WHERE id=?", (invoice_number, job_id))
-            result["invoice_number"] = invoice_number
-        updated = datetime.now(timezone.utc).isoformat()
         with _lock, _connect() as conn:
             _execute(
                 conn,
-                "UPDATE automation_jobs SET status=?, error=NULL, result_json=?, updated_at=? WHERE id=?",
-                (result["status"], json.dumps(result, ensure_ascii=False), updated, job_id),
+                "UPDATE automation_jobs SET status='processing', error=NULL, updated_at=? WHERE id=?",
+                (datetime.now(timezone.utc).isoformat(), job_id),
             )
+
+        def run_search():
+            try:
+                result = build_vi_draft(order, invoice_number=row["invoice_number"])
+                invoice_number = row["invoice_number"]
+                if result["summary"]["auto_ready"] > 0 and invoice_number is None:
+                    with _lock, _connect() as conn:
+                        last_row = _execute(conn, "SELECT MAX(invoice_number) AS max_invoice FROM automation_jobs").fetchone()
+                        last_number = last_row["max_invoice"] if DATABASE_URL else last_row[0]
+                        invoice_number = max(INVOICE_NUMBER_START, (last_number or INVOICE_NUMBER_START - 1) + 1)
+                        _execute(conn, "UPDATE automation_jobs SET invoice_number=? WHERE id=?", (invoice_number, job_id))
+                    result["invoice_number"] = invoice_number
+                with _lock, _connect() as conn:
+                    _execute(
+                        conn,
+                        "UPDATE automation_jobs SET status=?, error=NULL, result_json=?, updated_at=? WHERE id=?",
+                        (result["status"], json.dumps(result, ensure_ascii=False), datetime.now(timezone.utc).isoformat(), job_id),
+                    )
+            except Exception as exc:
+                logger.exception("background supplier search failed job=%s", job_id)
+                with _lock, _connect() as conn:
+                    _execute(
+                        conn,
+                        "UPDATE automation_jobs SET status='failed', error=?, updated_at=? WHERE id=?",
+                        (f"{type(exc).__name__}: {exc}", datetime.now(timezone.utc).isoformat(), job_id),
+                    )
+
+        threading.Thread(target=run_search, name=f"supplier-search-{job_id}", daemon=True).start()
         return Response(status_code=303, headers={"Location": f"/dashboard/automation/jobs/{job_id}/review"})
 
     @app.get("/dashboard/automation")
@@ -1469,6 +1489,20 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
         result = json.loads(row["result_json"]) if row["result_json"] else None
         if not result:
             raise HTTPException(status_code=409, detail=row["error"] or "Расчёт ещё не готов")
+        if row["status"] == "processing":
+            return Response(
+                content=(
+                    "<!doctype html><html lang='ru'><meta charset='utf-8'><meta http-equiv='refresh' content='5'>"
+                    "<title>Идёт подбор</title><style>body{font-family:Arial;margin:24px;background:#f4f6f8}main{max-width:760px;background:#fff;padding:24px;border-radius:12px}"
+                    ".status{padding:16px;background:#e8f0fe;border-radius:8px}</style><body><main>"
+                    "<p><a href='/dashboard/automation'>← Все заявки</a></p>"
+                    f"<h1>Заявка Закупай № {row['order_id']}</h1>"
+                    "<div class='status'><b>Идёт подбор товаров и цен у поставщиков.</b><br>"
+                    "Можно закрыть эту страницу. Она обновляется автоматически каждые 5 секунд, а подбор продолжится в фоне.</div>"
+                    "</main></body></html>"
+                ),
+                media_type="text/html",
+            )
         if row["status"] == "pending_search" or not (result.get("items") or []):
             order = _saved_order_snapshot(row, result) or {}
             source_items = list(order.get("orderItems") or [])
