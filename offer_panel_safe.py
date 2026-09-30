@@ -1,4 +1,5 @@
 import json
+import hashlib
 import logging
 import mimetypes
 import os
@@ -30,6 +31,11 @@ def install_offer_panel(
     load_offer_context=None,
     enrich_offer_context=None,
     mark_offer_created=None,
+    begin_submission=None,
+    finish_submission=None,
+    latest_submission=None,
+    order_hash=None,
+    order_changes=None,
     build_invoice=None,
 ):
     def _get_context(order_id: int):
@@ -208,6 +214,31 @@ def install_offer_panel(
         raw = "|".join(str(x or "") for x in parts)
         return str(uuid.uuid5(uuid.NAMESPACE_URL, "zakupay-mvp:" + raw))
 
+    def _submission_block_page(order_id, job_id, submission):
+        status = str((submission or {}).get("status") or "unknown")
+        if status == "sending":
+            title = "Отправка уже выполняется"
+            explanation = "Повторный запрос заблокирован, пока не установлен результат текущей отправки."
+        elif status == "rejected":
+            title = "Этот вариант уже был отклонён Закупай"
+            explanation = "Исправьте данные предложения перед новой отправкой. Тот же самый запрос повторно не отправляется."
+        else:
+            title = "Результат предыдущей отправки не подтверждён"
+            explanation = (
+                "Закупай мог принять предложение, даже если приложение не получило ответ. "
+                "Повторная отправка заблокирована до сверки с Закупай."
+            )
+        return HTMLResponse(
+            "<!doctype html><html lang='ru'><meta charset='utf-8'>"
+            f"<title>{esc(title)}</title><body style='font-family:Arial;margin:32px'>"
+            f"<h1>{esc(title)}</h1><p>{esc(explanation)}</p>"
+            f"<p>Заявка № {order_id}; попытка № {esc((submission or {}).get('id') or '—')}.</p>"
+            f"<p><a href='/dashboard/automation/jobs/{job_id}/review'>Вернуться к заявке</a></p>"
+            "</body></html>",
+            status_code=409,
+            headers={"Cache-Control": "no-store, max-age=0"},
+        )
+
     def _build_payload(order, form, file_id):
         offer_items = []
         additional_items = []
@@ -314,6 +345,9 @@ def install_offer_panel(
                 status_code=409,
                 headers={"Cache-Control": "no-store, max-age=0", "Pragma": "no-cache"},
             )
+        submission = latest_submission(job_id) if latest_submission else None
+        if submission and submission.get("status") in {"sending", "unknown"}:
+            return _submission_block_page(order_id, job_id, submission)
         original_items = {str(item.get("id")): item for item in order.get("orderItems") or [] if item.get("id") is not None}
         rows = ""
         blockers = []
@@ -433,6 +467,9 @@ def install_offer_panel(
                 "</body></html>",
                 status_code=409,
             )
+        existing_submission = latest_submission(context["job_id"]) if latest_submission else None
+        if existing_submission and existing_submission.get("status") in {"sending", "unknown"}:
+            return _submission_block_page(order_id, context["job_id"], existing_submission)
         form = await request.form()
         if form.get("confirm_send") != "SEND":
             raise HTTPException(status_code=400, detail="Реальная отправка не подтверждена")
@@ -442,6 +479,30 @@ def install_offer_panel(
         if not invoice_number:
             raise HTTPException(status_code=400, detail="Не указан номер счёта")
         result["invoice_number"] = invoice_number
+
+        if fetch_order_by_id is None or order_hash is None:
+            raise HTTPException(status_code=503, detail="Контроль актуальности заявки не подключён")
+        try:
+            fresh_order = fetch_order_by_id(order_id, force=True)
+        except Exception as exc:
+            logger.warning("live order check failed order=%s error=%s", order_id, type(exc).__name__)
+            raise HTTPException(
+                status_code=503,
+                detail="Закупай не ответил на контрольный запрос. Счёт не отправлен; сохранённая заявка не изменена.",
+            )
+        if not fresh_order:
+            raise HTTPException(status_code=409, detail="Закупай не вернул заявку. Счёт не отправлен.")
+        # The immutable locally stored order is the authority for this draft.
+        # Older jobs may contain a hash made from only operator-selected rows.
+        saved_hash = order_hash(order)
+        fresh_hash = order_hash(fresh_order)
+        if fresh_hash != saved_hash:
+            differences = order_changes(order, fresh_order) if order_changes else ["заявка изменилась"]
+            details = "; ".join(differences) or "изменились коммерчески значимые данные"
+            raise HTTPException(
+                status_code=409,
+                detail=f"Счёт устарел и не отправлен: {details}. Запустите новый подбор по обновлённой заявке.",
+            )
         try:
             invoice_body = build_invoice(result)
         except ValueError as exc:
@@ -449,17 +510,44 @@ def install_offer_panel(
         filename = f"AVIOR_invoice_{invoice_number}_order_{order_id}.xlsx"
         file_id, upload_response = _upload_invoice(filename, invoice_body)
         payload = _build_payload(order, form, file_id)
+        commercial_payload = dict(payload)
+        commercial_payload.pop("files", None)
+        stable_payload = json.dumps(commercial_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        payload_hash = hashlib.sha256(stable_payload.encode("utf-8")).hexdigest()
+        external_guid = str((payload.get("additionalDataJson") or {}).get("guid") or "")
+        attempt_key = hashlib.sha256(
+            f"{context['job_id']}|{saved_hash}|{payload_hash}".encode("utf-8")
+        ).hexdigest()
+        if begin_submission is None or finish_submission is None:
+            raise HTTPException(status_code=503, detail="Защита отправки не подключена")
+        claim = begin_submission(
+            context["job_id"], order_id, attempt_key, external_guid, saved_hash,
+            payload_hash, invoice_number, file_id, payload,
+        )
+        if not claim.get("claimed"):
+            return _submission_block_page(order_id, context["job_id"], claim)
+        submission_id = int(claim["id"])
         url = zakupay_base_url.rstrip("/") + OFFER_CREATE_PATH
         try:
             r = requests.post(url, headers=_headers("application/json"), json=payload, timeout=30)
         except requests.RequestException as exc:
-            raise HTTPException(status_code=502, detail=f"Ошибка создания предложения: {exc}")
+            finish_submission(submission_id, "unknown", error=f"{type(exc).__name__}: {exc}")
+            return _submission_block_page(
+                order_id,
+                context["job_id"],
+                {"id": submission_id, "status": "unknown"},
+            )
         data = _decode_response(r)
         if not r.ok:
+            finish_submission(
+                submission_id,
+                "rejected",
+                response=data,
+                error=f"HTTP {r.status_code}",
+            )
             return HTMLResponse(f"<h1>Закупай отклонил предложение</h1><p>HTTP {r.status_code}</p><pre>{esc(json.dumps(data, ensure_ascii=False, indent=2))}</pre><h3>JSON</h3><pre>{esc(json.dumps(payload, ensure_ascii=False, indent=2))}</pre><p><a href='/dashboard/order/{order_id}/offer'>← Исправить</a></p>", status_code=r.status_code)
         offer_id = _find_first_key(data, "id")
-        if mark_offer_created:
-            mark_offer_created(context["job_id"], offer_id=offer_id, file_id=file_id, response=data)
+        finish_submission(submission_id, "confirmed", offer_id=offer_id, response=data)
         return HTMLResponse(
             "<!doctype html><html lang='ru'><meta charset='utf-8'>"
             "<title>Предложение создано</title>"

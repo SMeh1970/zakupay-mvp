@@ -159,6 +159,33 @@ def _connect():
             )"""
         )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_match_feedback_request ON match_feedback(request_key, action)")
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS offer_submissions (
+                id BIGSERIAL PRIMARY KEY,
+                job_id BIGINT NOT NULL,
+                order_id BIGINT NOT NULL,
+                attempt_key TEXT NOT NULL UNIQUE,
+                external_guid TEXT NOT NULL,
+                snapshot_hash TEXT NOT NULL,
+                payload_hash TEXT NOT NULL,
+                invoice_number TEXT NOT NULL,
+                status TEXT NOT NULL,
+                stage TEXT NOT NULL,
+                file_id TEXT,
+                offer_id TEXT,
+                payload_json TEXT,
+                response_json TEXT,
+                error TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )"""
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_offer_submissions_job ON offer_submissions(job_id, created_at)")
+        conn.execute(
+            """CREATE UNIQUE INDEX IF NOT EXISTS idx_offer_submissions_active_job
+               ON offer_submissions(job_id)
+               WHERE status IN ('sending', 'unknown')"""
+        )
         conn.commit()
         return conn
     conn = sqlite3.connect(DB_PATH, timeout=30)
@@ -194,6 +221,30 @@ def _connect():
             updated_at TEXT NOT NULL,
             UNIQUE(request_key, candidate_key)
         );
+        CREATE TABLE IF NOT EXISTS offer_submissions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            job_id INTEGER NOT NULL,
+            order_id INTEGER NOT NULL,
+            attempt_key TEXT NOT NULL UNIQUE,
+            external_guid TEXT NOT NULL,
+            snapshot_hash TEXT NOT NULL,
+            payload_hash TEXT NOT NULL,
+            invoice_number TEXT NOT NULL,
+            status TEXT NOT NULL,
+            stage TEXT NOT NULL,
+            file_id TEXT,
+            offer_id TEXT,
+            payload_json TEXT,
+            response_json TEXT,
+            error TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_offer_submissions_job
+            ON offer_submissions(job_id, created_at);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_offer_submissions_active_job
+            ON offer_submissions(job_id)
+            WHERE status IN ('sending', 'unknown');
         CREATE INDEX IF NOT EXISTS idx_match_feedback_request
             ON match_feedback(request_key, action);
         """
@@ -212,6 +263,57 @@ def _execute(conn, sql: str, params=()):
     if DATABASE_URL:
         sql = sql.replace("?", "%s")
     return conn.execute(sql, params)
+
+
+def _commercial_order_data(order: dict | None) -> dict:
+    """Return only fields whose change can make a prepared offer obsolete."""
+    order = order or {}
+
+    def number(value):
+        if value in (None, ""):
+            return ""
+        try:
+            numeric = float(str(value).replace(" ", "").replace(",", "."))
+            return format(numeric, ".12g")
+        except (TypeError, ValueError):
+            return str(value).strip()
+
+    items = []
+    for item in order.get("orderItems") or []:
+        items.append(
+            {
+                "id": str(_order_item_id(item) or ""),
+                "name": _norm(item.get("goodName") or item.get("name") or ""),
+                "count": number(item.get("count") if item.get("count") is not None else item.get("quantity")),
+                "unit": _norm(_unit_name(item)),
+            }
+        )
+    terms = {}
+    for key in (
+        "delay", "paymentTerms", "prepaidPercent", "deliveryAddress", "deliveryDate",
+        "deliveryDeadline", "deadline", "finishDate", "address", "city", "region",
+    ):
+        if order.get(key) not in (None, ""):
+            terms[key] = order.get(key)
+    return {"id": str(order.get("id") or ""), "items": items, "terms": terms}
+
+
+def commercial_order_hash(order: dict | None) -> str:
+    stable = json.dumps(_commercial_order_data(order), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(stable.encode("utf-8")).hexdigest()
+
+
+def commercial_order_changes(saved: dict | None, fresh: dict | None) -> list[str]:
+    before = _commercial_order_data(saved)
+    after = _commercial_order_data(fresh)
+    changes = []
+    if before["items"] != after["items"]:
+        changes.append("изменились позиции, количества или единицы измерения")
+    if before["terms"] != after["terms"]:
+        changes.append("изменились коммерческие условия, адрес или срок")
+    if before["id"] != after["id"]:
+        changes.append("изменился идентификатор заявки")
+    return changes
 
 
 def _save_match_feedback(requested_name: str, candidate: dict, action: str) -> None:
@@ -761,6 +863,7 @@ def build_vi_draft(order: dict, invoice_number: int | None = None, progress_call
         "customer": order.get("customer") or {},
         "zakupay_line_ids_complete": bool(items) and all(_order_item_id(item) is not None for item in items),
         "order_source": order.get("source") or "zakupay_api",
+        "processed_snapshot_hash": commercial_order_hash(order),
         "status": status,
         "live_offer_created": False,
         "invoice_number": invoice_number,
@@ -989,6 +1092,115 @@ def mark_automation_offer_created(job_id: int, offer_id=None, file_id=None, resp
             "UPDATE automation_jobs SET status='offer_created', result_json=?, updated_at=? WHERE id=?",
             (json.dumps(result, ensure_ascii=False), result["live_offer_created_at"], int(job_id)),
         )
+
+
+def begin_offer_submission(
+    job_id: int,
+    order_id: int,
+    attempt_key: str,
+    external_guid: str,
+    snapshot_hash: str,
+    payload_hash: str,
+    invoice_number: str,
+    file_id,
+    payload: dict,
+) -> dict:
+    """Atomically claim one live POST. A concurrent click receives the existing claim."""
+    now = datetime.now(timezone.utc).isoformat()
+    with _lock, _connect() as conn:
+        cursor = _execute(
+            conn,
+            """INSERT INTO offer_submissions
+               (job_id,order_id,attempt_key,external_guid,snapshot_hash,payload_hash,
+                invoice_number,status,stage,file_id,payload_json,created_at,updated_at)
+               VALUES (?,?,?,?,?,?,?,'sending','offer_post',?,?,?,?)
+               ON CONFLICT DO NOTHING
+               RETURNING id""",
+            (
+                int(job_id), int(order_id), attempt_key, external_guid, snapshot_hash,
+                payload_hash, str(invoice_number), str(file_id or ""),
+                json.dumps(payload, ensure_ascii=False), now, now,
+            ),
+        )
+        inserted = cursor.fetchone()
+        if inserted:
+            submission_id = inserted["id"] if hasattr(inserted, "keys") else inserted[0]
+            return {"claimed": True, "id": int(submission_id), "status": "sending"}
+        row = _execute(
+            conn,
+            """SELECT * FROM offer_submissions
+               WHERE attempt_key=? OR (job_id=? AND status IN ('sending','unknown'))
+               ORDER BY id DESC LIMIT 1""",
+            (attempt_key, int(job_id)),
+        ).fetchone()
+        if not row:
+            raise RuntimeError("Не удалось зафиксировать попытку отправки")
+        return {
+            "claimed": False,
+            "id": int(row["id"]),
+            "status": row["status"],
+            "offer_id": row["offer_id"],
+            "error": row["error"],
+        }
+
+
+def finish_offer_submission(
+    submission_id: int,
+    status: str,
+    *,
+    offer_id=None,
+    response=None,
+    error=None,
+) -> None:
+    """Persist the known outcome; unknown deliberately remains retry-blocking."""
+    if status not in {"confirmed", "unknown", "rejected"}:
+        raise ValueError("Недопустимый статус отправки")
+    now = datetime.now(timezone.utc).isoformat()
+    with _lock, _connect() as conn:
+        row = _execute(conn, "SELECT * FROM offer_submissions WHERE id=?", (int(submission_id),)).fetchone()
+        if not row:
+            raise LookupError("Попытка отправки не найдена")
+        _execute(
+            conn,
+            """UPDATE offer_submissions
+               SET status=?, stage='completed', offer_id=?, response_json=?, error=?, updated_at=?
+               WHERE id=? AND status='sending'""",
+            (
+                status, str(offer_id or ""),
+                json.dumps(response, ensure_ascii=False) if response is not None else None,
+                str(error or ""), now, int(submission_id),
+            ),
+        )
+        if status == "confirmed":
+            job = _execute(conn, "SELECT result_json FROM automation_jobs WHERE id=?", (int(row["job_id"]),)).fetchone()
+            if not job or not job["result_json"]:
+                raise LookupError("Сохранённая обработка заявки не найдена")
+            result = json.loads(job["result_json"])
+            result.update(
+                {
+                    "live_offer_created": True,
+                    "live_offer_created_at": now,
+                    "live_offer_id": offer_id,
+                    "live_offer_file_id": row["file_id"],
+                    "live_offer_response": response,
+                    "offer_submission_id": int(submission_id),
+                }
+            )
+            _execute(
+                conn,
+                "UPDATE automation_jobs SET status='offer_created', result_json=?, updated_at=? WHERE id=?",
+                (json.dumps(result, ensure_ascii=False), now, int(row["job_id"])),
+            )
+
+
+def latest_offer_submission(job_id: int) -> dict | None:
+    with _connect() as conn:
+        row = _execute(
+            conn,
+            "SELECT * FROM offer_submissions WHERE job_id=? ORDER BY id DESC LIMIT 1",
+            (int(job_id),),
+        ).fetchone()
+    return dict(row) if row else None
 
 def process_email(raw_email: bytes, fetch_order_by_id) -> dict:
     event = parse_zakupay_email(raw_email)
@@ -1470,6 +1682,7 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
         order = _saved_order_snapshot(row, old_result)
         if not order:
             raise HTTPException(status_code=409, detail="Состав заявки не сохранён")
+        full_order_snapshot_hash = commercial_order_hash(order)
         form = await request.form()
         selected_positions = {
             int(value) for value in form.getlist("selected_position")
@@ -1521,6 +1734,7 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
                     invoice_number=row["invoice_number"],
                     progress_callback=save_progress,
                 )
+                result["processed_snapshot_hash"] = full_order_snapshot_hash
                 invoice_number = row["invoice_number"]
                 if result["summary"]["auto_ready"] > 0 and invoice_number is None:
                     with _lock, _connect() as conn:

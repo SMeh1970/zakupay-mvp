@@ -11,8 +11,13 @@ from main import (
     has_my_offer, max_competitors, zakupay_headers, ZAKUPAY_BASE_URL,
 )
 from automation_pipeline import (
+    begin_offer_submission,
+    commercial_order_changes,
+    commercial_order_hash,
     enrich_automation_offer_context,
+    finish_offer_submission,
     install_automation_pipeline,
+    latest_offer_submission,
     load_automation_offer_context,
     mark_automation_offer_created,
 )
@@ -227,6 +232,11 @@ install_offer_panel(
     load_offer_context=load_automation_offer_context,
     enrich_offer_context=enrich_automation_offer_context,
     mark_offer_created=mark_automation_offer_created,
+    begin_submission=begin_offer_submission,
+    finish_submission=finish_offer_submission,
+    latest_submission=latest_offer_submission,
+    order_hash=commercial_order_hash,
+    order_changes=commercial_order_changes,
     build_invoice=build_invoice_xlsx,
 )
 install_automation_pipeline(

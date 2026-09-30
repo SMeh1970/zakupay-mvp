@@ -34,6 +34,7 @@ class PipelineTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         pipeline.DB_PATH = os.path.join(self.tmp.name, "automation.db")
+        pipeline.DATABASE_URL = ""
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -406,6 +407,39 @@ class PipelineTests(unittest.TestCase):
         retried = pipeline.process_api_order(ORDER)
         self.assertFalse(retried["duplicate"])
         self.assertEqual(retried["status"], "ready_for_review")
+
+    def test_commercial_hash_ignores_unrelated_metadata_but_detects_quantity(self):
+        saved = dict(ORDER, irrelevantServerField="one")
+        same = dict(ORDER, irrelevantServerField="two")
+        changed = dict(ORDER)
+        changed["orderItems"] = [dict(ORDER["orderItems"][0], count=11)]
+        self.assertEqual(pipeline.commercial_order_hash(saved), pipeline.commercial_order_hash(same))
+        self.assertNotEqual(pipeline.commercial_order_hash(saved), pipeline.commercial_order_hash(changed))
+        self.assertIn(
+            "изменились позиции, количества или единицы измерения",
+            pipeline.commercial_order_changes(saved, changed),
+        )
+
+    @patch.object(pipeline.VseinstrumentiAdapter, "search")
+    def test_offer_submission_claim_is_atomic_and_unknown_blocks_retry(self, search):
+        search.return_value = [SupplierQuote(
+            supplier="ВИ", name="Маркер черный 1 мм", sku="123", price=100, stock=50,
+        )]
+        created = pipeline.process_api_order(ORDER)
+        arguments = (
+            created["job_id"], ORDER["id"], "attempt-1", "guid-1",
+            pipeline.commercial_order_hash(ORDER), "payload-1", "240", "file-1", {"offer": 1},
+        )
+        first = pipeline.begin_offer_submission(*arguments)
+        second = pipeline.begin_offer_submission(*arguments)
+        self.assertTrue(first["claimed"])
+        self.assertFalse(second["claimed"])
+        self.assertEqual(second["status"], "sending")
+
+        pipeline.finish_offer_submission(first["id"], "unknown", error="timeout")
+        third = pipeline.begin_offer_submission(*arguments)
+        self.assertFalse(third["claimed"])
+        self.assertEqual(third["status"], "unknown")
 
 
 if __name__ == "__main__":
