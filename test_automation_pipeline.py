@@ -35,9 +35,27 @@ class PipelineTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         pipeline.DB_PATH = os.path.join(self.tmp.name, "automation.db")
         pipeline.DATABASE_URL = ""
+        pipeline._initialized_database_key = None
+        pipeline._last_api_poll_started = 0.0
 
     def tearDown(self):
         self.tmp.cleanup()
+
+    def test_schema_initialization_is_cached_for_same_database(self):
+        with pipeline._connect() as conn:
+            conn.execute(
+                "INSERT INTO automation_jobs "
+                "(dedupe_key, order_id, event_type, status, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                ("once", 1, "test", "received", "now", "now"),
+            )
+        initialized_key = pipeline._initialized_database_key
+
+        with pipeline._connect() as conn:
+            count = conn.execute("SELECT COUNT(*) FROM automation_jobs").fetchone()[0]
+
+        self.assertEqual(initialized_key, pipeline._initialized_database_key)
+        self.assertEqual(count, 1)
 
     def test_search_variants_expand_russian_catalog_word_forms(self):
         variants = pipeline._search_variants("Нарукавники брезентовые")

@@ -59,6 +59,10 @@ GITHUB_OIDC_ISSUER = "https://token.actions.githubusercontent.com"
 GITHUB_REPOSITORY = os.getenv("GITHUB_AUTOMATION_REPOSITORY", "SMeh1970/zakupay-mvp")
 
 _lock = threading.Lock()
+_schema_lock = threading.Lock()
+_initialized_database_key = None
+_poll_lock = threading.Lock()
+_last_api_poll_started = 0.0
 logger = logging.getLogger("zakupay.automation")
 
 
@@ -113,18 +117,21 @@ def _authorized_automation_call(webhook_secret: str | None, authorization: str |
     )
 
 
-def _connect():
-    if DATABASE_URL:
-        import psycopg
-        from psycopg.rows import dict_row
-        try:
-            conn = psycopg.connect(DATABASE_URL, row_factory=dict_row)
-        except psycopg.Error as exc:
-            logger.exception("automation database connection failed")
-            raise AutomationDatabaseUnavailable(
-                "База заявок временно недоступна. Проверьте лимит проекта Neon."
-            ) from exc
-        conn.execute(
+def _database_key():
+    return ("postgres", DATABASE_URL) if DATABASE_URL else ("sqlite", os.path.abspath(DB_PATH))
+
+
+def _initialize_schema(conn) -> None:
+    """Run idempotent migrations once per process/database, never per request."""
+    global _initialized_database_key
+    key = _database_key()
+    if _initialized_database_key == key:
+        return
+    with _schema_lock:
+        if _initialized_database_key == key:
+            return
+        if DATABASE_URL:
+            conn.execute(
             """CREATE TABLE IF NOT EXISTS automation_jobs (
                 id BIGSERIAL PRIMARY KEY,
                 dedupe_key TEXT NOT NULL UNIQUE,
@@ -142,11 +149,11 @@ def _connect():
                 viewed_at TEXT,
                 invoice_number BIGINT
             )"""
-        )
-        conn.execute("ALTER TABLE automation_jobs ADD COLUMN IF NOT EXISTS order_json TEXT")
-        conn.execute("ALTER TABLE automation_jobs ADD COLUMN IF NOT EXISTS viewed_at TEXT")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_automation_jobs_order ON automation_jobs(order_id, created_at)")
-        conn.execute(
+            )
+            conn.execute("ALTER TABLE automation_jobs ADD COLUMN IF NOT EXISTS order_json TEXT")
+            conn.execute("ALTER TABLE automation_jobs ADD COLUMN IF NOT EXISTS viewed_at TEXT")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_automation_jobs_order ON automation_jobs(order_id, created_at)")
+            conn.execute(
             """CREATE TABLE IF NOT EXISTS match_feedback (
                 id BIGSERIAL PRIMARY KEY,
                 request_key TEXT NOT NULL,
@@ -158,9 +165,9 @@ def _connect():
                 updated_at TEXT NOT NULL,
                 UNIQUE(request_key, candidate_key)
             )"""
-        )
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_match_feedback_request ON match_feedback(request_key, action)")
-        conn.execute(
+            )
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_match_feedback_request ON match_feedback(request_key, action)")
+            conn.execute(
             """CREATE TABLE IF NOT EXISTS offer_submissions (
                 id BIGSERIAL PRIMARY KEY,
                 job_id BIGINT NOT NULL,
@@ -180,19 +187,16 @@ def _connect():
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             )"""
-        )
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_offer_submissions_job ON offer_submissions(job_id, created_at)")
-        conn.execute(
+            )
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_offer_submissions_job ON offer_submissions(job_id, created_at)")
+            conn.execute(
             """CREATE UNIQUE INDEX IF NOT EXISTS idx_offer_submissions_active_job
                ON offer_submissions(job_id)
                WHERE status IN ('sending', 'unknown')"""
-        )
-        conn.commit()
-        return conn
-    conn = sqlite3.connect(DB_PATH, timeout=30)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.executescript(
+            )
+        else:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.executescript(
         """
         CREATE TABLE IF NOT EXISTS automation_jobs (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -249,14 +253,37 @@ def _connect():
         CREATE INDEX IF NOT EXISTS idx_match_feedback_request
             ON match_feedback(request_key, action);
         """
-    )
-    columns = {row[1] for row in conn.execute("PRAGMA table_info(automation_jobs)")}
-    if "invoice_number" not in columns:
-        conn.execute("ALTER TABLE automation_jobs ADD COLUMN invoice_number INTEGER")
-    if "order_json" not in columns:
-        conn.execute("ALTER TABLE automation_jobs ADD COLUMN order_json TEXT")
-    if "viewed_at" not in columns:
-        conn.execute("ALTER TABLE automation_jobs ADD COLUMN viewed_at TEXT")
+            )
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(automation_jobs)")}
+            if "invoice_number" not in columns:
+                conn.execute("ALTER TABLE automation_jobs ADD COLUMN invoice_number INTEGER")
+            if "order_json" not in columns:
+                conn.execute("ALTER TABLE automation_jobs ADD COLUMN order_json TEXT")
+            if "viewed_at" not in columns:
+                conn.execute("ALTER TABLE automation_jobs ADD COLUMN viewed_at TEXT")
+        conn.commit()
+        _initialized_database_key = key
+
+
+def _connect():
+    if DATABASE_URL:
+        import psycopg
+        from psycopg.rows import dict_row
+        try:
+            conn = psycopg.connect(DATABASE_URL, row_factory=dict_row, connect_timeout=8)
+        except psycopg.Error as exc:
+            logger.exception("automation database connection failed")
+            raise AutomationDatabaseUnavailable(
+                "База заявок временно недоступна. Проверьте лимит проекта Neon."
+            ) from exc
+    else:
+        conn = sqlite3.connect(DB_PATH, timeout=30)
+        conn.row_factory = sqlite3.Row
+    try:
+        _initialize_schema(conn)
+    except Exception:
+        conn.close()
+        raise
     return conn
 
 
@@ -1608,6 +1635,7 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
         x_webhook_secret: str | None = Header(default=None),
         authorization: str | None = Header(default=None),
     ):
+        global _last_api_poll_started
         if not _authorized_automation_call(x_webhook_secret, authorization):
             raise HTTPException(status_code=401, detail="Неверная авторизация автоматизации")
         if not API_POLL_ENABLED:
@@ -1618,6 +1646,24 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
             })
         if fetch_all_orders is None:
             raise HTTPException(status_code=503, detail="Получение списка заявок не подключено")
+
+        # The scheduler normally runs hourly.  Ignore accidental duplicate
+        # invocations so they do not wake Neon and Zakupay repeatedly.
+        min_interval = max(
+            300,
+            int(os.getenv("AUTO_API_POLL_MIN_INTERVAL_SECONDS", "3300")),
+        )
+        now = time.monotonic()
+        with _poll_lock:
+            elapsed = now - _last_api_poll_started
+            if _last_api_poll_started and elapsed < min_interval:
+                return JSONResponse({
+                    "accepted": False,
+                    "status": "rate_limited",
+                    "retry_after_seconds": int(min_interval - elapsed) + 1,
+                    "message": "Повторный фоновый опрос пропущен",
+                })
+            _last_api_poll_started = now
 
         try:
             orders = fetch_all_orders(force=True)
@@ -1788,18 +1834,24 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
 
         def run_search():
             started_at = time.monotonic()
+            last_progress_saved_at = 0.0
             logger.warning(
                 "supplier search started job=%s order=%s positions=%s",
                 job_id, order.get("id"), len(order.get("orderItems") or []),
             )
             try:
                 def save_progress(completed, total, completed_row):
+                    nonlocal last_progress_saved_at
                     progress_result["processing_progress"] = {
                         "completed": completed,
                         "total": total,
                         "last_position": completed_row.get("position"),
                         "last_name": completed_row.get("requested_name"),
                     }
+                    now = time.monotonic()
+                    if completed < total and now - last_progress_saved_at < 15:
+                        return
+                    last_progress_saved_at = now
                     with _lock, _connect() as conn:
                         _execute(
                             conn,
@@ -2021,7 +2073,6 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
             )
         return Response(content=(
             "<!doctype html><html lang='ru'><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
-            + ("<meta http-equiv='refresh' content='5'>" if has_processing else "") +
             "<title>Обработка заявок</title><style>body{font-family:Arial;margin:0;background:#f4f6f8;color:#202124}main{max-width:1200px;margin:auto;padding:28px}"
             ".card{display:flex;justify-content:space-between;gap:20px;background:#fff;border-left:7px solid #9aa0a6;border-radius:12px;padding:18px;margin:12px 0;box-shadow:0 2px 8px #0001}.card.read{background:#e9eef3}.card.unread{background:#fff}.card.ok{border-color:#188038}.card.warn{border-color:#f9ab00}.card.bad{border-color:#d93025}.card.processing{border-color:#1a73e8;background:#e8f0fe}.card.offer-created{background:#e6f4ea;border-color:#188038}.offer-badge,.source-badge{display:inline-block;margin-left:12px;padding:5px 9px;border-radius:12px;background:#188038;color:#fff;font-size:12px;font-weight:700;vertical-align:middle}.source-badge{background:#174ea6}.source-badge.manual{background:#7b1fa2}.progress{height:8px;max-width:460px;background:#c7d5ec;border-radius:5px;margin-top:9px;overflow:hidden}.progress span{display:block;height:100%;background:#1a73e8}"
             ".title{font-size:20px;font-weight:700;color:#174ea6;text-decoration:none}.meta{margin-top:8px;color:#5f6368}.actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.button{background:#1a73e8;color:#fff;padding:10px 13px;border-radius:7px;text-decoration:none;font-weight:700}.secondary{background:#5f6368}.send{background:#188038}.sent{display:inline-block;padding:10px 13px;background:#e6f4ea;color:#137333;border-radius:7px;font-weight:700}.muted{color:#777}@media(max-width:760px){.card{display:block}.actions{margin-top:14px}}</style>"
@@ -2030,7 +2081,8 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
             "<a class='button secondary' href='/dashboard/automation/manual'>+ Добавить вручную</a></div>"
             "<form method='get' action='/dashboard/automation' style='margin-top:18px'><label><b>Источник:</b> <select name='source' onchange='this.form.submit()'>"
             f"<option value='all' {'selected' if source == 'all' else ''}>Все</option><option value='zakupay' {'selected' if source == 'zakupay' else ''}>Закупай</option><option value='manual' {'selected' if source == 'manual' else ''}>Ручной ввод</option></select></label></form>"
-            "<p class='muted'>Ручная синхронизация запускается по нажатию; автоматический опрос выполняется каждый час.</p>"
+            + ("<p class='muted'>Есть заявки в обработке. Страница больше не обновляется каждые 5 секунд — нажмите <a href='/dashboard/automation'>обновить список</a>, когда потребуется.</p>" if has_processing else "")
+            + "<p class='muted'>Ручная синхронизация запускается по нажатию; автоматический опрос выполняется каждый час.</p>"
             + sync_report + "".join(cards) + "</main></html>"
         ), media_type="text/html", headers={"Cache-Control": "no-store, max-age=0", "Pragma": "no-cache"})
 
@@ -2088,14 +2140,14 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
                 )
             return Response(
                 content=(
-                    "<!doctype html><html lang='ru'><meta charset='utf-8'><meta http-equiv='refresh' content='5'>"
+                    "<!doctype html><html lang='ru'><meta charset='utf-8'><meta http-equiv='refresh' content='30'>"
                     "<title>Идёт подбор</title><style>body{font-family:Arial;margin:24px;background:#f4f6f8}main{max-width:760px;background:#fff;padding:24px;border-radius:12px}"
                     ".status{padding:16px;background:#e8f0fe;border-radius:8px}</style><body><main>"
                     "<p><a href='/dashboard/automation'>← Все заявки</a></p>"
                     f"<h1>{request_heading}</h1>"
                     "<div class='status'><b>Идёт подбор товаров и цен у поставщиков.</b><br>"
                     f"{progress_text}<br>"
-                    "Можно закрыть эту страницу. Она обновляется автоматически каждые 5 секунд, а подбор продолжится в фоне.</div>"
+                    "Можно закрыть эту страницу. Она обновляется автоматически раз в 30 секунд, а подбор продолжится в фоне.</div>"
                     "</main></body></html>"
                 ),
                 media_type="text/html",
