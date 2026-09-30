@@ -61,6 +61,10 @@ _lock = threading.Lock()
 logger = logging.getLogger("zakupay.automation")
 
 
+class AutomationDatabaseUnavailable(RuntimeError):
+    """Raised when the persistent automation database cannot be reached."""
+
+
 def _prepayment_confirmed(order: dict) -> bool:
     """Return True only when API or email explicitly confirms no payment delay."""
     delay = order.get("delay")
@@ -112,7 +116,13 @@ def _connect():
     if DATABASE_URL:
         import psycopg
         from psycopg.rows import dict_row
-        conn = psycopg.connect(DATABASE_URL, row_factory=dict_row)
+        try:
+            conn = psycopg.connect(DATABASE_URL, row_factory=dict_row)
+        except psycopg.Error as exc:
+            logger.exception("automation database connection failed")
+            raise AutomationDatabaseUnavailable(
+                "База заявок временно недоступна. Проверьте лимит проекта Neon."
+            ) from exc
         conn.execute(
             """CREATE TABLE IF NOT EXISTS automation_jobs (
                 id BIGSERIAL PRIMARY KEY,
@@ -1240,6 +1250,29 @@ def process_api_order(order: dict) -> dict:
 
 
 def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, has_my_offer=None):
+    @app.exception_handler(AutomationDatabaseUnavailable)
+    async def automation_database_unavailable(request: Request, exc: AutomationDatabaseUnavailable):
+        message = html.escape(str(exc))
+        if request.url.path.startswith("/dashboard"):
+            return Response(
+                content=(
+                    "<!doctype html><html lang='ru'><meta charset='utf-8'>"
+                    "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+                    "<title>База заявок недоступна</title>"
+                    "<style>body{font-family:Arial;background:#f4f6f8;color:#202124;margin:0}"
+                    "main{max-width:760px;margin:60px auto;padding:28px;background:#fff;"
+                    "border-radius:12px;box-shadow:0 2px 10px #0002}h1{color:#b3261e}"
+                    "a{color:#174ea6}</style><main><h1>База заявок временно недоступна</h1>"
+                    f"<p>{message}</p>"
+                    "<p>Данные не удалены. После восстановления лимита Neon страница снова "
+                    "покажет сохранённые заявки.</p>"
+                    "<p><a href='/dashboard/automation'>Повторить проверку</a></p></main></html>"
+                ),
+                status_code=503,
+                media_type="text/html",
+            )
+        return JSONResponse({"detail": str(exc)}, status_code=503)
+
     def order_with_line_ids(order: dict) -> dict:
         """Perform one exact lookup at intake when the collection omits line IDs."""
         items = list(order.get("orderItems") or [])
