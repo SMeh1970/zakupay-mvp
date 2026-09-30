@@ -47,6 +47,11 @@ def install_offer_panel(
             )
         if not context.get("order"):
             raise HTTPException(status_code=409, detail="В обработке не сохранён исходный состав заявки")
+        if context["order"].get("source") == "manual_entry":
+            raise HTTPException(
+                status_code=409,
+                detail="Ручная заявка не связана с Закупай. Для неё доступно формирование и скачивание счёта без отправки в Закупай.",
+            )
         return context
 
     def _headers(content_type=None):

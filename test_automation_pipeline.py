@@ -116,6 +116,7 @@ class PipelineTests(unittest.TestCase):
         }
         order = pipeline._saved_order_snapshot(row, {"items": []})
         self.assertEqual(order["source"], "saved_order_snapshot")
+        self.assertEqual(order["snapshotStorage"], "local_database")
         self.assertEqual(order["deliveryAddress"], "Сохранённый адрес")
 
     @patch.object(pipeline.VseinstrumentiAdapter, "search")
@@ -419,6 +420,30 @@ class PipelineTests(unittest.TestCase):
             "изменились позиции, количества или единицы измерения",
             pipeline.commercial_order_changes(saved, changed),
         )
+
+    def test_manual_order_is_saved_without_zakupay_and_can_be_reviewed(self):
+        saved = pipeline.save_manual_order(
+            "Заявка клиента № 154",
+            [{"goodName": "Анкер-клин 6x60", "count": "25", "unit": "шт"}],
+            reference="154",
+            customer_name="Тестовый заказчик",
+            customer_inn="1234567890",
+        )
+        self.assertLess(saved["order_id"], 0)
+        context = pipeline.load_automation_offer_context(saved["order_id"])
+        self.assertEqual(context["result"]["source_type"], "manual")
+        self.assertEqual(context["result"]["manual_reference"], "154")
+        self.assertEqual(context["order"]["source"], "manual_entry")
+        self.assertEqual(context["order"]["orderItems"][0]["goodName"], "Анкер-клин 6x60")
+
+    def test_manual_order_rejects_empty_or_invalid_positions(self):
+        with self.assertRaisesRegex(ValueError, "хотя бы одну позицию"):
+            pipeline.save_manual_order("Пустая", [])
+        with self.assertRaisesRegex(ValueError, "количество больше нуля"):
+            pipeline.save_manual_order(
+                "Ошибка",
+                [{"goodName": "Товар", "count": "0", "unit": "шт"}],
+            )
 
     @patch.object(pipeline.VseinstrumentiAdapter, "search")
     def test_offer_submission_claim_is_atomic_and_unknown_blocks_retry(self, search):

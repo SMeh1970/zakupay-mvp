@@ -19,6 +19,7 @@ import re
 import sqlite3
 import threading
 import time
+import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from email import policy
@@ -860,6 +861,9 @@ def build_vi_draft(order: dict, invoice_number: int | None = None, progress_call
     return {
         "order_id": order.get("id"),
         "order_name": order.get("name"),
+        "manual_reference": order.get("manualReference") or "",
+        "source_type": "manual" if order.get("source") == "manual_entry" else "zakupay",
+        "source_label": "Ручной ввод" if order.get("source") == "manual_entry" else "Закупай",
         "customer": order.get("customer") or {},
         "zakupay_line_ids_complete": bool(items) and all(_order_item_id(item) is not None for item in items),
         "order_source": order.get("source") or "zakupay_api",
@@ -988,7 +992,8 @@ def _saved_order_snapshot(row, result: dict) -> dict | None:
         try:
             order = json.loads(raw)
             if isinstance(order, dict) and order.get("orderItems"):
-                order["source"] = "saved_order_snapshot"
+                order.setdefault("source", "saved_order_snapshot")
+                order["snapshotStorage"] = "local_database"
                 return order
         except (TypeError, ValueError):
             logger.warning("invalid saved order snapshot job_id=%s", row.get("id") if hasattr(row, "get") else "unknown")
@@ -1357,6 +1362,83 @@ def save_api_order_for_manual_start(order: dict) -> dict:
         ))
         job_id = cursor.fetchone()["id"] if DATABASE_URL else cursor.lastrowid
     return {"duplicate": False, "job_id": job_id, "status": "pending_search"}
+
+
+def save_manual_order(
+    title: str,
+    items: list[dict],
+    *,
+    reference: str = "",
+    customer_name: str = "",
+    customer_inn: str = "",
+    delivery_address: str = "",
+) -> dict:
+    """Persist an operator-entered request without any Zakupay dependency."""
+    clean_items = []
+    for item in items:
+        name = str(item.get("goodName") or item.get("name") or "").strip()
+        unit = str(item.get("unit") or "шт").strip() or "шт"
+        try:
+            count = float(str(item.get("count") or "").replace(" ", "").replace(",", "."))
+        except (TypeError, ValueError):
+            raise ValueError(f"Некорректное количество для позиции «{name or 'без названия'}»")
+        if not name or count <= 0:
+            raise ValueError("У каждой позиции должны быть наименование и количество больше нуля")
+        clean_items.append({"goodName": name, "count": count, "unit": {"name": unit}})
+    if not clean_items:
+        raise ValueError("Добавьте хотя бы одну позицию")
+
+    manual_uuid = uuid.uuid4()
+    order_id = -int(manual_uuid.int % 8_000_000_000_000 + 1_000_000_000_000)
+    now = datetime.now(timezone.utc).isoformat()
+    title = str(title or "").strip() or "Ручная заявка"
+    reference = str(reference or "").strip()
+    order = {
+        "id": order_id,
+        "name": title,
+        "source": "manual_entry",
+        "manualReference": reference,
+        "creationDate": now,
+        "deliveryAddress": str(delivery_address or "").strip(),
+        "customer": {
+            "name": str(customer_name or "").strip(),
+            "inn": str(customer_inn or "").strip(),
+        },
+        "orderItems": clean_items,
+    }
+    pending_result = {
+        "order_id": order_id,
+        "order_name": title,
+        "manual_reference": reference,
+        "source_type": "manual",
+        "source_label": "Ручной ввод",
+        "customer": order["customer"],
+        "status": "pending_search",
+        "live_offer_created": False,
+        "invoice_number": None,
+        "summary": {
+            "positions": len(clean_items), "auto_ready": 0, "review": 0, "manual": 0,
+            "included_in_invoice": 0, "excluded_from_invoice": len(clean_items),
+        },
+        "items": [],
+    }
+    with _lock, _connect() as conn:
+        insert_sql = """INSERT INTO automation_jobs
+            (dedupe_key,message_id,order_id,event_type,subject,sender,status,error,order_json,result_json,created_at,updated_at,invoice_number)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)"""
+        if DATABASE_URL:
+            insert_sql += " RETURNING id"
+        cursor = _execute(
+            conn,
+            insert_sql,
+            (
+                f"manual:{manual_uuid}", None, order_id, "manual_order", title,
+                "Ручной ввод", "pending_search", None, json.dumps(order, ensure_ascii=False),
+                json.dumps(pending_result, ensure_ascii=False), now, now, None,
+            ),
+        )
+        job_id = cursor.fetchone()["id"] if DATABASE_URL else cursor.lastrowid
+    return {"job_id": int(job_id), "order_id": order_id, "status": "pending_search"}
 
 
 def process_api_order(order: dict) -> dict:
@@ -1765,22 +1847,91 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
         threading.Thread(target=run_search, name=f"supplier-search-{job_id}", daemon=True).start()
         return Response(status_code=303, headers={"Location": f"/dashboard/automation/jobs/{job_id}/review"})
 
+    @app.get("/dashboard/automation/manual")
+    def automation_manual_form():
+        initial_rows = "".join(
+            "<tr><td class='row-number'></td>"
+            "<td><input name='item_name' required placeholder='Полное наименование товара'></td>"
+            "<td><input name='item_quantity' required type='number' min='0.001' step='0.001'></td>"
+            "<td><input name='item_unit' value='шт'></td>"
+            "<td><button class='remove' type='button' onclick='this.closest(\"tr\").remove();renumber()'>Удалить</button></td></tr>"
+            for _ in range(3)
+        )
+        return Response(
+            content=(
+                "<!doctype html><html lang='ru'><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
+                "<title>Добавить ручную заявку</title><style>body{font-family:Arial;margin:0;background:#f4f6f8;color:#202124}main{max-width:1100px;margin:auto;padding:28px}"
+                ".card{background:#fff;padding:22px;border-radius:12px}label{display:block;font-weight:700;margin:12px 0 5px}input{box-sizing:border-box;width:100%;padding:9px}"
+                ".grid{display:grid;grid-template-columns:2fr 1fr;gap:14px}table{width:100%;border-collapse:collapse;margin:20px 0}th,td{border:1px solid #ddd;padding:8px}th{background:#eee}"
+                "td:nth-child(1){width:45px}td:nth-child(3),td:nth-child(4){width:130px}button,.button{border:0;border-radius:7px;padding:11px 15px;background:#1a73e8;color:#fff;font-weight:700;cursor:pointer;text-decoration:none}.remove{background:#b3261e;padding:8px}.secondary{background:#5f6368}</style>"
+                "<body><main><p><a href='/dashboard/automation'>← Все заявки</a></p><div class='card'><h1>Добавить заявку вручную</h1>"
+                "<p>Эта заявка сохраняется в нашей базе и не запрашивается у Закупай.</p>"
+                "<form method='post' action='/dashboard/automation/manual'><div class='grid'><div><label>Название заявки</label><input name='title' required placeholder='Например: Заявка клиента № 154'></div>"
+                "<div><label>Внутренний номер / ссылка</label><input name='reference' placeholder='Необязательно'></div><div><label>Заказчик</label><input name='customer_name'></div>"
+                "<div><label>ИНН заказчика</label><input name='customer_inn'></div></div><label>Адрес доставки</label><input name='delivery_address'>"
+                "<table><thead><tr><th>№</th><th>Наименование</th><th>Количество</th><th>Ед.</th><th></th></tr></thead><tbody id='items'>"
+                f"{initial_rows}</tbody></table><p><button class='secondary' type='button' onclick='addRow()'>+ Добавить позицию</button></p>"
+                "<button type='submit'>Сохранить заявку</button></form></div></main>"
+                "<script>function renumber(){document.querySelectorAll('#items .row-number').forEach((x,i)=>x.textContent=i+1)}"
+                "function addRow(){const tr=document.createElement('tr');tr.innerHTML=`<td class=\"row-number\"></td><td><input name=\"item_name\" required placeholder=\"Полное наименование товара\"></td><td><input name=\"item_quantity\" required type=\"number\" min=\"0.001\" step=\"0.001\"></td><td><input name=\"item_unit\" value=\"шт\"></td><td><button class=\"remove\" type=\"button\" onclick=\"this.closest('tr').remove();renumber()\">Удалить</button></td>`;document.getElementById('items').appendChild(tr);renumber()}renumber()</script>"
+                "</body></html>"
+            ),
+            media_type="text/html",
+            headers={"Cache-Control": "no-store, max-age=0"},
+        )
+
+    @app.post("/dashboard/automation/manual")
+    async def automation_manual_save(request: Request):
+        form = await request.form()
+        names = list(form.getlist("item_name"))
+        quantities = list(form.getlist("item_quantity"))
+        units = list(form.getlist("item_unit"))
+        items = [
+            {
+                "goodName": name,
+                "count": quantities[index] if index < len(quantities) else "",
+                "unit": units[index] if index < len(units) else "шт",
+            }
+            for index, name in enumerate(names)
+            if str(name or "").strip()
+        ]
+        try:
+            saved = save_manual_order(
+                str(form.get("title") or ""),
+                items,
+                reference=str(form.get("reference") or ""),
+                customer_name=str(form.get("customer_name") or ""),
+                customer_inn=str(form.get("customer_inn") or ""),
+                delivery_address=str(form.get("delivery_address") or ""),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        return Response(
+            status_code=303,
+            headers={"Location": f"/dashboard/automation/jobs/{saved['job_id']}/review"},
+        )
+
     @app.get("/dashboard/automation")
     def automation_dashboard(
         added: int = 0,
         duplicates: int = 0,
         skipped: int = 0,
         sync_error: str = "",
+        source: str = "all",
     ):
+        source = source if source in {"all", "zakupay", "manual"} else "all"
         with _connect() as conn:
-            rows = _execute(
-                conn,
-                "SELECT * FROM automation_jobs WHERE status != 'skipped_not_prepayment' ORDER BY id DESC LIMIT 300",
-            ).fetchall()
+            if source == "manual":
+                rows = _execute(conn, "SELECT * FROM automation_jobs WHERE status != 'skipped_not_prepayment' AND event_type='manual_order' ORDER BY id DESC LIMIT 300").fetchall()
+            elif source == "zakupay":
+                rows = _execute(conn, "SELECT * FROM automation_jobs WHERE status != 'skipped_not_prepayment' AND event_type!='manual_order' ORDER BY id DESC LIMIT 300").fetchall()
+            else:
+                rows = _execute(conn, "SELECT * FROM automation_jobs WHERE status != 'skipped_not_prepayment' ORDER BY id DESC LIMIT 300").fetchall()
         cards = []
         has_processing = any(row["status"] == "processing" for row in rows)
         for row in rows:
             result = json.loads(row["result_json"]) if row["result_json"] else {}
+            is_manual = row["event_type"] == "manual_order"
             viewed = bool(row["viewed_at"])
             offer_created = bool(result.get("live_offer_created") or row["status"] == "offer_created")
             summary = result.get("summary") or {}
@@ -1819,7 +1970,9 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
             else:
                 send = (
                     f"<a class='button send' href='/dashboard/order/{row['order_id']}/offer'>Отправить {ready} поз.</a>"
-                    if ready else "<span class='muted'>Нет позиций для отправки</span>"
+                    if ready and not is_manual else
+                    "<span class='muted'>Ручная заявка: отправка в Закупай недоступна</span>" if ready and is_manual else
+                    "<span class='muted'>Нет позиций для отправки</span>"
                 )
             order_label = f" / {html.escape(str(result.get('order_name')))}" if result.get("order_name") else ""
             supplier_names = []
@@ -1837,6 +1990,8 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
                 progress_percent = min(100, round(completed * 100 / progress_total))
                 progress_bar = f"<div class='progress'><span style='width:{progress_percent}%'></span></div>"
             offer_badge = "<span class='offer-badge'>СЧЁТ ВЫСТАВЛЕН</span>" if offer_created else ""
+            source_badge = "<span class='source-badge manual'>РУЧНОЙ ВВОД</span>" if is_manual else "<span class='source-badge'>ЗАКУПАЙ</span>"
+            display_number = html.escape(str(result.get("manual_reference") or "без номера")) if is_manual else str(row["order_id"])
             primary_action = (
                 f"<a class='button' target='_blank' rel='noopener' href='/dashboard/automation/jobs/{row['id']}/review'>Выбрать позиции</a>"
                 if pending else
@@ -1844,7 +1999,7 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
             )
             cards.append(
                 f"<section class='card {cls} {'offer-created' if offer_created else ''} {'read' if viewed else 'unread'}'><div><a class='title' target='_blank' rel='noopener' href='/dashboard/automation/jobs/{row['id']}/review'>"
-                f"Заявка №{row['order_id']}{order_label}</a>{offer_badge}<div class='meta'>{html.escape(' · '.join(parts))}</div>"
+                f"Заявка №{display_number}{order_label}</a>{source_badge}{offer_badge}<div class='meta'>{html.escape(' · '.join(parts))}</div>"
                 f"{progress_bar}"
                 f"<div class='meta'><b>Поставщики:</b> {html.escape(suppliers_label)}</div>"
                 f"<div class='meta'>Статус: {'счёт выставлен в Закупай' if offer_created else html.escape(str(row['status']))} · счёт: {row['invoice_number'] or '—'}</div></div>"
@@ -1868,10 +2023,13 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
             "<!doctype html><html lang='ru'><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
             + ("<meta http-equiv='refresh' content='5'>" if has_processing else "") +
             "<title>Обработка заявок</title><style>body{font-family:Arial;margin:0;background:#f4f6f8;color:#202124}main{max-width:1200px;margin:auto;padding:28px}"
-            ".card{display:flex;justify-content:space-between;gap:20px;background:#fff;border-left:7px solid #9aa0a6;border-radius:12px;padding:18px;margin:12px 0;box-shadow:0 2px 8px #0001}.card.read{background:#e9eef3}.card.unread{background:#fff}.card.ok{border-color:#188038}.card.warn{border-color:#f9ab00}.card.bad{border-color:#d93025}.card.processing{border-color:#1a73e8;background:#e8f0fe}.card.offer-created{background:#e6f4ea;border-color:#188038}.offer-badge{display:inline-block;margin-left:12px;padding:5px 9px;border-radius:12px;background:#188038;color:#fff;font-size:12px;font-weight:700;vertical-align:middle}.progress{height:8px;max-width:460px;background:#c7d5ec;border-radius:5px;margin-top:9px;overflow:hidden}.progress span{display:block;height:100%;background:#1a73e8}"
+            ".card{display:flex;justify-content:space-between;gap:20px;background:#fff;border-left:7px solid #9aa0a6;border-radius:12px;padding:18px;margin:12px 0;box-shadow:0 2px 8px #0001}.card.read{background:#e9eef3}.card.unread{background:#fff}.card.ok{border-color:#188038}.card.warn{border-color:#f9ab00}.card.bad{border-color:#d93025}.card.processing{border-color:#1a73e8;background:#e8f0fe}.card.offer-created{background:#e6f4ea;border-color:#188038}.offer-badge,.source-badge{display:inline-block;margin-left:12px;padding:5px 9px;border-radius:12px;background:#188038;color:#fff;font-size:12px;font-weight:700;vertical-align:middle}.source-badge{background:#174ea6}.source-badge.manual{background:#7b1fa2}.progress{height:8px;max-width:460px;background:#c7d5ec;border-radius:5px;margin-top:9px;overflow:hidden}.progress span{display:block;height:100%;background:#1a73e8}"
             ".title{font-size:20px;font-weight:700;color:#174ea6;text-decoration:none}.meta{margin-top:8px;color:#5f6368}.actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.button{background:#1a73e8;color:#fff;padding:10px 13px;border-radius:7px;text-decoration:none;font-weight:700}.secondary{background:#5f6368}.send{background:#188038}.sent{display:inline-block;padding:10px 13px;background:#e6f4ea;color:#137333;border-radius:7px;font-weight:700}.muted{color:#777}@media(max-width:760px){.card{display:block}.actions{margin-top:14px}}</style>"
-            "<main><h1>Заявки Закупай</h1><p>Подбор у поставщиков, частичные счета и контроль перед отправкой.</p>"
-            "<form method='post' action='/dashboard/automation/sync'><button class='button' type='submit'>Получить новые заявки из Закупай</button></form>"
+            "<main><h1>Заявки</h1><p>Подбор у поставщиков, частичные счета и контроль перед отправкой.</p>"
+            "<div class='actions'><form method='post' action='/dashboard/automation/sync'><button class='button' type='submit'>Получить из Закупай</button></form>"
+            "<a class='button secondary' href='/dashboard/automation/manual'>+ Добавить вручную</a></div>"
+            "<form method='get' action='/dashboard/automation' style='margin-top:18px'><label><b>Источник:</b> <select name='source' onchange='this.form.submit()'>"
+            f"<option value='all' {'selected' if source == 'all' else ''}>Все</option><option value='zakupay' {'selected' if source == 'zakupay' else ''}>Закупай</option><option value='manual' {'selected' if source == 'manual' else ''}>Ручной ввод</option></select></label></form>"
             "<p class='muted'>Ручная синхронизация запускается по нажатию; автоматический опрос выполняется каждый час.</p>"
             + sync_report + "".join(cards) + "</main></html>"
         ), media_type="text/html", headers={"Cache-Control": "no-store, max-age=0", "Pragma": "no-cache"})
@@ -1891,6 +2049,11 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
         result = json.loads(row["result_json"]) if row["result_json"] else None
         if not result:
             raise HTTPException(status_code=409, detail=row["error"] or "Расчёт ещё не готов")
+        is_manual = row["event_type"] == "manual_order"
+        request_heading = (
+            f"Ручная заявка {html.escape(str(result.get('manual_reference') or 'без номера'))}"
+            if is_manual else f"Заявка Закупай № {row['order_id']}"
+        )
         offer_created = bool(result.get("live_offer_created") or row["status"] == "offer_created")
         if row["status"] == "processing":
             progress = (result or {}).get("processing_progress") or {}
@@ -1929,7 +2092,7 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
                     "<title>Идёт подбор</title><style>body{font-family:Arial;margin:24px;background:#f4f6f8}main{max-width:760px;background:#fff;padding:24px;border-radius:12px}"
                     ".status{padding:16px;background:#e8f0fe;border-radius:8px}</style><body><main>"
                     "<p><a href='/dashboard/automation'>← Все заявки</a></p>"
-                    f"<h1>Заявка Закупай № {row['order_id']}</h1>"
+                    f"<h1>{request_heading}</h1>"
                     "<div class='status'><b>Идёт подбор товаров и цен у поставщиков.</b><br>"
                     f"{progress_text}<br>"
                     "Можно закрыть эту страницу. Она обновляется автоматически каждые 5 секунд, а подбор продолжится в фоне.</div>"
@@ -1957,7 +2120,7 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
                     "table{width:100%;border-collapse:collapse;margin:18px 0}td,th{border:1px solid #ccc;padding:8px}th{background:#eee}"
                     "button{padding:12px 18px;background:#1a73e8;color:#fff;border:0;border-radius:7px;font-weight:bold;cursor:pointer}input[type=checkbox]{width:20px;height:20px}</style><body><main>"
                     "<p><a href='/dashboard/automation'>← Все заявки</a></p>"
-                    f"<h1>Заявка Закупай № {row['order_id']}</h1>"
+                    f"<h1>{request_heading}</h1>"
                     f"<p>Получено и сохранено позиций: <b>{len(source_items)}</b>. Отметьте строки, для которых нужно найти цены и подготовить предложение.</p>"
                     f"<form method='post' action='/dashboard/automation/jobs/{job_id}/start'>"
                     "<p><label><input id='select-all' type='checkbox' checked onchange=\"document.querySelectorAll('.position-checkbox').forEach(x=>x.checked=this.checked)\"> Выбрать все позиции</label></p>"
@@ -2028,7 +2191,11 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
             save_control = ""
         else:
             sent_notice = ""
-            offer_link = f"<p><a href='/dashboard/order/{row['order_id']}/offer'>Перейти к подтверждению предложения в Закупай</a></p>"
+            offer_link = (
+                "<p><b>Ручная заявка:</b> счёт можно скачать, но отправка предложения в Закупай не выполняется.</p>"
+                if is_manual else
+                f"<p><a href='/dashboard/order/{row['order_id']}/offer'>Перейти к подтверждению предложения в Закупай</a></p>"
+            )
             top_controls = f"<form method='post' action='/dashboard/automation/jobs/{job_id}/refresh'><p><button class='button' type='submit'>Повторить поиск у поставщиков</button></p></form>"
             save_control = "<p><button form='review-form' type='submit'>Сохранить и пересчитать счёт</button></p>"
         search_report = ""
@@ -2053,7 +2220,7 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
                 "table{border-collapse:collapse;width:100%}td,th{border:1px solid #ccc;padding:8px}"
                 "th{background:#eee}select{min-width:280px}.qty{width:90px}.price{width:100px}button,.button{display:inline-block;padding:11px 16px;background:#1a73e8;color:white;border:0;border-radius:7px;text-decoration:none;font-weight:bold}.row-search{margin-top:7px;padding:7px 10px;background:#5f6368}.sent-notice{padding:14px;background:#e6f4ea;color:#137333;border-radius:8px;margin:14px 0}</style><body><main>"
                 "<p><a href='/dashboard/automation'>← Все заявки</a></p>"
-                f"<h1>Заявка Закупай № {row['order_id']}</h1>"
+                f"<h1>{request_heading}</h1>"
                 f"<p>Счёт № {row['invoice_number']} · статус: {'предложение выставлено' if offer_created else html.escape(str(row['status']))}</p>"
                 f"{sent_notice}{top_controls}{search_report}"
                 f"<form id='review-form' method='post' action='/dashboard/automation/jobs/{job_id}/review'></form>{''.join(row_search_forms)}<table><tr><th>Включить</th><th>№</th><th>Заявка</th><th>Подбор поставщика<br><small>(закупочная цена)</small></th><th>Количество</th><th>Наша цена<br><small>за единицу заявки (+5%)</small></th>"
