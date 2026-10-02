@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from io import BytesIO
 from datetime import date
+import re
 
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
@@ -29,19 +30,47 @@ AVAILABILITY_CONFIRMATION_NOTE = (
 )
 
 
-def _customer_text(customer: dict | None) -> str:
-    customer = customer or {}
-    name = customer.get("shortName") or customer.get("name") or "Заказчик по заявке Закупай"
-    parts = [str(name)]
-    if customer.get("inn"):
-        parts.append(f"ИНН {customer['inn']}")
-    if customer.get("kpp"):
-        parts.append(f"КПП {customer['kpp']}")
+def normalize_customer(customer: dict | None) -> dict:
+    customer = customer if isinstance(customer, dict) else {}
+    def clean(value):
+        return " ".join(str(value or "").split())
     address = customer.get("legalAddress") or customer.get("address")
     if isinstance(address, dict):
         address = address.get("fullAddress") or address.get("name")
-    if address:
-        parts.append(str(address))
+    return {
+        "name": clean(customer.get("fullName") or customer.get("name") or customer.get("shortName")),
+        "inn": clean(customer.get("inn")),
+        "kpp": clean(customer.get("kpp")),
+        "legalAddress": clean(address),
+    }
+
+
+def customer_validation_error(customer: dict | None) -> str | None:
+    customer = normalize_customer(customer)
+    errors = []
+    if not customer["name"] or customer["name"].casefold() in {"заказчик по заявке закупай", "—", "-"}:
+        errors.append("наименование плательщика")
+    if not re.fullmatch(r"(?:[0-9]{10}|[0-9]{12})", customer["inn"]):
+        errors.append("ИНН плательщика (10 или 12 цифр)")
+    if len(customer["inn"]) == 10 and not re.fullmatch(r"[0-9]{4}[0-9A-Z]{2}[0-9]{3}", customer["kpp"]):
+        errors.append("КПП организации (9 знаков)")
+    elif customer["kpp"] and not re.fullmatch(r"[0-9]{4}[0-9A-Z]{2}[0-9]{3}", customer["kpp"]):
+        errors.append("корректный КПП")
+    if errors:
+        return "Счёт нельзя сформировать или отправить: укажите " + ", ".join(errors) + ". Сохраните реквизиты плательщика в проверке заявки."
+    return None
+
+
+def _customer_text(customer: dict | None) -> str:
+    error = customer_validation_error(customer)
+    if error:
+        raise ValueError(error)
+    customer = normalize_customer(customer)
+    parts = [customer["name"], f"ИНН {customer['inn']}"]
+    if customer["kpp"]:
+        parts.append(f"КПП {customer['kpp']}")
+    if customer["legalAddress"]:
+        parts.append(customer["legalAddress"])
     return ", ".join(parts)
 
 
@@ -50,6 +79,7 @@ def build_invoice_xlsx(draft: dict) -> bytes:
     rows = [row for row in all_rows if row.get("decision") in {"auto_ready", "approved"}]
     if not rows:
         raise ValueError("Счёт нельзя сформировать: нет ни одной подтверждённой позиции")
+    customer_text = _customer_text(draft.get("customer"))
 
     wb = Workbook()
     ws = wb.active
@@ -85,8 +115,9 @@ def build_invoice_xlsx(draft: dict) -> bytes:
     ws["A7"] = f"Поставщик: {SELLER['name']}, ИНН {SELLER['inn']}, КПП {SELLER['kpp']}, {SELLER['address']}"
     ws["A7"].alignment = Alignment(wrap_text=True)
     ws.merge_cells("A8:F8")
-    ws["A8"] = f"Покупатель: {_customer_text(draft.get('customer'))}"
+    ws["A8"] = f"Покупатель: {customer_text}"
     ws["A8"].alignment = Alignment(wrap_text=True)
+    ws.row_dimensions[8].height = max(30, 15 * ((len(customer_text) + 11) // 120 + 1))
     ws.merge_cells("A9:F9")
     ws["A9"] = f"Основание: заявка Закупай № {draft.get('order_id')}"
 

@@ -25,6 +25,7 @@ Content-Type: text/plain; charset=utf-8
 ORDER = {
     "id": 37299999,
     "name": "Тест",
+    "customer": {"name": 'ООО «Тестовый покупатель»', "inn": "7716997861", "kpp": "770801001"},
     "delay": 0,
     "orderItems": [{"id": 10, "goodName": "Маркер черный 1 мм", "count": 10, "unit": {"name": "шт"}}],
 }
@@ -213,6 +214,7 @@ class PipelineTests(unittest.TestCase):
         order = {
             "id": 37299999,
             "delay": 0,
+            "customer": ORDER["customer"],
             "orderItems": [
                 {"id": 1, "goodName": "Маркер черный 1 мм", "count": 2, "unit": {"name": "шт"}},
                 {"id": 2, "goodName": "Ковер 100x100 см", "count": 1, "unit": {"name": "шт"}},
@@ -357,6 +359,7 @@ class PipelineTests(unittest.TestCase):
         draft = {
             "invoice_number": 240,
             "order_id": 1,
+            "customer": ORDER["customer"],
             "items": [
                 {"decision": "approved", "requested_name": "Товар 1", "selected": {"name": "Аналог 1"}, "quantity": 2, "unit": "шт", "proposed_unit_price": 100},
                 {"decision": "excluded", "requested_name": "Товар 2", "selected": {"name": "Аналог 2"}, "quantity": 1, "unit": "шт", "proposed_unit_price": 200},

@@ -31,7 +31,7 @@ from fastapi.responses import JSONResponse, Response
 from supplier_adapters import KrepKompAdapter, VseinstrumentiAdapter
 from vi_order_match import _identifiers, _label, _measurements, _norm, _score_details
 from zakupay_email import parse_zakupay_email
-from invoice_generator import build_invoice_xlsx
+from invoice_generator import build_invoice_xlsx, customer_validation_error, normalize_customer
 
 
 DB_PATH = os.getenv("AUTOMATION_DB_PATH", "automation.db")
@@ -961,7 +961,12 @@ def _gmail_draft_payload(result: dict, job_id: int) -> dict:
         "review_url": review_url,
     }
     if (result.get("summary") or {}).get("auto_ready", 0) > 0:
-        invoice = build_invoice_xlsx(result)
+        try:
+            invoice = build_invoice_xlsx(result)
+        except ValueError as exc:
+            payload["subject"] = f"Проверка заявки Закупай № {result.get('order_id')} / счёт не сформирован"
+            payload["body"] += "\n\n" + str(exc)
+            return payload
         payload["attachment_name"] = (
             f"AVIOR_invoice_{result.get('invoice_number')}_order_{result.get('order_id')}.xlsx"
         )
@@ -1050,6 +1055,42 @@ def load_automation_offer_context(order_id: int) -> dict | None:
         "order": order,
         "result": result,
     }
+
+
+def _preserve_invoice_customer(result: dict, previous: dict) -> None:
+    """Keep operator-confirmed payer details when rebuilding supplier matches."""
+    if previous.get("invoice_customer_confirmed_at"):
+        for key in ("customer", "invoice_customer_confirmed_at", "invoice_customer_history"):
+            if key in previous:
+                result[key] = previous[key]
+
+
+def save_invoice_customer(job_id: int, customer: dict) -> None:
+    customer = normalize_customer(customer)
+    error = customer_validation_error(customer)
+    if error:
+        raise ValueError(error)
+    with _lock, _connect() as conn:
+        row = _execute(conn, "SELECT * FROM automation_jobs WHERE id=?", (int(job_id),)).fetchone()
+        if not row or not row["result_json"]:
+            raise LookupError("Обработка заявки не найдена")
+        if row["status"] == "processing":
+            raise ValueError("Дождитесь завершения подбора, затем сохраните реквизиты")
+        submission = _execute(
+            conn, "SELECT status FROM offer_submissions WHERE job_id=? ORDER BY id DESC LIMIT 1", (int(job_id),),
+        ).fetchone()
+        if submission and submission["status"] in {"sending", "unknown"}:
+            raise ValueError("Отправка выполняется или её результат не подтверждён; изменение реквизитов заблокировано")
+        result = json.loads(row["result_json"])
+        now = datetime.now(timezone.utc).isoformat()
+        history = result.setdefault("invoice_customer_history", [])
+        history.append({"previous_customer": result.get("customer") or {}, "customer": customer, "confirmed_at": now})
+        result["customer"] = customer
+        result["invoice_customer_confirmed_at"] = now
+        _execute(
+            conn, "UPDATE automation_jobs SET result_json=?, updated_at=? WHERE id=?",
+            (json.dumps(result, ensure_ascii=False), now, int(job_id)),
+        )
 
 
 def enrich_automation_offer_context(order_id: int, fresh_order: dict | None) -> dict | None:
@@ -1868,6 +1909,7 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
                     invoice_number=row["invoice_number"],
                     progress_callback=save_progress,
                 )
+                _preserve_invoice_customer(result, old_result)
                 result["processed_snapshot_hash"] = full_order_snapshot_hash
                 invoice_number = row["invoice_number"]
                 if result["summary"]["auto_ready"] > 0 and invoice_number is None:
@@ -2012,9 +2054,10 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
                 parts.append(f"{excluded} исключено")
             cls = "processing" if is_processing else "ok" if offer_created or (total and ready == total) else "warn" if ready else "bad"
             pending = row["status"] == "pending_search"
+            customer_error = customer_validation_error(result.get("customer"))
             invoice = (
                 f"<a class='button secondary' href='/dashboard/automation/jobs/{row['id']}/invoice.xlsx'>Скачать счёт</a>"
-                if ready else ""
+                if ready and not customer_error else ""
             )
             if offer_created:
                 offer_id = html.escape(str(result.get("live_offer_id") or "—"))
@@ -2022,7 +2065,8 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
             else:
                 send = (
                     f"<a class='button send' href='/dashboard/order/{row['order_id']}/offer'>Отправить {ready} поз.</a>"
-                    if ready and not is_manual else
+                    if ready and not is_manual and not customer_error else
+                    "<span class='muted'>Счёт заблокирован: заполните реквизиты плательщика в проверке заявки</span>" if ready and customer_error else
                     "<span class='muted'>Ручная заявка: отправка в Закупай недоступна</span>" if ready and is_manual else
                     "<span class='muted'>Нет позиций для отправки</span>"
                 )
@@ -2227,7 +2271,26 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
                 f"<td>{'В счёте' if _included(item) else 'Исключено'}</td>"
                 "</tr>"
             )
+        customer = normalize_customer(result.get("customer"))
+        customer_error = customer_validation_error(customer)
+        customer_notice = (
+            f"<p style='color:#b3261e'><b>{html.escape(customer_error)}</b></p>"
+            if customer_error else "<p>Реквизиты плательщика заполнены. Проверьте их перед отправкой.</p>"
+        )
+        customer_form = (
+            "<section><h2>Реквизиты плательщика</h2>" + customer_notice
+            + ("<p>Новые реквизиты будут использованы при скачивании исправленного счёта. Уже отправленный файл в Закупай не изменится.</p>" if offer_created else "")
+            + f"<form method='post' action='/dashboard/automation/jobs/{job_id}/customer'>"
+            + f"<p><label>Наименование <input name='customer_name' value='{html.escape(customer['name'], quote=True)}' required maxlength='500'></label></p>"
+            + f"<p><label>ИНН <input name='customer_inn' value='{html.escape(customer['inn'], quote=True)}' required inputmode='numeric' pattern='[0-9]{{10}}|[0-9]{{12}}' maxlength='12'></label> "
+            + f"<label>КПП организации <input name='customer_kpp' value='{html.escape(customer['kpp'], quote=True)}' maxlength='9'></label></p>"
+            + f"<p><label>Юридический адрес (если известен) <input name='customer_address' value='{html.escape(customer['legalAddress'], quote=True)}' maxlength='1000'></label></p>"
+            + "<p><label><input type='checkbox' name='confirm_customer' value='CONFIRMED' required> Реквизиты сверены с заявкой или сообщением плательщика</label></p>"
+            + "<button type='submit'>Сохранить реквизиты плательщика</button></form></section>"
+        )
         invoice_link = (
+            "<p><b>Формирование счёта заблокировано до заполнения реквизитов плательщика.</b></p>"
+            if customer_error else
             f"<p><a href='/dashboard/automation/jobs/{job_id}/invoice.xlsx'>Скачать сформированный счёт</a></p>"
             if result.get("status") == "ready_for_review" else
             "<p><b>Счёт пока не сформирован: имеются позиции для проверки.</b></p>"
@@ -2246,6 +2309,7 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
             offer_link = (
                 "<p><b>Ручная заявка:</b> счёт можно скачать, но отправка предложения в Закупай не выполняется.</p>"
                 if is_manual else
+                "<p>Отправка предложения заблокирована до сохранения реквизитов плательщика.</p>" if customer_error else
                 f"<p><a href='/dashboard/order/{row['order_id']}/offer'>Перейти к подтверждению предложения в Закупай</a></p>"
             )
             top_controls = f"<form method='post' action='/dashboard/automation/jobs/{job_id}/refresh'><p><button class='button' type='submit'>Повторить поиск у поставщиков</button></p></form>"
@@ -2274,7 +2338,7 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
                 "<p><a href='/dashboard/automation'>← Все заявки</a></p>"
                 f"<h1>{request_heading}</h1>"
                 f"<p>Счёт № {row['invoice_number']} · статус: {'предложение выставлено' if offer_created else html.escape(str(row['status']))}</p>"
-                f"{sent_notice}{top_controls}{search_report}"
+                f"{sent_notice}{customer_form}{top_controls}{search_report}"
                 f"<form id='review-form' method='post' action='/dashboard/automation/jobs/{job_id}/review'></form>{''.join(row_search_forms)}<table><tr><th>Включить</th><th>№</th><th>Заявка</th><th>Подбор поставщика<br><small>(закупочная цена)</small></th><th>Количество</th><th>Наша цена<br><small>за единицу заявки (+5%)</small></th>"
                 "<th>Статус подбора</th><th>Замена</th><th>Наличие</th><th>Срок</th><th>Решение</th></tr>"
                 + "".join(table_rows) + "</table>" + save_control + invoice_link + offer_link + "</main></body></html>"
@@ -2282,6 +2346,24 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
             media_type="text/html",
             headers={"Cache-Control": "no-store, max-age=0", "Pragma": "no-cache"},
         )
+
+    @app.post("/dashboard/automation/jobs/{job_id}/customer")
+    async def automation_save_customer(job_id: int, request: Request):
+        form = await request.form()
+        if form.get("confirm_customer") != "CONFIRMED":
+            raise HTTPException(status_code=400, detail="Подтвердите проверку реквизитов плательщика")
+        try:
+            save_invoice_customer(job_id, {
+                "name": str(form.get("customer_name") or "")[:500],
+                "inn": str(form.get("customer_inn") or ""),
+                "kpp": str(form.get("customer_kpp") or ""),
+                "legalAddress": str(form.get("customer_address") or "")[:1000],
+            })
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+        return Response(status_code=303, headers={"Location": f"/dashboard/automation/jobs/{job_id}/review"})
 
     @app.post("/dashboard/automation/jobs/{job_id}/refresh")
     def automation_review_refresh(job_id: int):
@@ -2297,6 +2379,7 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
         if not order:
             raise HTTPException(status_code=409, detail="Состав заявки не был сохранён")
         result = build_vi_draft(order, invoice_number=row["invoice_number"])
+        _preserve_invoice_customer(result, old_result)
         result["last_search_at"] = datetime.now(timezone.utc).isoformat()
         result["last_search_source"] = order.get("source") or "zakupay_api"
         result["last_search_found_positions"] = sum(
