@@ -35,7 +35,7 @@ from abacus_mcp import install_abacus_mcp
 
 ai_panel.analyze_order = analyze_order_v2
 
-DEPLOY_MARKER = "order-date-customer-lowest-price-2026-10-03"
+DEPLOY_MARKER = "manual-price-search-only-2026-10-03"
 
 
 @app.get("/version")

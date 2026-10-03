@@ -167,7 +167,7 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(item["decision"], "review")
 
     @patch.object(pipeline.VseinstrumentiAdapter, "search")
-    def test_builds_draft_and_deduplicates_message(self, search):
+    def test_imports_email_without_price_search_and_deduplicates_message(self, search):
         search.return_value = [SupplierQuote(
             supplier="ВсеИнструменты.ру", name="Маркер черный 1 мм",
             sku="123", price=100, stock=50,
@@ -178,14 +178,13 @@ class PipelineTests(unittest.TestCase):
         self.assertFalse(first["duplicate"])
         self.assertTrue(second["duplicate"])
         self.assertEqual(first["result"]["summary"]["positions"], 1)
-        self.assertEqual(first["result"]["items"][0]["proposed_unit_price"], 105.0)
-        self.assertEqual(first["result"]["invoice_number"], 240)
-        self.assertEqual(second["result"]["invoice_number"], 240)
-        self.assertEqual(first["result"]["vat_rate"], 0.22)
-        self.assertEqual(first["result"]["prepayment_percent"], 100.0)
-        self.assertTrue(first["result"]["delivery_included"])
+        self.assertEqual(first["status"], "pending_search")
+        self.assertEqual(first["result"]["items"], [])
+        self.assertIsNone(first["result"]["invoice_number"])
+        self.assertIsNone(second["result"]["invoice_number"])
+        self.assertNotIn("gmail_draft", first)
+        search.assert_not_called()
         self.assertFalse(first["result"]["live_offer_created"])
-        self.assertTrue(first["result"]["zakupay_line_ids_complete"])
         with pipeline._connect() as conn:
             row = pipeline._execute(
                 conn, "SELECT order_json FROM automation_jobs WHERE id=?", (first["job_id"],)
@@ -194,7 +193,7 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(saved_order["orderItems"][0]["goodName"], "Маркер черный 1 мм")
 
     @patch.object(pipeline.VseinstrumentiAdapter, "search")
-    def test_assigns_sequential_invoice_numbers(self, search):
+    def test_email_import_does_not_reserve_invoice_numbers(self, search):
         search.return_value = [SupplierQuote(
             supplier="ВсеИнструменты.ру", name="Маркер черный 1 мм",
             sku="123", price=100, stock=50,
@@ -202,8 +201,9 @@ class PipelineTests(unittest.TestCase):
         fetch = lambda order_id, force=False: ORDER
         first = pipeline.process_email(email(message_id="sequence-1"), fetch)
         second = pipeline.process_email(email(message_id="sequence-2"), fetch)
-        self.assertEqual(first["result"]["invoice_number"], 240)
-        self.assertEqual(second["result"]["invoice_number"], 241)
+        self.assertIsNone(first["result"]["invoice_number"])
+        self.assertIsNone(second["result"]["invoice_number"])
+        search.assert_not_called()
 
     def test_missing_order_is_recorded_as_failed(self):
         with self.assertRaisesRegex(RuntimeError, "Заявка не получена"):
@@ -227,13 +227,15 @@ class PipelineTests(unittest.TestCase):
             return [SupplierQuote(supplier="ВИ", name="Ковер 40x60 см", price=200, stock=10)]
 
         search.side_effect = results
-        result = pipeline.process_email(email(message_id="partial"), lambda *_args, **_kwargs: order)
+        imported = pipeline.process_email(email(message_id="partial"), lambda *_args, **_kwargs: order)
+        search.assert_not_called()
+        result = pipeline.build_vi_draft(order, invoice_number=240)
         self.assertEqual(result["status"], "ready_for_review")
-        self.assertEqual(result["result"]["summary"]["included_in_invoice"], 1)
-        self.assertEqual(result["result"]["summary"]["excluded_from_invoice"], 1)
-        self.assertIn("attachment_base64", result["gmail_draft"])
+        self.assertEqual(result["summary"]["included_in_invoice"], 1)
+        self.assertEqual(result["summary"]["excluded_from_invoice"], 1)
+        self.assertIn("attachment_base64", pipeline._gmail_draft_payload(result, imported["job_id"]))
 
-        workbook = load_workbook(BytesIO(pipeline.build_invoice_xlsx(result["result"])))
+        workbook = load_workbook(BytesIO(pipeline.build_invoice_xlsx(result)))
         values = [cell.value for row in workbook.active.iter_rows() for cell in row]
         self.assertIn("Маркер черный 1 мм", values)
         self.assertNotIn("Ковер 40x60 см", values)
@@ -379,7 +381,9 @@ class PipelineTests(unittest.TestCase):
         second = pipeline.process_api_order(ORDER)
         self.assertFalse(first["duplicate"])
         self.assertTrue(second["duplicate"])
-        self.assertEqual(first["result"]["invoice_number"], 240)
+        self.assertIsNone(first["result"]["invoice_number"])
+        self.assertEqual(first["status"], "pending_search")
+        search.assert_not_called()
         context = pipeline.load_automation_offer_context(ORDER["id"])
         self.assertEqual(context["job_id"], first["job_id"])
         self.assertEqual(context["order"]["orderItems"][0]["id"], 10)
@@ -401,7 +405,7 @@ class PipelineTests(unittest.TestCase):
         created = pipeline.process_api_order(order_without_ids)
         context = pipeline.enrich_automation_offer_context(ORDER["id"], ORDER)
         self.assertEqual(context["job_id"], created["job_id"])
-        self.assertEqual(context["result"]["items"][0]["order_item_id"], 10)
+        self.assertEqual(context["result"]["items"], [])
         self.assertTrue(context["result"]["order_id_enrichment_found"])
         self.assertEqual(context["order"]["orderItems"][0]["id"], 10)
 
@@ -417,18 +421,14 @@ class PipelineTests(unittest.TestCase):
 
     @patch.object(pipeline, "build_vi_draft")
     def test_failed_api_order_can_be_retried(self, build):
-        build.side_effect = RuntimeError("temporary")
-        with self.assertRaisesRegex(RuntimeError, "temporary"):
-            pipeline.process_api_order(ORDER)
-        build.side_effect = None
-        build.return_value = {
-            "status": "ready_for_review",
-            "summary": {"auto_ready": 1},
-            "invoice_number": None,
-        }
+        first = pipeline.process_api_order(ORDER)
+        with pipeline._connect() as conn:
+            conn.execute("UPDATE automation_jobs SET status='failed', result_json=NULL WHERE id=?", (first["job_id"],))
         retried = pipeline.process_api_order(ORDER)
         self.assertFalse(retried["duplicate"])
-        self.assertEqual(retried["status"], "ready_for_review")
+        self.assertEqual(retried["status"], "pending_search")
+        self.assertEqual(retried["job_id"], first["job_id"])
+        build.assert_not_called()
 
     def test_commercial_hash_ignores_unrelated_metadata_but_detects_quantity(self):
         saved = dict(ORDER, irrelevantServerField="one")

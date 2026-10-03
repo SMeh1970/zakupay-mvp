@@ -1316,7 +1316,23 @@ def latest_offer_submission(job_id: int) -> dict | None:
         ).fetchone()
     return dict(row) if row else None
 
+
+def _pending_search_result(order: dict, invoice_number=None) -> dict:
+    items = list(order.get("orderItems") or [])
+    return {
+        "order_id": order.get("id"), "order_name": order.get("name"),
+        "order_creation_date": order.get("creationDate") or order.get("publicDate"),
+        "customer": order.get("customer") or {}, "status": "pending_search",
+        "live_offer_created": False, "invoice_number": invoice_number,
+        "summary": {
+            "positions": len(items), "auto_ready": 0, "review": 0, "manual": 0,
+            "included_in_invoice": 0, "excluded_from_invoice": len(items),
+        }, "items": [],
+    }
+
+
 def process_email(raw_email: bytes, fetch_order_by_id) -> dict:
+    """Import the request only; supplier searches require an operator POST."""
     event = parse_zakupay_email(raw_email)
     if event.event_type != "new_order":
         raise ValueError(f"Email event is not a new order: {event.event_type}")
@@ -1336,14 +1352,12 @@ def process_email(raw_email: bytes, fetch_order_by_id) -> dict:
                 "error": existing["error"],
                 "result": result,
             }
-            if result:
-                response["gmail_draft"] = _gmail_draft_payload(result, existing["id"])
             return response
         if existing:
             job_id = existing["id"]
             invoice_number = existing["invoice_number"]
             _execute(conn,
-                "UPDATE automation_jobs SET status='processing', error=NULL, updated_at=? WHERE id=?",
+                "UPDATE automation_jobs SET status='receiving', error=NULL, updated_at=? WHERE id=?",
                 (now, job_id),
             )
         else:
@@ -1356,7 +1370,7 @@ def process_email(raw_email: bytes, fetch_order_by_id) -> dict:
             cursor = _execute(conn,
                 insert_sql,
                 (key, message_id, event.order_id, event.event_type, event.subject, event.sender,
-                 "processing", now, now, invoice_number),
+                 "receiving", now, now, invoice_number),
             )
             job_id = cursor.fetchone()["id"] if DATABASE_URL else cursor.lastrowid
 
@@ -1402,14 +1416,7 @@ def process_email(raw_email: bytes, fetch_order_by_id) -> dict:
                 "items": [],
             }
         else:
-            result = build_vi_draft(order, invoice_number=invoice_number)
-        if result["summary"]["auto_ready"] > 0 and invoice_number is None:
-            with _lock, _connect() as conn:
-                last_row = _execute(conn, "SELECT MAX(invoice_number) AS max_invoice FROM automation_jobs").fetchone()
-                last_number = last_row["max_invoice"] if DATABASE_URL else last_row[0]
-                invoice_number = max(INVOICE_NUMBER_START, (last_number or INVOICE_NUMBER_START - 1) + 1)
-                _execute(conn, "UPDATE automation_jobs SET invoice_number=? WHERE id=?", (invoice_number, job_id))
-            result["invoice_number"] = invoice_number
+            result = _pending_search_result(order, invoice_number)
         status = result["status"]
         error = None
     except Exception as exc:
@@ -1430,7 +1437,6 @@ def process_email(raw_email: bytes, fetch_order_by_id) -> dict:
         "job_id": job_id,
         "status": status,
         "result": result,
-        "gmail_draft": _gmail_draft_payload(result, job_id),
     }
 
 
@@ -1442,23 +1448,21 @@ def save_api_order_for_manual_start(order: dict) -> dict:
         raise ValueError("Заявка не содержит ID или позиций")
     key = _api_dedupe_key(order_id)
     now = datetime.now(timezone.utc).isoformat()
-    pending_result = {
-        "order_id": order_id,
-        "order_name": order.get("name"),
-        "customer": order.get("customer") or {},
-        "status": "pending_search",
-        "live_offer_created": False,
-        "invoice_number": None,
-        "summary": {
-            "positions": len(items), "auto_ready": 0, "review": 0, "manual": 0,
-            "included_in_invoice": 0, "excluded_from_invoice": len(items),
-        },
-        "items": [],
-    }
+    pending_result = _pending_search_result(order)
     with _lock, _connect() as conn:
         existing = _execute(conn, "SELECT * FROM automation_jobs WHERE dedupe_key=?", (key,)).fetchone()
         if existing:
-            return {"duplicate": True, "job_id": existing["id"], "status": existing["status"]}
+            if existing["status"] == "failed" and not existing["result_json"]:
+                pending_result["invoice_number"] = existing["invoice_number"]
+                _execute(conn,
+                    "UPDATE automation_jobs SET status='pending_search', error=NULL, order_json=?, result_json=?, updated_at=? WHERE id=?",
+                    (json.dumps(order, ensure_ascii=False), json.dumps(pending_result, ensure_ascii=False), now, existing["id"]),
+                )
+                return {"duplicate": False, "job_id": existing["id"], "status": "pending_search", "result": pending_result}
+            return {
+                "duplicate": True, "job_id": existing["id"], "status": existing["status"],
+                "result": json.loads(existing["result_json"]) if existing["result_json"] else None,
+            }
         insert_sql = """INSERT INTO automation_jobs
             (dedupe_key,message_id,order_id,event_type,subject,sender,status,error,order_json,result_json,created_at,updated_at,invoice_number)
             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)"""
@@ -1470,7 +1474,7 @@ def save_api_order_for_manual_start(order: dict) -> dict:
             json.dumps(pending_result, ensure_ascii=False), now, now, None,
         ))
         job_id = cursor.fetchone()["id"] if DATABASE_URL else cursor.lastrowid
-    return {"duplicate": False, "job_id": job_id, "status": "pending_search"}
+    return {"duplicate": False, "job_id": job_id, "status": "pending_search", "result": pending_result}
 
 
 def save_manual_order(
@@ -1551,105 +1555,8 @@ def save_manual_order(
 
 
 def process_api_order(order: dict) -> dict:
-    """Create one persistent review job from a Zakupay API order."""
-    order_id = int(order.get("id") or 0)
-    if not order_id:
-        raise ValueError("У заявки отсутствует ID")
-    if not order.get("orderItems"):
-        raise ValueError(f"Заявка {order_id} не содержит позиций")
-
-    key = _api_dedupe_key(order_id)
-    now = datetime.now(timezone.utc).isoformat()
-    with _lock, _connect() as conn:
-        existing = _execute(
-            conn, "SELECT * FROM automation_jobs WHERE dedupe_key = ?", (key,)
-        ).fetchone()
-        if existing and existing["status"] != "failed":
-            result = json.loads(existing["result_json"]) if existing["result_json"] else None
-            return {
-                "duplicate": True,
-                "job_id": existing["id"],
-                "status": existing["status"],
-                "error": existing["error"],
-                "result": result,
-            }
-
-        if existing:
-            job_id = existing["id"]
-            invoice_number = existing["invoice_number"]
-            _execute(
-                conn,
-                "UPDATE automation_jobs SET status='processing', error=NULL, updated_at=? WHERE id=?",
-                (now, job_id),
-            )
-        else:
-            invoice_number = None
-            insert_sql = """INSERT INTO automation_jobs
-                (dedupe_key,message_id,order_id,event_type,subject,sender,status,created_at,updated_at,invoice_number)
-                VALUES (?,?,?,?,?,?,?,?,?,?)"""
-            if DATABASE_URL:
-                insert_sql += " RETURNING id"
-            cursor = _execute(
-                conn,
-                insert_sql,
-                (
-                    key, None, order_id, "api_order", order.get("name") or f"Заявка {order_id}",
-                    "Zakupay API", "processing", now, now, invoice_number,
-                ),
-            )
-            job_id = cursor.fetchone()["id"] if DATABASE_URL else cursor.lastrowid
-
-    try:
-        with _lock, _connect() as conn:
-            _execute(
-                conn,
-                "UPDATE automation_jobs SET order_json=?, updated_at=? WHERE id=?",
-                (json.dumps(order, ensure_ascii=False), datetime.now(timezone.utc).isoformat(), job_id),
-            )
-        result = build_vi_draft(order, invoice_number=invoice_number)
-        if result["summary"]["auto_ready"] > 0 and invoice_number is None:
-            with _lock, _connect() as conn:
-                last_row = _execute(
-                    conn, "SELECT MAX(invoice_number) AS max_invoice FROM automation_jobs"
-                ).fetchone()
-                last_number = last_row["max_invoice"] if DATABASE_URL else last_row[0]
-                invoice_number = max(
-                    INVOICE_NUMBER_START, (last_number or INVOICE_NUMBER_START - 1) + 1
-                )
-                _execute(
-                    conn,
-                    "UPDATE automation_jobs SET invoice_number=? WHERE id=?",
-                    (invoice_number, job_id),
-                )
-            result["invoice_number"] = invoice_number
-        status = result["status"]
-        error = None
-    except Exception as exc:
-        result = None
-        status = "failed"
-        error = f"{type(exc).__name__}: {exc}"
-
-    updated = datetime.now(timezone.utc).isoformat()
-    with _lock, _connect() as conn:
-        _execute(
-            conn,
-            "UPDATE automation_jobs SET status=?, error=?, result_json=?, updated_at=? WHERE id=?",
-            (
-                status,
-                error,
-                json.dumps(result, ensure_ascii=False) if result else None,
-                updated,
-                job_id,
-            ),
-        )
-    if error:
-        raise RuntimeError(error)
-    return {
-        "duplicate": False,
-        "job_id": job_id,
-        "status": status,
-        "result": result,
-    }
+    """Save an API request for visual review, without supplier price searches."""
+    return save_api_order_for_manual_start(order)
 
 
 def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, has_my_offer=None):
@@ -1675,18 +1582,6 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
                 media_type="text/html",
             )
         return JSONResponse({"detail": str(exc)}, status_code=503)
-
-    def order_with_line_ids(order: dict) -> dict:
-        """Perform one exact lookup at intake when the collection omits line IDs."""
-        items = list(order.get("orderItems") or [])
-        if not items or all(_order_item_id(item) is not None for item in items):
-            return order
-        try:
-            detailed = fetch_order_by_id(int(order.get("id")), force=True)
-        except Exception as exc:
-            logger.warning("line id lookup deferred order=%s error=%s", order.get("id"), type(exc).__name__)
-            return order
-        return _merge_line_ids(order, detailed)
 
     @app.post("/automation/email/ingest")
     async def ingest_zakupay_email(
@@ -1792,7 +1687,6 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
             if attempted >= max_orders:
                 break
             try:
-                order = order_with_line_ids(order)
                 outcome = process_api_order(order)
                 if outcome.get("duplicate"):
                     duplicates += 1
@@ -1810,6 +1704,7 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
 
         response = {
             "source": "Zakupay API",
+            "price_search": "manual_only",
             "total_actual": len(orders),
             "prepayment_candidates": len(prepayment),
             "attempted": attempted,
@@ -2131,7 +2026,7 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
             source_badge = "<span class='source-badge manual'>РУЧНОЙ ВВОД</span>" if is_manual else "<span class='source-badge'>ЗАКУПАЙ</span>"
             display_number = html.escape(str(result.get("manual_reference") or "без номера")) if is_manual else str(row["order_id"])
             primary_action = (
-                f"<a class='button' target='_blank' rel='noopener' href='/dashboard/automation/jobs/{row['id']}/review'>Выбрать позиции</a>"
+                f"<a class='button' target='_blank' rel='noopener' href='/dashboard/automation/jobs/{row['id']}/review'>Открыть заявку</a>"
                 if pending else
                 f"<a class='button' target='_blank' rel='noopener' href='/dashboard/automation/jobs/{row['id']}/review'>Открыть</a>"
             )
@@ -2141,7 +2036,7 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
                 f"<div class='meta'><b>Дата заявки:</b> {html.escape(order_date)} · <b>Заказчик:</b> {html.escape(customer_name)}</div>"
                 f"{progress_bar}"
                 f"<div class='meta'><b>Поставщики:</b> {html.escape(suppliers_label)}</div>"
-                f"<div class='meta'>Статус: {'счёт выставлен в Закупай' if offer_created else html.escape(str(row['status']))} · счёт: {row['invoice_number'] or '—'}</div></div>"
+                f"<div class='meta'>Статус: {'счёт выставлен в Закупай' if offer_created else 'поиск цен не запускался' if pending else html.escape(str(row['status']))} · счёт: {row['invoice_number'] or '—'}</div></div>"
                 f"<div class='actions'>{primary_action}{invoice}{send}</div></section>"
             )
         sync_report = ""
@@ -2163,7 +2058,7 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
             "<title>Обработка заявок</title><style>body{font-family:Arial;margin:0;background:#f4f6f8;color:#202124}main{max-width:1200px;margin:auto;padding:28px}"
             ".card{display:flex;justify-content:space-between;gap:20px;background:#fff;border-left:7px solid #9aa0a6;border-radius:12px;padding:18px;margin:12px 0;box-shadow:0 2px 8px #0001}.card.read{background:#e9eef3}.card.unread{background:#fff}.card.ok{border-color:#188038}.card.warn{border-color:#f9ab00}.card.bad{border-color:#d93025}.card.processing{border-color:#1a73e8;background:#e8f0fe}.card.offer-created{background:#e6f4ea;border-color:#188038}.offer-badge,.source-badge{display:inline-block;margin-left:12px;padding:5px 9px;border-radius:12px;background:#188038;color:#fff;font-size:12px;font-weight:700;vertical-align:middle}.source-badge{background:#174ea6}.source-badge.manual{background:#7b1fa2}.progress{height:8px;max-width:460px;background:#c7d5ec;border-radius:5px;margin-top:9px;overflow:hidden}.progress span{display:block;height:100%;background:#1a73e8}"
             ".title{font-size:20px;font-weight:700;color:#174ea6;text-decoration:none}.meta{margin-top:8px;color:#5f6368}.actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.button{background:#1a73e8;color:#fff;padding:10px 13px;border-radius:7px;text-decoration:none;font-weight:700}.secondary{background:#5f6368}.send{background:#188038}.sent{display:inline-block;padding:10px 13px;background:#e6f4ea;color:#137333;border-radius:7px;font-weight:700}.muted{color:#777}@media(max-width:760px){.card{display:block}.actions{margin-top:14px}}</style>"
-            "<main><h1>Заявки</h1><p>Подбор у поставщиков, частичные счета и контроль перед отправкой.</p>"
+            "<main><h1>Заявки</h1><p>Откройте заявку и проверьте её состав. Поиск цен запускается только кнопкой внутри заявки; отправка счёта подтверждается отдельно.</p>"
             "<div class='actions'><form method='post' action='/dashboard/automation/sync'><button class='button' type='submit'>Получить из Закупай</button></form>"
             "<a class='button secondary' href='/dashboard/automation/manual'>+ Добавить вручную</a></div>"
             "<form method='get' action='/dashboard/automation' style='margin-top:18px'><label><b>Источник:</b> <select name='source' onchange='this.form.submit()'>"
@@ -2241,6 +2136,7 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
             )
         if row["status"] == "pending_search" or not (result.get("items") or []):
             order = _saved_order_snapshot(row, result) or {}
+            order_date, customer_name = _order_list_details(row, result)
             source_items = list(order.get("orderItems") or [])
             pending_rows = "".join(
                 "<tr>"
@@ -2260,6 +2156,9 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
                     "button{padding:12px 18px;background:#1a73e8;color:#fff;border:0;border-radius:7px;font-weight:bold;cursor:pointer}input[type=checkbox]{width:20px;height:20px}</style><body><main>"
                     "<p><a href='/dashboard/automation'>← Все заявки</a></p>"
                     f"<h1>{request_heading}</h1>"
+                    "<p><b>Поиск цен ещё не запускался.</b> Сначала проверьте состав заявки, затем запустите поиск для выбранных позиций.</p>"
+                    f"<p><b>Дата заявки:</b> {html.escape(order_date)} · <b>Заказчик:</b> {html.escape(customer_name)}</p>"
+                    f"<p><b>Адрес доставки:</b> {html.escape(str(order.get('deliveryAddress') or 'не передан'))}</p>"
                     f"<p>Получено и сохранено позиций: <b>{len(source_items)}</b>. Отметьте строки, для которых нужно найти цены и подготовить предложение.</p>"
                     f"<form method='post' action='/dashboard/automation/jobs/{job_id}/start'>"
                     "<p><label><input id='select-all' type='checkbox' checked onchange=\"document.querySelectorAll('.position-checkbox').forEach(x=>x.checked=this.checked)\"> Выбрать все позиции</label></p>"
