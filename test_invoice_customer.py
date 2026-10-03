@@ -154,6 +154,50 @@ class CustomerWorkflowTests(unittest.TestCase):
         self.assertEqual(response.status_code, 409)
         self.fetch.assert_not_called()
 
+    def test_list_shows_source_date_and_customer_without_external_lookup(self):
+        order = {**self.order, "creationDate": "2026-09-28T21:30:00Z", "customer": {"fullName": 'ООО «Заказчик <источник>»'}}
+        with pipeline._connect() as conn:
+            conn.execute("UPDATE automation_jobs SET order_json=? WHERE id=?", (json.dumps(order), self.job_id))
+        self.client.post(self.customer_url, data=self.customer_form, follow_redirects=False)
+        response = self.client.get("/dashboard/automation")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("Дата заявки:</b> 29.09.2026", response.text)
+        self.assertIn("Заказчик:</b> ООО «Заказчик &lt;источник&gt;»", response.text)
+        self.assertNotIn("Заказчик:</b> ООО «СТРОЙЛОГИСТИКА»", response.text)
+        self.fetch.assert_not_called()
+
+    def test_list_does_not_present_import_date_as_missing_order_date(self):
+        response = self.client.get("/dashboard/automation")
+        self.assertIn("Дата заявки:</b> не передана", response.text)
+        self.assertIn("Заказчик:</b> не указан", response.text)
+
+    def test_pending_and_manual_requests_show_metadata_before_supplier_search(self):
+        pending = pipeline.save_api_order_for_manual_start({**self.order, "id": 999, "creationDate": "2026-10-01", "customer": {"name": "Заказчик без подбора"}})
+        manual = pipeline.save_manual_order("Ручная заявка", [{"goodName": "Товар", "count": 1}], customer_name="Ручной заказчик")
+        response = self.client.get("/dashboard/automation")
+        self.assertIn("Дата заявки:</b> 01.10.2026", response.text)
+        self.assertIn("Заказчик:</b> Заказчик без подбора", response.text)
+        self.assertIn("Заказчик:</b> Ручной заказчик", response.text)
+        self.assertNotEqual(pending["job_id"], manual["job_id"])
+
+    def test_default_selection_distinguishes_suppliers_with_same_sku_and_allows_override(self):
+        cheap = {"supplier": "КРЕП-КОМП", "sku": "shared", "name": "Товар", "price": 40, "match_score": 1}
+        expensive = {**cheap, "supplier": "ВИ", "price": 100}
+        result = copy.deepcopy(self.result)
+        result["items"][0].update(selected=cheap, candidates=[cheap, expensive], selection_rule="lowest_unit_price")
+        with pipeline._connect() as conn:
+            conn.execute("UPDATE automation_jobs SET result_json=? WHERE id=?", (json.dumps(result), self.job_id))
+        response = self.client.get(f"/dashboard/automation/jobs/{self.job_id}/review")
+        self.assertIn("<option value='0' data-price='42.0' selected>", response.text)
+        self.assertIn("<option value='1' data-price='105.0' >", response.text)
+        response = self.client.post(f"/dashboard/automation/jobs/{self.job_id}/review", data={
+            "candidate_1": "1", "quantity_1": "2", "price_1": "105", "include_1": "1",
+        }, follow_redirects=False)
+        self.assertEqual(response.status_code, 303)
+        saved = pipeline.load_automation_offer_context(self.order["id"])["result"]["items"][0]
+        self.assertEqual(saved["selected"]["supplier"], "ВИ")
+        self.assertEqual(saved["selection_rule"], "operator_selected")
+
 
 if __name__ == "__main__":
     unittest.main()

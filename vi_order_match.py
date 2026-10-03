@@ -23,6 +23,26 @@ _GENERIC_TOKENS = {
     "инструмент", "расходный", "материал", "профессиональный",
 }
 
+# Supplier brand fields extend this vocabulary at each search, including brands
+# that were not known when the application was deployed.
+_KNOWN_BRANDS = {
+    "karbosan", "matrix", "gigant", "runtec", "izeltas", "rockforce", "сибртех",
+    "практика", "skole", "voll", "makita", "bosch", "dewalt", "metabo", "hilti",
+    "stanley", "knipex", "stayer", "зубр", "dexx", "denzel", "patriot", "iek",
+    "tdm electric", "ekf", "litokol", "knauf", "soudal", "3m",
+}
+
+
+def _contains_brand(text, brand):
+    normalized = _norm(str(brand or ""))
+    return bool(normalized and f" {normalized} " in f" {_norm(str(text or ''))} ")
+
+
+def _requested_brands(requested, brands=()):
+    vocabulary = _KNOWN_BRANDS | {_norm(str(brand)) for brand in brands if brand}
+    found = {brand for brand in vocabulary if _contains_brand(requested, brand)}
+    return {brand for brand in found if not any(brand != other and _contains_brand(other, brand) for other in found)}
+
 
 def _identifiers(s):
     """Model/article-like fragments: RT-IB150, 80661, DIN7504-O, RF-TC7005."""

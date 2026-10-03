@@ -22,6 +22,7 @@ import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 from email import policy
 from email.parser import BytesParser
 
@@ -29,7 +30,7 @@ from fastapi import Header, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 
 from supplier_adapters import KrepKompAdapter, VseinstrumentiAdapter
-from vi_order_match import _identifiers, _label, _measurements, _norm, _score_details
+from vi_order_match import _contains_brand, _identifiers, _label, _measurements, _norm, _requested_brands, _score_details
 from zakupay_email import parse_zakupay_email
 from invoice_generator import build_invoice_xlsx, customer_validation_error, normalize_customer
 
@@ -614,6 +615,23 @@ def _purchase_label(candidate: dict, requested_unit: str) -> str:
     return f"{name} — закупка {supplier_label}: {price_text} ₽ {price_basis}"
 
 
+def _unit_candidate_price(candidate: dict, requested_unit: str) -> float:
+    try:
+        price = float(candidate.get("price"))
+    except (TypeError, ValueError):
+        return float("inf")
+    if not math.isfinite(price) or price <= 0:
+        return float("inf")
+    return price / _pack_size(candidate.get("name") or "", candidate.get("unit"), requested_unit)
+
+
+def _candidate_matches_brand(candidate: dict, brands: set[str]) -> bool:
+    brand = _norm(str(candidate.get("brand") or ""))
+    if brand:
+        return brand in brands
+    return any(_contains_brand(candidate.get("name"), requested_brand) for requested_brand in brands)
+
+
 _PRODUCT_TYPE_MARKERS = {
     "мешок": ("мешок", "мешки", "пакет для мусора"),
     "компрессор": ("компрессор",),
@@ -732,6 +750,8 @@ def _build_match_row(position: int, item: dict, suppliers, excluded_keys: set[st
     quotes, search_diagnostics, search_timed_out = _search_candidates(
         suppliers, requested, time_budget_seconds=position_budget,
     )
+    requested_unit = _unit_name(item)
+    requested_brands = _requested_brands(requested, [quote.brand for quote in quotes if not quote.error])
     candidates = []
     rejected = []
     for quote in quotes:
@@ -747,6 +767,8 @@ def _build_match_row(position: int, item: dict, suppliers, excluded_keys: set[st
         })
         key = _candidate_key(candidate)
         conflicts = _hard_conflicts(requested, candidate)
+        if requested_brands and not _candidate_matches_brand(candidate, requested_brands):
+            conflicts.append("не совпадает указанный в заявке бренд")
         candidate["candidate_key"] = key
         candidate["hard_conflicts"] = conflicts
         if key in excluded_keys:
@@ -757,10 +779,10 @@ def _build_match_row(position: int, item: dict, suppliers, excluded_keys: set[st
             rejected.append(candidate)
         else:
             candidates.append(candidate)
-    candidates.sort(key=lambda x: (
-        -(x.get("match_score") or 0),
-        x.get("price") if x.get("price") is not None else float("inf"),
-    ))
+    if requested_brands:
+        candidates.sort(key=lambda x: (-(x.get("match_score") or 0), _unit_candidate_price(x, requested_unit)))
+    else:
+        candidates.sort(key=lambda x: (_unit_candidate_price(x, requested_unit), -(x.get("match_score") or 0)))
     rejected.sort(key=lambda x: (x.get("error") is not None, -(x.get("match_score") or 0)))
     # Candidates below the minimum semantic threshold remain visible only in
     # diagnostics; they must never become the selected invoice line.
@@ -771,7 +793,6 @@ def _build_match_row(position: int, item: dict, suppliers, excluded_keys: set[st
     score = (best or {}).get("match_score") or 0
     requested_qty = float(item.get("count") or 0)
     stock = (best or {}).get("stock")
-    requested_unit = _unit_name(item)
     pack_size = _pack_size((best or {}).get("name") or "", (best or {}).get("unit"), requested_unit)
     purchase_units = math.ceil(requested_qty / pack_size) if requested_qty else 0
     enough_stock = stock is not None and stock >= purchase_units
@@ -788,7 +809,7 @@ def _build_match_row(position: int, item: dict, suppliers, excluded_keys: set[st
         "наличие не подтверждено"
     )
     can_auto = match_status == "точное"
-    if can_auto and (enough_stock or dated_availability) and best.get("price") is not None:
+    if can_auto and (enough_stock or dated_availability) and math.isfinite(_unit_candidate_price(best, requested_unit)):
         decision = "auto_ready"
     elif match_status in {"аналог", "сомнительное"}:
         decision = "review"
@@ -805,6 +826,8 @@ def _build_match_row(position: int, item: dict, suppliers, excluded_keys: set[st
         "unit": requested_unit,
         "decision": decision,
         "selected": best,
+        "requested_brands": sorted(requested_brands),
+        "selection_rule": "brand_match" if requested_brands else "lowest_unit_price",
         "purchase_price": purchase_price,
         "proposed_unit_price": offer_price,
         "stock_confirmed": enough_stock,
@@ -888,6 +911,7 @@ def build_vi_draft(order: dict, invoice_number: int | None = None, progress_call
     return {
         "order_id": order.get("id"),
         "order_name": order.get("name"),
+        "order_creation_date": order.get("creationDate") or order.get("publicDate"),
         "manual_reference": order.get("manualReference") or "",
         "source_type": "manual" if order.get("source") == "manual_entry" else "zakupay",
         "source_label": "Ручной ввод" if order.get("source") == "manual_entry" else "Закупай",
@@ -1030,6 +1054,23 @@ def _saved_order_snapshot(row, result: dict) -> dict | None:
         except (TypeError, ValueError):
             logger.warning("invalid saved order snapshot job_id=%s", row.get("id") if hasattr(row, "get") else "unknown")
     return _order_from_saved_result(row, result)
+
+
+def _order_list_details(row, result: dict) -> tuple[str, str]:
+    order = _saved_order_snapshot(row, result) or {}
+    source_customer = normalize_customer(order.get("customer"))
+    customer = source_customer if source_customer["name"] else normalize_customer(result.get("customer"))
+    raw_date = order.get("creationDate") or order.get("publicDate") or result.get("order_creation_date")
+    display_date = "не передана"
+    if raw_date:
+        try:
+            created = datetime.fromisoformat(str(raw_date).replace("Z", "+00:00"))
+            if created.tzinfo:
+                created = created.astimezone(ZoneInfo("Europe/Moscow"))
+            display_date = created.strftime("%d.%m.%Y")
+        except (TypeError, ValueError):
+            pass
+    return display_date, customer["name"] or "не указан"
 
 
 def load_automation_offer_context(order_id: int) -> dict | None:
@@ -2028,6 +2069,7 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
             is_manual = row["event_type"] == "manual_order"
             viewed = bool(row["viewed_at"])
             offer_created = bool(result.get("live_offer_created") or row["status"] == "offer_created")
+            order_date, customer_name = _order_list_details(row, result)
             summary = result.get("summary") or {}
             total = summary.get("positions", 0)
             exact = summary.get("auto_ready", 0)
@@ -2096,6 +2138,7 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
             cards.append(
                 f"<section class='card {cls} {'offer-created' if offer_created else ''} {'read' if viewed else 'unread'}'><div><a class='title' target='_blank' rel='noopener' href='/dashboard/automation/jobs/{row['id']}/review'>"
                 f"Заявка №{display_number}{order_label}</a>{source_badge}{offer_badge}<div class='meta'>{html.escape(' · '.join(parts))}</div>"
+                f"<div class='meta'><b>Дата заявки:</b> {html.escape(order_date)} · <b>Заказчик:</b> {html.escape(customer_name)}</div>"
                 f"{progress_bar}"
                 f"<div class='meta'><b>Поставщики:</b> {html.escape(suppliers_label)}</div>"
                 f"<div class='meta'>Статус: {'счёт выставлен в Закупай' if offer_created else html.escape(str(row['status']))} · счёт: {row['invoice_number'] or '—'}</div></div>"
@@ -2232,17 +2275,25 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
         for item in result.get("items") or []:
             selected = item.get("selected") or {}
             candidates = item.get("candidates") or []
+            selection_notice = (
+                "Бренд не указан — выбран самый дешёвый подходящий вариант за единицу заявки"
+                if item.get("selection_rule") == "lowest_unit_price" else
+                "Подбор по указанному бренду: " + ", ".join(item.get("requested_brands") or [])
+                if item.get("selection_rule") == "brand_match" else ""
+            )
+            if not selected:
+                selection_notice = ""
             candidate_options = []
-            selected_sku = str(selected.get("sku") or selected.get("article") or selected.get("name") or "")
+            selected_key = _candidate_key(selected)
             usable_candidates = [candidate for candidate in candidates if not candidate.get("error")]
             for idx, candidate in enumerate(usable_candidates):
-                key = str(candidate.get("sku") or candidate.get("article") or candidate.get("name") or "")
+                key = _candidate_key(candidate)
                 label = _purchase_label(candidate, str(item.get("unit") or ""))
                 pack_size = _pack_size(candidate.get("name") or "", candidate.get("unit"), str(item.get("unit") or ""))
                 purchase_price = candidate.get("price")
                 offer_price = round(float(purchase_price) / pack_size * (1 + DEFAULT_MARKUP), 2) if purchase_price is not None else ""
                 candidate_options.append(
-                    f"<option value='{idx}' data-price='{offer_price}' {'selected' if key == selected_sku else ''}>"
+                    f"<option value='{idx}' data-price='{offer_price}' {'selected' if key == selected_key else ''}>"
                     f"{html.escape(label)}</option>"
                 )
             checked = "checked" if _included(item) else ""
@@ -2259,6 +2310,7 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
                 f"<td>{pos}</td>"
                 f"<td>{html.escape(str(item.get('requested_name') or ''))}</td>"
                 f"<td><select form='review-form' name='candidate_{pos}' {disabled} onchange=\"document.getElementById('price-{pos}').value=this.options[this.selectedIndex].dataset.price||''\">{''.join(candidate_options) or '<option>Не найден</option>'}</select>"
+                f"<div><small>{html.escape(selection_notice)}</small></div>"
                 f"<div>{'' if offer_created else f'''<button class='row-search' form='{search_form_id}' type='submit'>Искать другие варианты</button>'''}"
                 f"<small> ранее отклонено: {rejected_count}</small></div></td>"
                 f"<td><input form='review-form' class='qty' name='quantity_{pos}' type='number' step='0.001' value='{html.escape(str(item.get('quantity') or ''))}' {disabled}> {html.escape(str(item.get('unit') or ''))}</td>"
@@ -2471,6 +2523,8 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
                 raw_idx = str(form.get(f"candidate_{pos}") or "")
                 candidates = [x for x in (item.get("candidates") or []) if not x.get("error")]
                 if raw_idx.isdigit() and int(raw_idx) < len(candidates):
+                    if _candidate_key(candidates[int(raw_idx)]) != _candidate_key(item.get("selected") or {}):
+                        item["selection_rule"] = "operator_selected"
                     item["selected"] = candidates[int(raw_idx)]
                     selected = item["selected"]
                     conflicts = _hard_conflicts(item.get("requested_name") or "", selected)
