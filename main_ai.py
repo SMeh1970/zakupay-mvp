@@ -2,9 +2,11 @@ import os
 import hmac
 import secrets
 import time
+import re
 from urllib.parse import parse_qsl, urlencode
 
-from fastapi.responses import RedirectResponse, Response
+from fastapi.responses import RedirectResponse
+from starlette.concurrency import run_in_threadpool
 
 from main import (
     app, api_filter_dict, compact_order, esc, fetch_all_orders, fetch_order_by_id, filter_orders,
@@ -20,6 +22,7 @@ from automation_pipeline import (
     latest_offer_submission,
     load_automation_offer_context,
     mark_automation_offer_created,
+    saved_job_id,
 )
 import ai_panel
 from ai_panel_v2 import install_ai_panel_v2
@@ -30,12 +33,12 @@ from invoice_generator import build_invoice_xlsx
 from price_estimator import analyze_order_v2
 from supplier_panel import install_supplier_panel
 from procurement import install_procurement
-from security import OAUTH_SCOPE, PANEL_USERNAME, _origin, _sign_payload, current_mcp_resource
+from security import OAUTH_SCOPE, PANEL_USERNAME, _origin, _sign_payload, _valid_session, current_mcp_resource
 from abacus_mcp import install_abacus_mcp
 
 ai_panel.analyze_order = analyze_order_v2
 
-DEPLOY_MARKER = "sync-navigation-recovery-2026-10-04"
+DEPLOY_MARKER = "unified-saved-dashboard-2026-10-04"
 
 
 @app.get("/version")
@@ -129,13 +132,12 @@ async def panel_request_cleanup(request, call_next):
             internal_token = _mint_abacus_access_token(request)
             _replace_authorization_header(request, f"Bearer {internal_token}")
 
-    if path.startswith("/dashboard/order/"):
-        order_id = path.rsplit("/", 1)[-1]
-        if order_id.isdigit():
-            target = f"/dashboard/analysis/order/{order_id}"
-            if request.url.query:
-                target += f"?{request.url.query}"
-            return RedirectResponse(url=target, status_code=307)
+    legacy_detail = re.fullmatch(r"/dashboard/(?:analysis/)?order/(\d+)/?", path)
+    if request.method in {"GET", "HEAD"} and legacy_detail and _valid_session(request):
+        order_id = int(legacy_detail.group(1))
+        job_id = await run_in_threadpool(saved_job_id, order_id)
+        target = f"/dashboard/automation/jobs/{job_id}/review" if job_id else "/dashboard/automation?" + urlencode({"order_id": order_id})
+        return RedirectResponse(url=target, status_code=303, headers={"Cache-Control": "no-store"})
 
     raw_query = request.scope.get("query_string", b"").decode("utf-8", errors="ignore")
     if raw_query:
@@ -148,50 +150,6 @@ async def panel_request_cleanup(request, call_next):
             request.scope["query_string"] = urlencode(cleaned, doseq=True).encode("utf-8")
 
     response = await call_next(request)
-
-    if request.url.path == "/dashboard/analysis" and response.headers.get("content-type", "").startswith("text/html"):
-        body = b""
-        async for chunk in response.body_iterator:
-            body += chunk
-        text = body.decode("utf-8")
-
-        text = text.replace(
-            "<a href='/dashboard/order/",
-            "<a target='_blank' rel='noopener' href='/dashboard/analysis/order/",
-        )
-
-        script = """
-<script>
-document.querySelectorAll('tbody tr').forEach(function(row) {
-  if (!row.cells || row.cells.length < 2) return;
-  const idLink = row.cells[0].querySelector('a');
-  if (!idLink) return;
-  const id = (idLink.textContent || '').trim();
-  if (!/^\d+$/.test(id)) return;
-  const detailHref = '/dashboard/analysis/order/' + id;
-  idLink.href = detailHref;
-  idLink.target = '_blank';
-  idLink.rel = 'noopener';
-
-  const titleCell = row.cells[1];
-  let titleLink = titleCell.querySelector('a');
-  if (!titleLink) {
-    const title = titleCell.textContent;
-    titleCell.textContent = '';
-    titleLink = document.createElement('a');
-    titleLink.textContent = title;
-    titleCell.appendChild(titleLink);
-  }
-  titleLink.href = detailHref;
-  titleLink.target = '_blank';
-  titleLink.rel = 'noopener';
-});
-</script>
-"""
-        text = text.replace("</body>", script + "</body>")
-        headers = dict(response.headers)
-        headers.pop("content-length", None)
-        return Response(content=text, status_code=response.status_code, headers=headers, media_type="text/html")
 
     return response
 

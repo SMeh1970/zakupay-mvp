@@ -161,10 +161,12 @@ def current_mcp_resource(request: Request) -> str:
 
 def _safe_next(value: str | None) -> str:
     if not value:
-        return "/dashboard"
+        return "/dashboard/automation"
     parsed = urlsplit(value)
     if parsed.scheme or parsed.netloc or not value.startswith("/") or value.startswith("//"):
-        return "/dashboard"
+        return "/dashboard/automation"
+    if parsed.path.rstrip("/") in {"/dashboard", "/dashboard/analysis", "/dashboard/automation"}:
+        return "/dashboard/automation" + ("?" + parsed.query if parsed.query else "")
     return value
 
 
@@ -412,6 +414,13 @@ def install_security(app: FastAPI) -> None:
                 status_code=401,
                 headers={"Cache-Control": "no-store"},
             )
+        elif request.method in {"GET", "HEAD"} and path.rstrip("/") in {
+            "/dashboard", "/dashboard/analysis", "/dashboard/automation",
+        } and path != "/dashboard/automation":
+            response = RedirectResponse(
+                _safe_next(path + ("?" + request.url.query if request.url.query else "")),
+                status_code=303,
+            )
         else:
             response = await call_next(request)
 
@@ -428,7 +437,7 @@ def install_security(app: FastAPI) -> None:
         return response
 
     @app.get("/login", response_class=HTMLResponse)
-    async def login_page(next: str = "/dashboard"):
+    async def login_page(next: str = "/dashboard/automation"):
         return _login_page(_safe_next(next))
 
     @app.post("/login")

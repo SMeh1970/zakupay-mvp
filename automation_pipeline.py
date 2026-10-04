@@ -33,6 +33,7 @@ from supplier_adapters import KrepKompAdapter, VseinstrumentiAdapter
 from vi_order_match import _contains_brand, _identifiers, _label, _measurements, _norm, _requested_brands, _score_details
 from zakupay_email import parse_zakupay_email
 from invoice_generator import build_invoice_xlsx, customer_validation_error, normalize_customer
+from saved_dashboard import STATUSES, filter_form, listing_query, pagination, select_page
 
 
 DB_PATH = os.getenv("AUTOMATION_DB_PATH", "automation.db")
@@ -1098,6 +1099,13 @@ def load_automation_offer_context(order_id: int) -> dict | None:
     }
 
 
+def saved_job_id(order_id: int) -> int | None:
+    """Resolve old request links without fetching external data or prices."""
+    with _connect() as conn:
+        row = _execute(conn, "SELECT id FROM automation_jobs WHERE order_id=? AND status != 'skipped_not_prepayment' ORDER BY id DESC LIMIT 1", (int(order_id),)).fetchone()
+    return int(row["id"]) if row else None
+
+
 def _preserve_invoice_customer(result: dict, previous: dict) -> None:
     """Keep operator-confirmed payer details when rebuilding supplier matches."""
     if previous.get("invoice_customer_confirmed_at"):
@@ -1441,6 +1449,12 @@ def process_email(raw_email: bytes, fetch_order_by_id) -> dict:
 
 
 def save_api_order_for_manual_start(order: dict) -> dict:
+    """Persist one request; bulk imports reuse a connection and transaction."""
+    with _lock, _connect() as conn:
+        return _save_api_order_for_manual_start(order, conn)
+
+
+def _save_api_order_for_manual_start(order: dict, conn) -> dict:
     """Persist a Zakupay application without starting supplier searches."""
     order_id = int(order.get("id") or 0)
     items = list(order.get("orderItems") or [])
@@ -1449,31 +1463,30 @@ def save_api_order_for_manual_start(order: dict) -> dict:
     key = _api_dedupe_key(order_id)
     now = datetime.now(timezone.utc).isoformat()
     pending_result = _pending_search_result(order)
-    with _lock, _connect() as conn:
-        existing = _execute(conn, "SELECT * FROM automation_jobs WHERE dedupe_key=?", (key,)).fetchone()
-        if existing:
-            if existing["status"] == "failed" and not existing["result_json"]:
-                pending_result["invoice_number"] = existing["invoice_number"]
-                _execute(conn,
-                    "UPDATE automation_jobs SET status='pending_search', error=NULL, order_json=?, result_json=?, updated_at=? WHERE id=?",
-                    (json.dumps(order, ensure_ascii=False), json.dumps(pending_result, ensure_ascii=False), now, existing["id"]),
-                )
-                return {"duplicate": False, "job_id": existing["id"], "status": "pending_search", "result": pending_result}
-            return {
-                "duplicate": True, "job_id": existing["id"], "status": existing["status"],
-                "result": json.loads(existing["result_json"]) if existing["result_json"] else None,
-            }
-        insert_sql = """INSERT INTO automation_jobs
-            (dedupe_key,message_id,order_id,event_type,subject,sender,status,error,order_json,result_json,created_at,updated_at,invoice_number)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)"""
-        if DATABASE_URL:
-            insert_sql += " RETURNING id"
-        cursor = _execute(conn, insert_sql, (
-            key, None, order_id, "api_manual", order.get("name") or f"Заявка {order_id}",
-            "Zakupay API", "pending_search", None, json.dumps(order, ensure_ascii=False),
-            json.dumps(pending_result, ensure_ascii=False), now, now, None,
-        ))
-        job_id = cursor.fetchone()["id"] if DATABASE_URL else cursor.lastrowid
+    existing = _execute(conn, "SELECT * FROM automation_jobs WHERE dedupe_key=?", (key,)).fetchone()
+    if existing:
+        if existing["status"] == "failed" and not existing["result_json"]:
+            pending_result["invoice_number"] = existing["invoice_number"]
+            _execute(conn,
+                "UPDATE automation_jobs SET status='pending_search', error=NULL, order_json=?, result_json=?, updated_at=? WHERE id=?",
+                (json.dumps(order, ensure_ascii=False), json.dumps(pending_result, ensure_ascii=False), now, existing["id"]),
+            )
+            return {"duplicate": False, "job_id": existing["id"], "status": "pending_search", "result": pending_result}
+        return {
+            "duplicate": True, "job_id": existing["id"], "status": existing["status"],
+            "result": json.loads(existing["result_json"]) if existing["result_json"] else None,
+        }
+    insert_sql = """INSERT INTO automation_jobs
+        (dedupe_key,message_id,order_id,event_type,subject,sender,status,error,order_json,result_json,created_at,updated_at,invoice_number)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)"""
+    if DATABASE_URL:
+        insert_sql += " RETURNING id"
+    cursor = _execute(conn, insert_sql, (
+        key, None, order_id, "api_manual", order.get("name") or f"Заявка {order_id}",
+        "Zakupay API", "pending_search", None, json.dumps(order, ensure_ascii=False),
+        json.dumps(pending_result, ensure_ascii=False), now, now, None,
+    ))
+    job_id = cursor.fetchone()["id"] if DATABASE_URL else cursor.lastrowid
     return {"duplicate": False, "job_id": job_id, "status": "pending_search", "result": pending_result}
 
 
@@ -1759,24 +1772,25 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
             logger.exception("manual Zakupay sync failed: %s", exc)
             return Response(status_code=303, headers={"Location": "/dashboard/automation?sync_error=api_unavailable"})
         added = duplicates = skipped = 0
-        for order in orders[:300]:
-            if not _prepayment_confirmed(order):
-                skipped += 1
-                continue
-            if has_my_offer and has_my_offer(order):
-                skipped += 1
-                continue
-            if not order.get("orderItems"):
-                skipped += 1
-                continue
-            # Intake must stay fast.  Some collection responses omit line IDs;
-            # they are not needed to save and review an order.  Enrich only the
-            # selected order later, immediately before an offer is submitted.
-            outcome = save_api_order_for_manual_start(order)
-            if outcome.get("duplicate"):
-                duplicates += 1
-            else:
-                added += 1
+        with _lock, _connect() as conn:
+            for order in orders:
+                if not _prepayment_confirmed(order):
+                    skipped += 1
+                    continue
+                if has_my_offer and has_my_offer(order):
+                    skipped += 1
+                    continue
+                if not order.get("orderItems"):
+                    skipped += 1
+                    continue
+                # Intake must stay fast.  Some collection responses omit line IDs;
+                # they are not needed to save and review an order.  Enrich only the
+                # selected order later, immediately before an offer is submitted.
+                outcome = _save_api_order_for_manual_start(order, conn)
+                if outcome.get("duplicate"):
+                    duplicates += 1
+                else:
+                    added += 1
         return Response(
             status_code=303,
             headers={"Location": f"/dashboard/automation?added={added}&duplicates={duplicates}&skipped={skipped}"},
@@ -1888,13 +1902,14 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
 
     @app.get("/dashboard/automation/manual")
     def automation_manual_form():
+        script_nonce = uuid.uuid4().hex
         initial_rows = "".join(
-            "<tr><td class='row-number'></td>"
-            "<td><input name='item_name' required placeholder='Полное наименование товара'></td>"
-            "<td><input name='item_quantity' required type='number' min='0.001' step='0.001'></td>"
+            f"<tr><td class='row-number'>{index}</td>"
+            f"<td><input name='item_name' {'required' if index == 1 else ''} placeholder='Полное наименование товара'></td>"
+            f"<td><input name='item_quantity' {'required' if index == 1 else ''} type='number' min='0.001' step='0.001'></td>"
             "<td><input name='item_unit' value='шт'></td>"
-            "<td><button class='remove' type='button' onclick='this.closest(\"tr\").remove();renumber()'>Удалить</button></td></tr>"
-            for _ in range(3)
+            "<td><button class='remove' type='button'>Удалить</button></td></tr>"
+            for index in range(1, 4)
         )
         return Response(
             content=(
@@ -1909,14 +1924,16 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
                 "<div><label>Внутренний номер / ссылка</label><input name='reference' placeholder='Необязательно'></div><div><label>Заказчик</label><input name='customer_name'></div>"
                 "<div><label>ИНН заказчика</label><input name='customer_inn'></div></div><label>Адрес доставки</label><input name='delivery_address'>"
                 "<table><thead><tr><th>№</th><th>Наименование</th><th>Количество</th><th>Ед.</th><th></th></tr></thead><tbody id='items'>"
-                f"{initial_rows}</tbody></table><p><button class='secondary' type='button' onclick='addRow()'>+ Добавить позицию</button></p>"
+                f"{initial_rows}</tbody></table><p>Ненужные строки можно удалить или оставить пустыми.</p><p><button id='add-row' class='secondary' type='button'>+ Добавить позицию</button></p>"
                 "<button type='submit'>Сохранить заявку</button></form></div></main>"
-                "<script>function renumber(){document.querySelectorAll('#items .row-number').forEach((x,i)=>x.textContent=i+1)}"
-                "function addRow(){const tr=document.createElement('tr');tr.innerHTML=`<td class=\"row-number\"></td><td><input name=\"item_name\" required placeholder=\"Полное наименование товара\"></td><td><input name=\"item_quantity\" required type=\"number\" min=\"0.001\" step=\"0.001\"></td><td><input name=\"item_unit\" value=\"шт\"></td><td><button class=\"remove\" type=\"button\" onclick=\"this.closest('tr').remove();renumber()\">Удалить</button></td>`;document.getElementById('items').appendChild(tr);renumber()}renumber()</script>"
+                f"<script nonce='{script_nonce}'>"
+                "function renumber(){document.querySelectorAll('#items .row-number').forEach((x,i)=>x.textContent=i+1)}"
+                "document.getElementById('add-row').addEventListener('click',function(){const tr=document.createElement('tr');tr.innerHTML=`<td class=\"row-number\"></td><td><input name=\"item_name\" placeholder=\"Полное наименование товара\"></td><td><input name=\"item_quantity\" type=\"number\" min=\"0.001\" step=\"0.001\"></td><td><input name=\"item_unit\" value=\"шт\"></td><td><button class=\"remove\" type=\"button\">Удалить</button></td>`;document.getElementById('items').appendChild(tr);renumber()});"
+                "document.getElementById('items').addEventListener('click',function(event){const button=event.target.closest('button.remove');if(button){button.closest('tr').remove();renumber()}});</script>"
                 "</body></html>"
             ),
             media_type="text/html",
-            headers={"Cache-Control": "no-store, max-age=0"},
+            headers={"Cache-Control": "no-store, max-age=0", "Content-Security-Policy": f"default-src 'none'; script-src 'nonce-{script_nonce}'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"},
         )
 
     @app.post("/dashboard/automation/manual")
@@ -1952,21 +1969,19 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
 
     @app.get("/dashboard/automation")
     def automation_dashboard(
+        request: Request,
         added: int = 0,
         duplicates: int = 0,
         skipped: int = 0,
         sync_error: str = "",
         sync_notice: str = "",
-        source: str = "all",
     ):
-        source = source if source in {"all", "zakupay", "manual"} else "all"
         with _connect() as conn:
-            if source == "manual":
-                rows = _execute(conn, "SELECT * FROM automation_jobs WHERE status != 'skipped_not_prepayment' AND event_type='manual_order' ORDER BY id DESC LIMIT 300").fetchall()
-            elif source == "zakupay":
-                rows = _execute(conn, "SELECT * FROM automation_jobs WHERE status != 'skipped_not_prepayment' AND event_type!='manual_order' ORDER BY id DESC LIMIT 300").fetchall()
-            else:
-                rows = _execute(conn, "SELECT * FROM automation_jobs WHERE status != 'skipped_not_prepayment' ORDER BY id DESC LIMIT 300").fetchall()
+            state = select_page(_execute(conn, listing_query(bool(DATABASE_URL))).fetchall(), request.query_params)
+            ids = [item["id"] for item in state["items"]]
+            page_rows = _execute(conn, "SELECT * FROM automation_jobs WHERE id IN (" + ",".join("?" for _ in ids) + ")", tuple(ids)).fetchall() if ids else []
+            by_id = {int(row["id"]): row for row in page_rows}
+            rows = [by_id[job_id] for job_id in ids if job_id in by_id]
         cards = []
         has_processing = any(row["status"] == "processing" for row in rows)
         for row in rows:
@@ -1985,10 +2000,13 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
             ready = summary.get("included_in_invoice", exact + approved)
             progress = result.get("processing_progress") or {}
             is_processing = row["status"] == "processing"
+            pending = row["status"] == "pending_search"
             if is_processing:
                 completed = int(progress.get("completed") or 0)
                 progress_total = int(progress.get("total") or total or 0)
                 parts = [f"идёт подбор: {completed} из {progress_total} позиций"]
+            elif pending:
+                parts = [f"{total} позиций"]
             else:
                 parts = [f"{total} позиций", f"{exact} точных"]
             if approved:
@@ -1999,8 +2017,7 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
                 parts.append(f"{manual} не найдено")
             if excluded:
                 parts.append(f"{excluded} исключено")
-            cls = "processing" if is_processing else "ok" if offer_created or (total and ready == total) else "warn" if ready else "bad"
-            pending = row["status"] == "pending_search"
+            cls = "pending" if pending else "processing" if is_processing else "ok" if offer_created or (total and ready == total) else "warn" if ready else "bad"
             customer_error = customer_validation_error(result.get("customer"))
             invoice = (
                 f"<a class='button secondary' href='/dashboard/automation/jobs/{row['id']}/invoice.xlsx'>Скачать счёт</a>"
@@ -2015,7 +2032,7 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
                     if ready and not is_manual and not customer_error else
                     "<span class='muted'>Счёт заблокирован: заполните реквизиты плательщика в проверке заявки</span>" if ready and customer_error else
                     "<span class='muted'>Ручная заявка: отправка в Закупай недоступна</span>" if ready and is_manual else
-                    "<span class='muted'>Нет позиций для отправки</span>"
+                    "" if pending else "<span class='muted'>Нет позиций для отправки</span>"
                 )
             order_label = f" / {html.escape(str(result.get('order_name')))}" if result.get("order_name") else ""
             supplier_names = []
@@ -2046,7 +2063,7 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
                 f"<div class='meta'><b>Дата заявки:</b> {html.escape(order_date)} · <b>Заказчик:</b> {html.escape(customer_name)}</div>"
                 f"{progress_bar}"
                 f"<div class='meta'><b>Поставщики:</b> {html.escape(suppliers_label)}</div>"
-                f"<div class='meta'>Статус: {'счёт выставлен в Закупай' if offer_created else 'поиск цен не запускался' if pending else html.escape(str(row['status']))} · счёт: {row['invoice_number'] or '—'}</div></div>"
+                f"<div class='meta'>Статус: {'счёт выставлен в Закупай' if offer_created else 'поиск цен не запускался' if pending else html.escape(STATUSES.get(row['status'], 'Требуется проверка'))} · счёт: {row['invoice_number'] or '—'}</div></div>"
                 f"<div class='actions'>{primary_action}{invoice}{send}</div></section>"
             )
         sync_report = ""
@@ -2072,17 +2089,17 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
             )
         return Response(content=(
             "<!doctype html><html lang='ru'><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
-            "<title>Обработка заявок</title><style>body{font-family:Arial;margin:0;background:#f4f6f8;color:#202124}main{max-width:1200px;margin:auto;padding:28px}"
+            "<title>Заявки — Закупай MVP</title><style>body{font-family:Arial;margin:0;background:#f4f6f8;color:#202124}main{max-width:1200px;margin:auto;padding:28px}"
+            ".filter-panel{background:#fff;border-radius:12px;padding:20px;margin-top:20px}.filters{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:14px;margin-bottom:18px}.filters label{display:block;color:#5f6368;font-size:14px}.filters input,.filters select{width:100%;box-sizing:border-box;margin-top:6px;padding:9px;border:1px solid #c9cdd3;border-radius:7px;background:#fff;color:#202124}details{margin-bottom:18px}summary{cursor:pointer;font-weight:bold;margin-bottom:14px}.pager{display:flex;justify-content:center;align-items:center;gap:18px;margin:22px 0;flex-wrap:wrap}.filter-error{color:#b3261e}.list-count{color:#5f6368}button.button{border:0;cursor:pointer}.empty{background:#fff;padding:24px;border-radius:12px}"
             ".card{display:flex;justify-content:space-between;gap:20px;background:#fff;border-left:7px solid #9aa0a6;border-radius:12px;padding:18px;margin:12px 0;box-shadow:0 2px 8px #0001}.card.read{background:#e9eef3}.card.unread{background:#fff}.card.ok{border-color:#188038}.card.warn{border-color:#f9ab00}.card.bad{border-color:#d93025}.card.processing{border-color:#1a73e8;background:#e8f0fe}.card.offer-created{background:#e6f4ea;border-color:#188038}.offer-badge,.source-badge{display:inline-block;margin-left:12px;padding:5px 9px;border-radius:12px;background:#188038;color:#fff;font-size:12px;font-weight:700;vertical-align:middle}.source-badge{background:#174ea6}.source-badge.manual{background:#7b1fa2}.progress{height:8px;max-width:460px;background:#c7d5ec;border-radius:5px;margin-top:9px;overflow:hidden}.progress span{display:block;height:100%;background:#1a73e8}"
             ".title{font-size:20px;font-weight:700;color:#174ea6;text-decoration:none}.meta{margin-top:8px;color:#5f6368}.actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.button{background:#1a73e8;color:#fff;padding:10px 13px;border-radius:7px;text-decoration:none;font-weight:700}.secondary{background:#5f6368}.send{background:#188038}.sent{display:inline-block;padding:10px 13px;background:#e6f4ea;color:#137333;border-radius:7px;font-weight:700}.muted{color:#777}@media(max-width:760px){.card{display:block}.actions{margin-top:14px}}</style>"
-            "<main><h1>Заявки</h1><p>Откройте заявку и проверьте её состав. Поиск цен запускается только кнопкой внутри заявки; отправка счёта подтверждается отдельно.</p>"
+            "<main><a style='float:right' href='/logout'>Выйти</a><h1>Заявки</h1><p>Откройте заявку и проверьте её состав. Поиск цен запускается только кнопкой внутри заявки; отправка счёта подтверждается отдельно.</p>"
             "<div class='actions'><form method='post' action='/dashboard/automation/sync'><button class='button' type='submit'>Получить из Закупай</button></form>"
             "<a class='button secondary' href='/dashboard/automation/manual'>+ Добавить вручную</a></div>"
-            "<form method='get' action='/dashboard/automation' style='margin-top:18px'><label><b>Источник:</b> <select name='source' onchange='this.form.submit()'>"
-            f"<option value='all' {'selected' if source == 'all' else ''}>Все</option><option value='zakupay' {'selected' if source == 'zakupay' else ''}>Закупай</option><option value='manual' {'selected' if source == 'manual' else ''}>Ручной ввод</option></select></label></form>"
-            + ("<p class='muted'>Есть заявки в обработке. Страница больше не обновляется каждые 5 секунд — нажмите <a href='/dashboard/automation'>обновить список</a>, когда потребуется.</p>" if has_processing else "")
-            + "<p class='muted'>Ручная синхронизация запускается по нажатию; автоматический опрос выполняется каждый час.</p>"
-            + sync_report + "".join(cards) + "</main></html>"
+            + sync_report + filter_form(state)
+            + ("<p class='muted'>Есть заявки в обработке. Обновите страницу, чтобы увидеть результат поиска.</p>" if has_processing else "")
+            + ("".join(cards) if cards else "<p class='empty'>Нет заявок по выбранным фильтрам. Сбросьте фильтры, загрузите заявки из Закупай или добавьте заявку вручную.</p>")
+            + pagination(state) + "</main></html>"
         ), media_type="text/html", headers={"Cache-Control": "no-store, max-age=0", "Pragma": "no-cache"})
 
     @app.get("/dashboard/automation/jobs/{job_id}/review")

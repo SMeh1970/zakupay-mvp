@@ -6,7 +6,7 @@ from urllib.parse import urlencode
 
 import requests
 from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 
 from mcp_server import install_mcp
 from security import install_security
@@ -341,7 +341,7 @@ def api_filter_dict(**kwargs):
 
 @app.get("/")
 def root():
-    return {"message": "Закрытая панель «Закупай» работает", "version": "0.6.0", "login": "/login", "mcp": "/mcp", "access": "private"}
+    return RedirectResponse("/dashboard/automation", status_code=303, headers={"Cache-Control": "no-store"})
 
 
 @app.get("/health")
