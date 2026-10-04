@@ -1796,6 +1796,20 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
             headers={"Location": f"/dashboard/automation?added={added}&duplicates={duplicates}&skipped={skipped}"},
         )
 
+    @app.api_route("/dashboard/automation/jobs/{job_id}/start", methods=["GET", "HEAD"])
+    @app.api_route("/dashboard/automation/jobs/{job_id}/refresh", methods=["GET", "HEAD"])
+    @app.api_route("/dashboard/automation/jobs/{job_id}/items/{position}/refresh", methods=["GET", "HEAD"])
+    def automation_search_navigation(job_id: int):
+        """Recover navigation/auth redirects to POST-only search actions.
+
+        GET and HEAD may come from bookmarks, link checks or an expired session.
+        They must never initiate a supplier search or replay a lost selection.
+        """
+        return Response(
+            status_code=303,
+            headers={"Location": f"/dashboard/automation/jobs/{job_id}/review?action_notice=search_button", "Cache-Control": "no-store"},
+        )
+
     @app.post("/dashboard/automation/jobs/{job_id}/start")
     async def automation_dashboard_start(job_id: int, request: Request):
         with _connect() as conn:
@@ -2102,8 +2116,16 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
             + pagination(state) + "</main></html>"
         ), media_type="text/html", headers={"Cache-Control": "no-store, max-age=0", "Pragma": "no-cache"})
 
+    @app.head("/dashboard/automation/jobs/{job_id}/review")
+    def automation_review_head(job_id: int):
+        with _connect() as conn:
+            row = _execute(conn, "SELECT id FROM automation_jobs WHERE id=?", (job_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Задание не найдено")
+        return Response(media_type="text/html", headers={"Cache-Control": "no-store"})
+
     @app.get("/dashboard/automation/jobs/{job_id}/review")
-    def automation_review(job_id: int):
+    def automation_review(job_id: int, action_notice: str = ""):
         with _connect() as conn:
             row = _execute(conn, "SELECT * FROM automation_jobs WHERE id=?", (job_id,)).fetchone()
             if row and not row["viewed_at"]:
@@ -2123,6 +2145,13 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
             if is_manual else f"Заявка Закупай № {row['order_id']}"
         )
         offer_created = bool(result.get("live_offer_created") or row["status"] == "offer_created")
+        navigation_notice = (
+            "<p style='padding:12px;background:#e8f0fe;border-radius:8px' role='status'>"
+            "Вы вернулись к заявке. Проверьте выбранные позиции и нажмите кнопку поиска цен. "
+            "Если потребовался повторный вход, нажмите кнопку ещё раз после входа."
+            "</p>"
+            if action_notice == "search_button" and row["status"] != "processing" and not offer_created else ""
+        )
         if row["status"] == "processing":
             progress = (result or {}).get("processing_progress") or {}
             completed = int(progress.get("completed") or 0)
@@ -2169,6 +2198,7 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
                 media_type="text/html",
             )
         if row["status"] == "pending_search" or not (result.get("items") or []):
+            script_nonce = uuid.uuid4().hex
             order = _saved_order_snapshot(row, result) or {}
             order_date, customer_name = _order_list_details(row, result)
             source_items = list(order.get("orderItems") or [])
@@ -2190,18 +2220,26 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
                     "button{padding:12px 18px;background:#1a73e8;color:#fff;border:0;border-radius:7px;font-weight:bold;cursor:pointer}input[type=checkbox]{width:20px;height:20px}</style><body><main>"
                     "<p><a href='/dashboard/automation'>← Все заявки</a></p>"
                     f"<h1>{request_heading}</h1>"
+                    f"{navigation_notice}"
                     "<p><b>Поиск цен ещё не запускался.</b> Сначала проверьте состав заявки, затем запустите поиск для выбранных позиций.</p>"
                     f"<p><b>Дата заявки:</b> {html.escape(order_date)} · <b>Заказчик:</b> {html.escape(customer_name)}</p>"
                     f"<p><b>Адрес доставки:</b> {html.escape(str(order.get('deliveryAddress') or 'не передан'))}</p>"
                     f"<p>Получено и сохранено позиций: <b>{len(source_items)}</b>. Отметьте строки, для которых нужно найти цены и подготовить предложение.</p>"
                     f"<form method='post' action='/dashboard/automation/jobs/{job_id}/start'>"
-                    "<p><label><input id='select-all' type='checkbox' checked onchange=\"document.querySelectorAll('.position-checkbox').forEach(x=>x.checked=this.checked)\"> Выбрать все позиции</label></p>"
+                    "<p><label><input id='select-all' type='checkbox' checked> Выбрать все позиции</label></p>"
                     "<table><tr><th>Выбрать</th><th>№</th><th>Позиция заявки</th><th>Количество</th><th>Ед.</th></tr>"
                     f"{pending_rows}</table>"
                     "<button type='submit'>Найти цены по выбранным позициям</button></form>"
+                    f"<script nonce='{script_nonce}'>"
+                    "const all=document.getElementById('select-all');"
+                    "const positions=Array.from(document.querySelectorAll('.position-checkbox'));"
+                    "all.addEventListener('change',()=>{positions.forEach(input=>input.checked=all.checked);all.indeterminate=false});"
+                    "positions.forEach(input=>input.addEventListener('change',()=>{const count=positions.filter(input=>input.checked).length;all.checked=count===positions.length;all.indeterminate=count>0&&count<positions.length}));"
+                    "</script>"
                     "</main></body></html>"
                 ),
                 media_type="text/html",
+                headers={"Cache-Control": "no-store", "Content-Security-Policy": f"default-src 'none'; script-src 'nonce-{script_nonce}'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"},
             )
         table_rows = []
         row_search_forms = []
@@ -2323,7 +2361,7 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
                 "<p><a href='/dashboard/automation'>← Все заявки</a></p>"
                 f"<h1>{request_heading}</h1>"
                 f"<p>Счёт № {row['invoice_number']} · статус: {'предложение выставлено' if offer_created else html.escape(str(row['status']))}</p>"
-                f"{sent_notice}{customer_form}{top_controls}{search_report}"
+                f"{navigation_notice}{sent_notice}{customer_form}{top_controls}{search_report}"
                 f"<form id='review-form' method='post' action='/dashboard/automation/jobs/{job_id}/review'></form>{''.join(row_search_forms)}<table><tr><th>Включить</th><th>№</th><th>Заявка</th><th>Подбор поставщика<br><small>(закупочная цена)</small></th><th>Количество</th><th>Наша цена<br><small>за единицу заявки (+5%)</small></th>"
                 "<th>Статус подбора</th><th>Замена</th><th>Наличие</th><th>Срок</th><th>Решение</th></tr>"
                 + "".join(table_rows) + "</table>" + save_control + invoice_link + offer_link + "</main></body></html>"

@@ -1,6 +1,7 @@
 import copy
 import json
 import os
+import re
 import tempfile
 import unittest
 from unittest.mock import Mock, patch
@@ -86,6 +87,84 @@ class ManualPriceSearchTests(unittest.TestCase):
             self.assertEqual(job["status"], "pending_search")
             self.assertIsNone(job["invoice_number"])
             build.assert_not_called()
+
+    def test_get_and_head_on_search_actions_return_to_review_without_search(self):
+        saved = pipeline.process_api_order(copy.deepcopy(ORDER))
+        job_id = saved["job_id"]
+        with patch.object(pipeline, "build_vi_draft") as build:
+            for suffix in ("start", "refresh", "items/1/refresh"):
+                for method in ("GET", "HEAD"):
+                    with self.subTest(suffix=suffix, method=method):
+                        response = self.client.request(method, f"/dashboard/automation/jobs/{job_id}/{suffix}", follow_redirects=False)
+                        self.assertEqual(response.status_code, 303)
+                        self.assertEqual(response.headers["location"], f"/dashboard/automation/jobs/{job_id}/review?action_notice=search_button")
+            probe = self.client.head(f"/dashboard/automation/jobs/{job_id}/start", follow_redirects=True)
+            self.assertEqual(probe.status_code, 200)
+            with pipeline._connect() as conn:
+                self.assertIsNone(conn.execute("SELECT viewed_at FROM automation_jobs WHERE id=?", (job_id,)).fetchone()["viewed_at"])
+            response = self.client.get(f"/dashboard/automation/jobs/{job_id}/start")
+            self.assertEqual(response.status_code, 200)
+            self.assertIn("Проверьте выбранные позиции", response.text)
+            self.assertIn("Найти цены по выбранным позициям", response.text)
+            with pipeline._connect() as conn:
+                row = conn.execute("SELECT status,invoice_number FROM automation_jobs WHERE id=?", (job_id,)).fetchone()
+            self.assertEqual(row["status"], "pending_search")
+            self.assertIsNone(row["invoice_number"])
+            build.assert_not_called()
+            self.fetch.assert_not_called()
+
+    def test_expired_session_during_start_can_recover_and_search_selected_positions(self):
+        import security
+
+        order = copy.deepcopy(ORDER)
+        order["orderItems"].append({"goodName": "Маркер красный", "count": 3, "unit": {"name": "шт"}})
+        saved = pipeline.process_api_order(order)
+        job_id = saved["job_id"]
+        url = f"/dashboard/automation/jobs/{job_id}/start"
+        security.install_security(self.app)
+        with patch.object(security, "_valid_session", return_value=False), patch.object(pipeline, "build_vi_draft") as build:
+            response = self.client.post(url, data={"selected_position": "2"}, follow_redirects=False)
+            self.assertEqual(response.status_code, 303)
+            self.assertTrue(response.headers["location"].startswith("/login?"))
+            build.assert_not_called()
+
+        quotes = [SupplierQuote("ВИ", "Маркер красный", price=10, stock=10)]
+        real_thread = pipeline.threading.Thread
+        def search_thread(*args, **kwargs):
+            return InlineThread(*args, **kwargs) if str(kwargs.get("name") or "").startswith("supplier-search-") else real_thread(*args, **kwargs)
+        with patch.object(security, "_valid_session", return_value=True), \
+                patch.object(security, "_valid_credentials", return_value=True), \
+                patch.object(security, "_login_allowed", return_value=True), \
+                patch.object(pipeline, "_search_candidates", return_value=(quotes, [], False)) as search, \
+                patch.object(pipeline.threading, "Thread", search_thread):
+            response = self.client.post("/login", data={"username": "test", "password": "test", "next": url})
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.url.path, f"/dashboard/automation/jobs/{job_id}/review")
+            self.assertIn("Если потребовался повторный вход", response.text)
+            search.assert_not_called()
+            response = self.client.post(url, data={"selected_position": "2"}, follow_redirects=False)
+            self.assertEqual(response.status_code, 303)
+            search.assert_called_once()
+            with pipeline._connect() as conn:
+                row = conn.execute("SELECT status,result_json FROM automation_jobs WHERE id=?", (job_id,)).fetchone()
+            result = json.loads(row["result_json"])
+            self.assertNotEqual(row["status"], "pending_search")
+            self.assertEqual(len(result["items"]), 1)
+            self.assertEqual(result["items"][0]["requested_name"], "Маркер красный")
+            self.assertFalse(result["live_offer_created"])
+            self.fetch.assert_not_called()
+
+    def test_select_all_script_is_allowed_on_pending_review_page(self):
+        import security
+
+        saved = pipeline.process_api_order(copy.deepcopy(ORDER))
+        security.install_security(self.app)
+        with patch.object(security, "_valid_session", return_value=True):
+            response = self.client.get(f"/dashboard/automation/jobs/{saved['job_id']}/review")
+        nonce = re.search(r"<script nonce='([^']+)'", response.text).group(1)
+        self.assertIn(f"script-src 'nonce-{nonce}'", response.headers["content-security-policy"])
+        self.assertNotIn("onchange=", response.text)
+        self.assertIn("method='post'", response.text)
 
     def test_hourly_poll_sync_and_page_views_never_search_prices_or_issue_invoice(self):
         with patch.object(pipeline, "build_vi_draft") as build:

@@ -38,7 +38,7 @@ from abacus_mcp import install_abacus_mcp
 
 ai_panel.analyze_order = analyze_order_v2
 
-DEPLOY_MARKER = "unified-saved-dashboard-2026-10-04"
+DEPLOY_MARKER = "price-search-navigation-recovery-2026-10-04"
 
 
 @app.get("/version")
