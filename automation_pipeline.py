@@ -1736,6 +1736,15 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
             ).fetchall()
         return {"count": len(rows), "jobs": [dict(row) for row in rows]}
 
+    @app.get("/dashboard/automation/sync")
+    def automation_dashboard_sync_page():
+        """Recover direct navigation or a POST lost during the login redirect."""
+        return Response(
+            status_code=303,
+            headers={"Location": "/dashboard/automation?sync_notice=manual_start",
+                     "Cache-Control": "no-store"},
+        )
+
     @app.post("/dashboard/automation/sync")
     def automation_dashboard_sync():
         """Operator-triggered import with a graceful fallback to saved data."""
@@ -1947,6 +1956,7 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
         duplicates: int = 0,
         skipped: int = 0,
         sync_error: str = "",
+        sync_notice: str = "",
         source: str = "all",
     ):
         source = source if source in {"all", "zakupay", "manual"} else "all"
@@ -2040,8 +2050,15 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
                 f"<div class='actions'>{primary_action}{invoice}{send}</div></section>"
             )
         sync_report = ""
-        if added or duplicates or skipped:
+        if sync_notice == "manual_start":
             sync_report = (
+                "<p style='padding:12px;background:#e8f0fe;border-radius:8px' role='status'>"
+                "Для загрузки заявок нажмите <b>«Получить из Закупай»</b>. "
+                "Открытие этой страницы само по себе не запускает загрузку."
+                "</p>"
+            )
+        if added or duplicates or skipped:
+            sync_report += (
                 "<p style='padding:12px;background:#e6f4ea;border-radius:8px'>"
                 f"Обновление завершено: новых {added}, уже сохранённых {duplicates}, пропущено {skipped}."
                 "</p>"

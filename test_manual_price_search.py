@@ -47,6 +47,46 @@ class ManualPriceSearchTests(unittest.TestCase):
         with patch.object(pipeline, "_authorized_automation_call", return_value=True):
             return self.client.post("/automation/api/poll")
 
+    def test_opening_sync_returns_to_list_without_import_or_price_search(self):
+        with patch.object(pipeline, "build_vi_draft") as build:
+            response = self.client.get("/dashboard/automation/sync")
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.url.path, "/dashboard/automation")
+            self.assertIn("Для загрузки заявок нажмите", response.text)
+            self.fetch_all.assert_not_called()
+            self.fetch.assert_not_called()
+            build.assert_not_called()
+
+    def test_sync_post_lost_during_login_returns_to_list_and_can_be_retried(self):
+        import security
+
+        security.install_security(self.app)
+        with patch.object(security, "_valid_session", return_value=False):
+            response = self.client.post("/dashboard/automation/sync", follow_redirects=False)
+            self.assertEqual(response.status_code, 303)
+            self.assertIn("next=%2Fdashboard%2Fautomation%2Fsync", response.headers["location"])
+            self.fetch_all.assert_not_called()
+
+        with patch.object(security, "_valid_credentials", return_value=True), \
+                patch.object(security, "_login_allowed", return_value=True), \
+                patch.object(security, "_valid_session", return_value=True), \
+                patch.object(pipeline, "build_vi_draft") as build:
+            response = self.client.post("/login", data={
+                "username": "test", "password": "test", "next": "/dashboard/automation/sync",
+            })
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.url.path, "/dashboard/automation")
+            self.assertIn("Для загрузки заявок нажмите", response.text)
+            self.fetch_all.assert_not_called()
+            response = self.client.post("/dashboard/automation/sync", follow_redirects=False)
+            self.assertEqual(response.status_code, 303)
+            self.fetch_all.assert_called_once_with(force=True)
+            with pipeline._connect() as conn:
+                job = conn.execute("SELECT status,invoice_number FROM automation_jobs").fetchone()
+            self.assertEqual(job["status"], "pending_search")
+            self.assertIsNone(job["invoice_number"])
+            build.assert_not_called()
+
     def test_hourly_poll_sync_and_page_views_never_search_prices_or_issue_invoice(self):
         with patch.object(pipeline, "build_vi_draft") as build:
             response = self.poll()
