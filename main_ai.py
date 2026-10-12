@@ -32,13 +32,15 @@ from offer_panel_safe import install_offer_panel
 from invoice_generator import build_invoice_xlsx
 from price_estimator import analyze_order_v2
 from supplier_panel import install_supplier_panel
+from price_lists import install_price_lists
+from own_catalog import install_own_catalog
 from procurement import install_procurement
 from security import OAUTH_SCOPE, PANEL_USERNAME, _origin, _sign_payload, _valid_session, current_mcp_resource
 from abacus_mcp import install_abacus_mcp
 
 ai_panel.analyze_order = analyze_order_v2
 
-DEPLOY_MARKER = "price-search-navigation-recovery-2026-10-04"
+DEPLOY_MARKER = "price-lists-own-catalog-2026-10-12"
 
 
 @app.get("/version")
@@ -180,6 +182,8 @@ install_api_discovery(
     zakupay_base_url=ZAKUPAY_BASE_URL,
 )
 install_supplier_panel(app, esc=esc)
+install_price_lists(app)
+install_own_catalog(app)
 install_offer_panel(
     app,
     fetch_all_orders=fetch_all_orders,

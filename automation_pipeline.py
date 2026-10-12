@@ -29,7 +29,7 @@ from email.parser import BytesParser
 from fastapi import Header, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 
-from supplier_adapters import KrepKompAdapter, VseinstrumentiAdapter
+from supplier_adapters import KrepKompAdapter, VseinstrumentiAdapter, PriceListAdapter, OwnCatalogAdapter
 from vi_order_match import _contains_brand, _identifiers, _label, _measurements, _norm, _requested_brands, _score_details
 from zakupay_email import parse_zakupay_email
 from invoice_generator import build_invoice_xlsx, customer_validation_error, normalize_customer
@@ -263,6 +263,10 @@ def _initialize_schema(conn) -> None:
                 conn.execute("ALTER TABLE automation_jobs ADD COLUMN order_json TEXT")
             if "viewed_at" not in columns:
                 conn.execute("ALTER TABLE automation_jobs ADD COLUMN viewed_at TEXT")
+        from price_lists import initialize_schema as initialize_price_schema
+        from own_catalog import initialize_schema as initialize_catalog_schema
+        initialize_price_schema(conn, bool(DATABASE_URL))
+        initialize_catalog_schema(conn, bool(DATABASE_URL))
         conn.commit()
         _initialized_database_key = key
 
@@ -546,7 +550,7 @@ def _search_candidates(suppliers, requested: str, time_budget_seconds: float | N
         # KREP-KOMP ranks a cached full catalogue locally. Repeating VI-style
         # text variants would only duplicate price/stock API calls and consume
         # the supplier's 1000-request daily allowance.
-        queries = [requested] if getattr(supplier, "code", "") == "krep_komp" else _search_variants(requested)[:max_variants]
+        queries = [requested] if getattr(supplier, "code", "") in {"krep_komp", "price_lists", "own_catalog"} else _search_variants(requested)[:max_variants]
         supplier_found = 0
         for query in queries:
             if deadline is not None and time.monotonic() >= deadline:
@@ -557,7 +561,7 @@ def _search_candidates(suppliers, requested: str, time_budget_seconds: float | N
             for quote in supplier_quotes:
                 if quote.error:
                     supplier_errors.append(quote.error)
-                key = (quote.supplier, quote.sku or quote.article or quote.name)
+                key = (quote.supplier, quote.source_type, quote.source_key, quote.sku or quote.article or quote.name)
                 if key in seen:
                     continue
                 seen.add(key)
@@ -606,14 +610,45 @@ def _purchase_label(candidate: dict, requested_unit: str) -> str:
         if numeric_price.is_integer()
         else f"{numeric_price:.2f}".rstrip("0").rstrip(".")
     )
-    pack_size = _pack_size(name, candidate.get("unit"), requested_unit)
+    pack_size = _candidate_pack_size(candidate, requested_unit)
     if pack_size > 1:
         price_basis = f"за упаковку {pack_size} шт."
     else:
         supplier_unit = str(candidate.get("unit") or requested_unit or "ед.").strip()
         price_basis = f"за 1 {supplier_unit}"
     supplier_label = "ВИ" if supplier == "ВсеИнструменты.ру" else supplier
-    return f"{name} — закупка {supplier_label}: {price_text} ₽ {price_basis}"
+    provenance = ""
+    if candidate.get("source_type") == "price_list":
+        provenance = f" · прайс {candidate.get('source_filename')}, {candidate.get('source_sheet')}, строка {candidate.get('source_row')}, от {candidate.get('price_date')}"
+    elif candidate.get("source_type") == "own_catalog":
+        provenance = f" · наш каталог, от {candidate.get('price_date')}"
+    return f"{name} — закупка {supplier_label}: {price_text} ₽ {price_basis}{provenance}"
+
+
+def _candidate_pack_size(candidate: dict, requested_unit: str) -> int:
+    if candidate.get("source_type") in {"price_list", "own_catalog"} and _norm(candidate.get("unit")) in {"шт", "штука", "штук", "штуки", "ед"}:
+        return 1
+    if _norm(requested_unit) in {"шт", "штука", "штук", "штуки", "ед"} and candidate.get("pack_quantity"):
+        return max(1, int(candidate["pack_quantity"]))
+    return _pack_size(candidate.get("name") or "", candidate.get("unit"), requested_unit)
+
+
+def _price_unit_conflict(candidate: dict, requested_unit: str) -> str | None:
+    if candidate.get("source_type") not in {"price_list", "own_catalog"}:
+        return None
+    aliases = {"штук": "шт", "штука": "шт", "штуки": "шт", "ед": "шт", "пары": "пара", "пар": "пара",
+               "метр": "м", "м п": "м", "мп": "м", "пог м": "м", "кв м": "м2", "куб м": "м3", "кг": "кг", "килограмм": "кг", "литр": "л",
+               "упаковка": "упак", "уп": "упак", "упак": "упак", "комплект": "компл"}
+    def normalized_unit(value):
+        normalized = _norm(str(value or "").replace("²", "2").replace("³", "3"))
+        return aliases.get(normalized, normalized)
+    requested = normalized_unit(requested_unit)
+    supplied = normalized_unit(candidate.get("unit"))
+    if requested and supplied and requested != supplied:
+        if requested == "шт" and supplied == "упак" and _candidate_pack_size(candidate, requested_unit) > 1:
+            return None
+        return f"не совпадает единица цены: {candidate.get('unit')} вместо {requested_unit}"
+    return None
 
 
 def _unit_candidate_price(candidate: dict, requested_unit: str) -> float:
@@ -623,7 +658,9 @@ def _unit_candidate_price(candidate: dict, requested_unit: str) -> float:
         return float("inf")
     if not math.isfinite(price) or price <= 0:
         return float("inf")
-    return price / _pack_size(candidate.get("name") or "", candidate.get("unit"), requested_unit)
+    if _price_unit_conflict(candidate, requested_unit):
+        return float("inf")
+    return price / _candidate_pack_size(candidate, requested_unit)
 
 
 def _candidate_matches_brand(candidate: dict, brands: set[str]) -> bool:
@@ -679,7 +716,8 @@ def _product_types(text: str) -> set[str]:
 def _candidate_key(candidate: dict) -> str:
     supplier = _norm(str(candidate.get("supplier") or ""))
     identity = str(candidate.get("sku") or candidate.get("article") or candidate.get("name") or "")
-    return f"{supplier}:{_norm(identity)}"
+    source = f":{candidate.get('source_type')}:{candidate.get('source_key')}" if candidate.get("source_type") in {"price_list", "own_catalog"} else ""
+    return f"{supplier}{source}:{_norm(identity)}"
 
 
 def _hard_conflicts(requested: str, selected: dict) -> list[str]:
@@ -768,6 +806,9 @@ def _build_match_row(position: int, item: dict, suppliers, excluded_keys: set[st
         })
         key = _candidate_key(candidate)
         conflicts = _hard_conflicts(requested, candidate)
+        unit_conflict = _price_unit_conflict(candidate, requested_unit)
+        if unit_conflict:
+            conflicts.append(unit_conflict)
         if requested_brands and not _candidate_matches_brand(candidate, requested_brands):
             conflicts.append("не совпадает указанный в заявке бренд")
         candidate["candidate_key"] = key
@@ -794,15 +835,17 @@ def _build_match_row(position: int, item: dict, suppliers, excluded_keys: set[st
     score = (best or {}).get("match_score") or 0
     requested_qty = float(item.get("count") or 0)
     stock = (best or {}).get("stock")
-    pack_size = _pack_size((best or {}).get("name") or "", (best or {}).get("unit"), requested_unit)
+    pack_size = _candidate_pack_size(best or {}, requested_unit)
     purchase_units = math.ceil(requested_qty / pack_size) if requested_qty else 0
-    enough_stock = stock is not None and stock >= purchase_units
+    historical = (best or {}).get("source_type") in {"price_list", "own_catalog"}
+    enough_stock = not historical and stock is not None and stock >= purchase_units
     courier_date = (best or {}).get("courier_date")
     pickup_date = (best or {}).get("pickup_date")
-    dated_availability = stock is None and bool(courier_date or pickup_date)
+    dated_availability = not historical and stock is None and bool(courier_date or pickup_date)
     conflicts = _hard_conflicts(requested, best or {}) if best else []
     match_status = _match_status(requested, best, score, conflicts)
     availability_status = (
+        "цена из прайса/каталога; наличие требует подтверждения" if historical else
         "количество подтверждено" if enough_stock else
         "доступно к заказу, количество не подтверждено" if courier_date else
         "доступно к самовывозу, количество не подтверждено" if pickup_date else
@@ -850,7 +893,7 @@ def _build_match_row(position: int, item: dict, suppliers, excluded_keys: set[st
 
 def build_vi_draft(order: dict, invoice_number: int | None = None, progress_callback=None) -> dict:
     """Build a conservative, reviewable draft from all configured suppliers."""
-    suppliers = [VseinstrumentiAdapter()]
+    suppliers = [OwnCatalogAdapter(), PriceListAdapter(), VseinstrumentiAdapter()]
     krep_komp = KrepKompAdapter()
     deferred_suppliers = []
     if krep_komp.enabled:
@@ -2109,7 +2152,9 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
             ".title{font-size:20px;font-weight:700;color:#174ea6;text-decoration:none}.meta{margin-top:8px;color:#5f6368}.actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.button{background:#1a73e8;color:#fff;padding:10px 13px;border-radius:7px;text-decoration:none;font-weight:700}.secondary{background:#5f6368}.send{background:#188038}.sent{display:inline-block;padding:10px 13px;background:#e6f4ea;color:#137333;border-radius:7px;font-weight:700}.muted{color:#777}@media(max-width:760px){.card{display:block}.actions{margin-top:14px}}</style>"
             "<main><a style='float:right' href='/logout'>Выйти</a><h1>Заявки</h1><p>Откройте заявку и проверьте её состав. Поиск цен запускается только кнопкой внутри заявки; отправка счёта подтверждается отдельно.</p>"
             "<div class='actions'><form method='post' action='/dashboard/automation/sync'><button class='button' type='submit'>Получить из Закупай</button></form>"
-            "<a class='button secondary' href='/dashboard/automation/manual'>+ Добавить вручную</a></div>"
+            "<a class='button secondary' href='/dashboard/automation/manual'>+ Добавить вручную</a>"
+            "<a class='button secondary' href='/dashboard/prices'>Прайсы</a>"
+            "<a class='button secondary' href='/dashboard/catalog'>Наш каталог</a></div>"
             + sync_report + filter_form(state)
             + ("<p class='muted'>Есть заявки в обработке. Обновите страницу, чтобы увидеть результат поиска.</p>" if has_processing else "")
             + ("".join(cards) if cards else "<p class='empty'>Нет заявок по выбранным фильтрам. Сбросьте фильтры, загрузите заявки из Закупай или добавьте заявку вручную.</p>")
@@ -2243,6 +2288,7 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
             )
         table_rows = []
         row_search_forms = []
+        review_script_nonce = base64.b64encode(os.urandom(18)).decode("ascii")
         for item in result.get("items") or []:
             selected = item.get("selected") or {}
             candidates = item.get("candidates") or []
@@ -2260,7 +2306,7 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
             for idx, candidate in enumerate(usable_candidates):
                 key = _candidate_key(candidate)
                 label = _purchase_label(candidate, str(item.get("unit") or ""))
-                pack_size = _pack_size(candidate.get("name") or "", candidate.get("unit"), str(item.get("unit") or ""))
+                pack_size = _candidate_pack_size(candidate, str(item.get("unit") or ""))
                 purchase_price = candidate.get("price")
                 offer_price = round(float(purchase_price) / pack_size * (1 + DEFAULT_MARKUP), 2) if purchase_price is not None else ""
                 candidate_options.append(
@@ -2280,7 +2326,7 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
                 f"<td><input form='review-form' type='checkbox' name='include_{pos}' value='1' {checked} {disabled}></td>"
                 f"<td>{pos}</td>"
                 f"<td>{html.escape(str(item.get('requested_name') or ''))}</td>"
-                f"<td><select form='review-form' name='candidate_{pos}' {disabled} onchange=\"document.getElementById('price-{pos}').value=this.options[this.selectedIndex].dataset.price||''\">{''.join(candidate_options) or '<option>Не найден</option>'}</select>"
+                f"<td><select form='review-form' class='candidate-select' data-position='{pos}' name='candidate_{pos}' {disabled}>{''.join(candidate_options) or '<option>Не найден</option>'}</select>"
                 f"<div><small>{html.escape(selection_notice)}</small></div>"
                 f"<div>{'' if offer_created else f'''<button class='row-search' form='{search_form_id}' type='submit'>Искать другие варианты</button>'''}"
                 f"<small> ранее отклонено: {rejected_count}</small></div></td>"
@@ -2364,10 +2410,13 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
                 f"{navigation_notice}{sent_notice}{customer_form}{top_controls}{search_report}"
                 f"<form id='review-form' method='post' action='/dashboard/automation/jobs/{job_id}/review'></form>{''.join(row_search_forms)}<table><tr><th>Включить</th><th>№</th><th>Заявка</th><th>Подбор поставщика<br><small>(закупочная цена)</small></th><th>Количество</th><th>Наша цена<br><small>за единицу заявки (+5%)</small></th>"
                 "<th>Статус подбора</th><th>Замена</th><th>Наличие</th><th>Срок</th><th>Решение</th></tr>"
-                + "".join(table_rows) + "</table>" + save_control + invoice_link + offer_link + "</main></body></html>"
+                + "".join(table_rows) + "</table>" + save_control + invoice_link + offer_link
+                + f"<p><a href='/dashboard/automation/jobs/{job_id}/catalog-sale'>Сохранить успешную продажу в наш каталог</a> · <a href='/dashboard/prices'>Прайсы</a> · <a href='/dashboard/catalog'>Наш каталог</a></p>"
+                + f"<script nonce='{review_script_nonce}'>document.querySelectorAll('.candidate-select').forEach(input=>input.addEventListener('change',()=>{{document.getElementById('price-'+input.dataset.position).value=input.options[input.selectedIndex].dataset.price||''}}));</script>"
+                + "</main></body></html>"
             ),
             media_type="text/html",
-            headers={"Cache-Control": "no-store, max-age=0", "Pragma": "no-cache"},
+            headers={"Cache-Control": "no-store, max-age=0", "Pragma": "no-cache", "Content-Security-Policy": f"default-src 'none'; script-src 'nonce-{review_script_nonce}'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"},
         )
 
     @app.post("/dashboard/automation/jobs/{job_id}/customer")
@@ -2458,7 +2507,7 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
             excluded.add(_candidate_key(current["selected"]))
         excluded |= _excluded_feedback_keys(current.get("requested_name") or "")
 
-        suppliers = [VseinstrumentiAdapter()]
+        suppliers = [OwnCatalogAdapter(), PriceListAdapter(), VseinstrumentiAdapter()]
         krep_komp = KrepKompAdapter()
         if krep_komp.enabled:
             suppliers.append(krep_komp)
@@ -2512,6 +2561,21 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
                     item["proposed_unit_price"] = float(form.get(f"price_{pos}") or 0)
                 except (TypeError, ValueError):
                     raise HTTPException(status_code=400, detail=f"Некорректное количество или цена в позиции {pos}")
+                selected = item.get("selected") or {}
+                item["pack_size"] = _candidate_pack_size(selected, item.get("unit") or "")
+                item["purchase_units"] = math.ceil(item["quantity"] / item["pack_size"]) if item["quantity"] > 0 else 0
+                item["stock_confirmed"] = bool(selected.get("stock") is not None and selected["stock"] >= item["purchase_units"])
+                item["pickup_date"] = selected.get("pickup_date")
+                item["courier_date"] = selected.get("courier_date")
+                if selected.get("source_type") in {"price_list", "own_catalog"}:
+                    item["stock_confirmed"] = False
+                    item["availability_status"] = "цена из прайса/каталога; наличие требует подтверждения"
+                else:
+                    item["availability_status"] = (
+                        "количество подтверждено" if item["stock_confirmed"] else
+                        "доступно к заказу, количество не подтверждено" if item["courier_date"] else
+                        "доступно к самовывозу, количество не подтверждено" if item["pickup_date"] else
+                        "подтвержденного количества недостаточно" if selected.get("stock") is not None else "наличие не подтверждено")
                 include = form.get(f"include_{pos}") == "1"
                 item["decision"] = "approved" if include and item.get("selected") and item.get("proposed_unit_price") is not None else "excluded"
                 item["operator_included"] = include

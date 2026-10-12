@@ -35,6 +35,23 @@ class SupplierQuote:
     price_type: str | None = None
     score: float | None = None
     error: str | None = None
+    source_type: str | None = None
+    source_list_id: int | None = None
+    source_key: str | None = None
+    source_filename: str | None = None
+    source_sheet: str | None = None
+    source_row: int | None = None
+    price_date: str | None = None
+    source_url: str | None = None
+    original_price: float | None = None
+    vat_mode: str | None = None
+    vat_rate: float | None = None
+    pack_quantity: int | None = None
+    price_list_stock: float | None = None
+    selling_price: float | None = None
+    competitors_count: int | None = None
+    found_method: str | None = None
+    catalog_product_id: int | None = None
 
     def to_dict(self):
         return asdict(self)
@@ -598,8 +615,42 @@ class DisabledAdapter(SupplierAdapter):
         return [SupplierQuote(supplier=self.name, name=query, error="Адаптер ещё не подключён")]
 
 
+class PriceListAdapter(SupplierAdapter):
+    code = "price_lists"
+    name = "Загруженные прайсы"
+
+    @property
+    def enabled(self):
+        return True
+
+    def search(self, query, limit=8):
+        from price_lists import search_prices
+        try:
+            return search_prices(query, limit)
+        except Exception as exc:
+            return [SupplierQuote(supplier=self.name, name=query, error=f"Поиск в прайсах: {type(exc).__name__}")]
+
+
+class OwnCatalogAdapter(SupplierAdapter):
+    code = "own_catalog"
+    name = "Собственный каталог"
+
+    @property
+    def enabled(self):
+        return True
+
+    def search(self, query, limit=8):
+        from own_catalog import search_catalog
+        try:
+            return search_catalog(query, limit)
+        except Exception as exc:
+            return [SupplierQuote(supplier=self.name, name=query, error=f"Поиск в каталоге: {type(exc).__name__}")]
+
+
 def get_supplier_adapters() -> list[SupplierAdapter]:
     return [
+        OwnCatalogAdapter(),
+        PriceListAdapter(),
         VseinstrumentiAdapter(),
         KrepKompAdapter(),
         DisabledAdapter("ozon", "Ozon", "Нужен официальный API/партнёрский доступ для цен"),
