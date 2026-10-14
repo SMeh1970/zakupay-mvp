@@ -229,3 +229,42 @@ def test_unknown_login_route_is_not_reported_as_wrong_password(panel):
         with pytest.raises(sniper.SniperError, match="ошибка подключения"):
             sniper.SniperClient().login("smeh", "private-password")
     issue.assert_not_called()
+
+
+def test_login_normalizes_spaces_like_sniper_website(panel):
+    response = Mock(status_code=200)
+    response.__enter__ = Mock(return_value=response)
+    response.__exit__ = Mock(return_value=False)
+    response.json.return_value = {"access_token": "jwt"}
+    with patch.object(sniper.requests, "post", return_value=response) as login, \
+            patch.object(sniper.SniperClient, "call", return_value={"token": "pat"}):
+        sniper.SniperClient().login(" smeh ", " password \n")
+    assert login.call_args.kwargs["json"]["login"] == "smeh"
+    assert login.call_args.kwargs["json"]["password"] == "password"
+
+
+@pytest.mark.parametrize("detail,code", [("different fingerprints", "different_fingerprints"),
+    ("multiple login", "multiple_login"), ("invalid credentials", "invalid_credentials"),
+    ("password login not available", "password_login_unavailable")])
+def test_login_classifies_upstream_denial_without_inventing_password_error(panel, detail, code):
+    response = Mock(status_code=401)
+    response.__enter__ = Mock(return_value=response)
+    response.__exit__ = Mock(return_value=False)
+    response.json.return_value = {"detail": detail}
+    with patch.object(sniper.requests, "post", return_value=response), \
+            patch.object(sniper.SniperClient, "call") as issue:
+        with pytest.raises(sniper.SniperError, match=code):
+            sniper.SniperClient().login("smeh", "password")
+    issue.assert_not_called()
+
+
+def test_unknown_upstream_login_detail_cannot_leak_credentials(panel, caplog):
+    response = Mock(status_code=401)
+    response.__enter__ = Mock(return_value=response)
+    response.__exit__ = Mock(return_value=False)
+    response.json.return_value = {"detail": "Rejected password: private-password, token: private-token"}
+    with patch.object(sniper.requests, "post", return_value=response):
+        with pytest.raises(sniper.SniperError) as error:
+            sniper.SniperClient().login("smeh", "private-password")
+    assert "private-password" not in str(error.value) + caplog.text
+    assert "private-token" not in str(error.value) + caplog.text

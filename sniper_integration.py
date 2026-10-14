@@ -136,14 +136,36 @@ class SniperClient:
 
     def login(self, login, password):
         # The public login method has no PAT authentication.
+        # Match Sniper's Login-Bq9a_33M.js: both input values are trimmed.
+        login, password = login.strip(), password.strip()
         try:
             with requests.post(LOGIN_URL, json={"login": login, "password": password, "fingerprint": ""},
                                timeout=(8, 30), allow_redirects=False) as response:
                 if response.status_code != 200:
-                    logger.warning("Sniper login rejected: HTTP %s", response.status_code)
+                    # Only recognized non-secret codes may leave this method.
+                    # Arbitrary upstream detail can echo credentials/input.
+                    reasons = {
+                        "invalid credentials": ("invalid_credentials", "Sniper отклонил переданные данные входа. Если с ними работает вход на сайте, требуется проверка серверного входа со стороны Sniper."),
+                        "different fingerprints": ("different_fingerprints", "Sniper заблокировал вход с другого устройства. Требуется разрешение серверного доступа со стороны Sniper."),
+                        "multiple login": ("multiple_login", "Sniper ограничил одновременные входы в аккаунт."),
+                        "user banned": ("user_banned", "Sniper заблокировал аккаунт. Обратитесь в поддержку Sniper."),
+                        "password login not available": ("password_login_unavailable", "Для этого аккаунта Sniper недоступен вход по паролю. Используйте существующий API-токен."),
+                        "api access is restricted": ("api_access_restricted", "Sniper не разрешил доступ к API для этого аккаунта."),
+                    }
+                    reason = None
+                    try:
+                        rejected = response.json()
+                        detail = rejected.get("detail") if isinstance(rejected, dict) else None
+                        if isinstance(detail, str):
+                            reason = reasons.get(detail.strip().lower())
+                    except ValueError:
+                        pass
+                    logger.warning("Sniper login rejected: HTTP %s reason=%s", response.status_code, reason[0] if reason else "unknown")
+                    if reason:
+                        raise SniperError(f"{reason[1]} (HTTP {response.status_code}; {reason[0]})")
                     messages = {
                         400: "Sniper не принял данные входа (HTTP 400).",
-                        401: "Sniper не принял логин или пароль (HTTP 401).",
+                        401: "Sniper отклонил авторизацию (HTTP 401), не сообщив распознаваемую причину.",
                         403: "Sniper запретил вход или доступ с сервера (HTTP 403).",
                         404: "Адрес авторизации Sniper не найден (HTTP 404). Это ошибка подключения, а не проверка пароля.",
                         422: "Sniper отклонил формат данных авторизации (HTTP 422).",

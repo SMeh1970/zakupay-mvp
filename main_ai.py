@@ -41,7 +41,7 @@ from abacus_mcp import install_abacus_mcp
 
 ai_panel.analyze_order = analyze_order_v2
 
-DEPLOY_MARKER = "sniper-login-fix-2026-10-14"
+DEPLOY_MARKER = "sniper-login-diagnostics-2026-10-14"
 
 
 @app.get("/version")
