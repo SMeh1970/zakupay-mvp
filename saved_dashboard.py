@@ -213,8 +213,6 @@ def filter_form(state):
         field("creationDateFrom", "Дата заявки от", "date") + field("creationDateTo", "Дата заявки до", "date") +
         select("page_size", "На странице", {"25": "25", "50": "50", "100": "100"})
     )
-    advanced_keys = {"region", "category", "payment", "finishDateFrom", "finishDateTo", *NUMBER_FIELDS}
-    expanded = any(filters[key] != DEFAULTS[key] for key in advanced_keys)
     advanced = (
         field("region", "Регион") + field("category", "Категория товаров") +
         select("payment", "Условия оплаты", {"all": "Все", "prepayment": "Предоплата / без отсрочки", "delay": "Отсрочка"}) +
@@ -225,8 +223,10 @@ def filter_form(state):
     )
     errors = "".join(f"<p class='filter-error' role='alert'>{html.escape(error)}</p>" for error in state["errors"])
     return (
-        f"<section class='filter-panel'><form method='get' action='{URL}'><div class='filters'>{primary}</div>"
-        f"<details {'open' if expanded else ''}><summary>Дополнительные фильтры</summary><div class='filters'>{advanced}</div></details>"
+        f"<section class='filter-panel' id='request-filters'><h2>Фильтры заявок</h2>"
+        "<p>Чтобы показать только заявки Закупай, выберите источник «Закупай». Фильтры применяются к сохранённым заявкам.</p>"
+        f"<form method='get' action='{URL}'><div class='filters'>{primary}</div>"
+        f"<details open><summary>Регион, категория, оплата и другие параметры</summary><div class='filters'>{advanced}</div></details>"
         f"{errors}<div class='actions'><button class='button' type='submit'>Применить фильтры</button>"
         f"<a class='button secondary' href='{URL}'>Сбросить фильтры</a></div></form></section>"
         f"<p class='list-count' role='status'>Сохранено: <b>{state['total']}</b> · По фильтрам: <b>{state['matched']}</b> · Свежие даты сверху</p>"
