@@ -265,8 +265,10 @@ def _initialize_schema(conn) -> None:
                 conn.execute("ALTER TABLE automation_jobs ADD COLUMN viewed_at TEXT")
         from price_lists import initialize_schema as initialize_price_schema
         from own_catalog import initialize_schema as initialize_catalog_schema
+        from sniper_integration import initialize_schema as initialize_sniper_schema
         initialize_price_schema(conn, bool(DATABASE_URL))
         initialize_catalog_schema(conn, bool(DATABASE_URL))
+        initialize_sniper_schema(conn, bool(DATABASE_URL))
         conn.commit()
         _initialized_database_key = key
 
@@ -2154,7 +2156,8 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
             "<div class='actions'><form method='post' action='/dashboard/automation/sync'><button class='button' type='submit'>Получить из Закупай</button></form>"
             "<a class='button secondary' href='/dashboard/automation/manual'>+ Добавить вручную</a>"
             "<a class='button secondary' href='/dashboard/prices'>Прайсы</a>"
-            "<a class='button secondary' href='/dashboard/catalog'>Наш каталог</a></div>"
+            "<a class='button secondary' href='/dashboard/catalog'>Наш каталог</a>"
+            "<a class='button secondary' href='/dashboard/sniper'>Sniper Search</a></div>"
             + sync_report + filter_form(state)
             + ("<p class='muted'>Есть заявки в обработке. Обновите страницу, чтобы увидеть результат поиска.</p>" if has_processing else "")
             + ("".join(cards) if cards else "<p class='empty'>Нет заявок по выбранным фильтрам. Сбросьте фильтры, загрузите заявки из Закупай или добавьте заявку вручную.</p>")
@@ -2268,6 +2271,7 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
                     f"{navigation_notice}"
                     "<p><b>Поиск цен ещё не запускался.</b> Сначала проверьте состав заявки, затем запустите поиск для выбранных позиций.</p>"
                     f"<p><b>Дата заявки:</b> {html.escape(order_date)} · <b>Заказчик:</b> {html.escape(customer_name)}</p>"
+                    f"<p><a href='/dashboard/sniper?job_id={job_id}'>Найти поставщиков или подготовить рассылку через Sniper</a></p>"
                     f"<p><b>Адрес доставки:</b> {html.escape(str(order.get('deliveryAddress') or 'не передан'))}</p>"
                     f"<p>Получено и сохранено позиций: <b>{len(source_items)}</b>. Отметьте строки, для которых нужно найти цены и подготовить предложение.</p>"
                     f"<form method='post' action='/dashboard/automation/jobs/{job_id}/start'>"
@@ -2411,7 +2415,7 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
                 f"<form id='review-form' method='post' action='/dashboard/automation/jobs/{job_id}/review'></form>{''.join(row_search_forms)}<table><tr><th>Включить</th><th>№</th><th>Заявка</th><th>Подбор поставщика<br><small>(закупочная цена)</small></th><th>Количество</th><th>Наша цена<br><small>за единицу заявки (+5%)</small></th>"
                 "<th>Статус подбора</th><th>Замена</th><th>Наличие</th><th>Срок</th><th>Решение</th></tr>"
                 + "".join(table_rows) + "</table>" + save_control + invoice_link + offer_link
-                + f"<p><a href='/dashboard/automation/jobs/{job_id}/catalog-sale'>Сохранить успешную продажу в наш каталог</a> · <a href='/dashboard/prices'>Прайсы</a> · <a href='/dashboard/catalog'>Наш каталог</a></p>"
+                + f"<p><a href='/dashboard/automation/jobs/{job_id}/catalog-sale'>Сохранить успешную продажу в наш каталог</a> · <a href='/dashboard/prices'>Прайсы</a> · <a href='/dashboard/catalog'>Наш каталог</a> · <a href='/dashboard/sniper?job_id={job_id}'>Найти поставщиков через Sniper</a></p>"
                 + f"<script nonce='{review_script_nonce}'>document.querySelectorAll('.candidate-select').forEach(input=>input.addEventListener('change',()=>{{document.getElementById('price-'+input.dataset.position).value=input.options[input.selectedIndex].dataset.price||''}}));</script>"
                 + "</main></body></html>"
             ),

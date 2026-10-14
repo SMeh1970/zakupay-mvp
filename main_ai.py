@@ -34,13 +34,14 @@ from price_estimator import analyze_order_v2
 from supplier_panel import install_supplier_panel
 from price_lists import install_price_lists
 from own_catalog import install_own_catalog
+from sniper_integration import install_sniper
 from procurement import install_procurement
 from security import OAUTH_SCOPE, PANEL_USERNAME, _origin, _sign_payload, _valid_session, current_mcp_resource
 from abacus_mcp import install_abacus_mcp
 
 ai_panel.analyze_order = analyze_order_v2
 
-DEPLOY_MARKER = "price-lists-own-catalog-2026-10-12"
+DEPLOY_MARKER = "sniper-manual-search-2026-10-14"
 
 
 @app.get("/version")
@@ -184,6 +185,7 @@ install_api_discovery(
 install_supplier_panel(app, esc=esc)
 install_price_lists(app)
 install_own_catalog(app)
+install_sniper(app)
 install_offer_panel(
     app,
     fetch_all_orders=fetch_all_orders,
