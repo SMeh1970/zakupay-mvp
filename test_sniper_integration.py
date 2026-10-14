@@ -201,7 +201,31 @@ def test_credentials_use_documented_login_and_do_not_renew(panel):
     with patch.object(sniper.requests, "post", return_value=response) as login, \
             patch.object(sniper.SniperClient, "call", return_value={"token": "pat"}) as issue:
         assert sniper.SniperClient().login("smeh", "password") == {"token": "pat"}
-    assert login.call_args.args == ("https://sniper-search.ru/user/login",)
+    assert login.call_args.args == ("https://sniper-search.ru/api/bff/v1/user/login",)
     assert login.call_args.kwargs["json"] == {"login": "smeh", "password": "password", "fingerprint": ""}
     assert issue.call_args.args == ("POST", "/api/v0/token/issue")
     assert issue.call_args.kwargs == {"bearer": "jwt"}
+
+
+def test_failed_connection_preserves_login_and_shows_visible_result(panel):
+    with patch.object(sniper.SniperClient, "login", side_effect=sniper.SniperError("Ошибка подключения HTTP 404")):
+        response = panel.post("/dashboard/sniper/connect", data={"csrf": csrf(panel),
+            "sniper_account_login": "smeh", "sniper_account_password": "private-password"}, follow_redirects=False)
+    assert response.status_code == 200
+    assert "role='alert'" in response.text
+    assert "HTTP 404" in response.text
+    assert "name='sniper_account_login' value='smeh'" in response.text
+    assert "autocomplete='current-password'" not in response.text
+    assert "private-password" not in response.text
+    assert "Аккаунт ещё не подключён" in response.text
+
+
+def test_unknown_login_route_is_not_reported_as_wrong_password(panel):
+    response = Mock(status_code=404)
+    response.__enter__ = Mock(return_value=response)
+    response.__exit__ = Mock(return_value=False)
+    with patch.object(sniper.requests, "post", return_value=response), \
+            patch.object(sniper.SniperClient, "call") as issue:
+        with pytest.raises(sniper.SniperError, match="ошибка подключения"):
+            sniper.SniperClient().login("smeh", "private-password")
+    issue.assert_not_called()

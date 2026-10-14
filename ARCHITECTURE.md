@@ -38,7 +38,11 @@
 
 Private panel: `/dashboard/sniper`; linked from the saved requests list and
 request review. The user enters a Sniper PAT or logs in to issue one using
-`POST /user/login` then `POST /api/v0/token/issue`. An existing PAT is never
+`POST /api/bff/v1/user/login` then `POST /api/v0/token/issue`. The login path in
+the docs is relative to the site's BFF base; the actual base was verified in
+the site's public frontend. Login failures preserve the username and show an
+inline alert with the HTTP status; secret fields are cleared and use separate
+field names and autocomplete hints from the private panel login. An existing PAT is never
 automatically revoked. The password is not stored; the PAT is Fernet encrypted
 in PostgreSQL using a key derived from the stable application signing secret
 (fallback: Zakupay API key). Changing that secret requires reconnecting Sniper.

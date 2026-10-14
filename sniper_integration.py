@@ -10,6 +10,7 @@ import hashlib
 import hmac
 import html
 import json
+import logging
 import os
 import time
 import uuid
@@ -27,7 +28,11 @@ from price_lists import database, execute, page, safe_url
 from security import SESSION_COOKIE, _decode_payload, _sign_payload, _valid_session
 
 API_BASE = "https://sniper-search.ru"
+# /user/login is relative to the website's BFF base, not its public API base.
+# Verified in Sniper's /app/assets/index-BufPZ8VP.js on 2026-10-14.
+LOGIN_URL = API_BASE + "/api/bff/v1/user/login"
 MAX_RESPONSE = 4 * 1024 * 1024
+logger = logging.getLogger("zakupay.sniper")
 
 
 def initialize_schema(conn, postgres):
@@ -132,11 +137,21 @@ class SniperClient:
     def login(self, login, password):
         # The public login method has no PAT authentication.
         try:
-            with requests.post(API_BASE + "/user/login", json={"login": login, "password": password, "fingerprint": ""},
+            with requests.post(LOGIN_URL, json={"login": login, "password": password, "fingerprint": ""},
                                timeout=(8, 30), allow_redirects=False) as response:
                 if response.status_code != 200:
-                    raise SniperError("Вход в Sniper не выполнен. Проверьте логин, пароль и доступ к API.")
-                jwt = response.json().get("access_token")
+                    logger.warning("Sniper login rejected: HTTP %s", response.status_code)
+                    messages = {
+                        400: "Sniper не принял данные входа (HTTP 400).",
+                        401: "Sniper не принял логин или пароль (HTTP 401).",
+                        403: "Sniper запретил вход или доступ с сервера (HTTP 403).",
+                        404: "Адрес авторизации Sniper не найден (HTTP 404). Это ошибка подключения, а не проверка пароля.",
+                        422: "Sniper отклонил формат данных авторизации (HTTP 422).",
+                        429: "Sniper временно ограничил попытки входа (HTTP 429).",
+                    }
+                    raise SniperError(messages.get(response.status_code, f"Вход в Sniper не выполнен: HTTP {response.status_code}."))
+                data = response.json()
+                jwt = (data.get("access_token") or data.get("accessToken") or data.get("token")) if isinstance(data, dict) else None
                 if not isinstance(jwt, str) or not jwt:
                     raise SniperError("Sniper не вернул токен авторизации.")
         except (requests.RequestException, json.JSONDecodeError):
@@ -306,7 +321,7 @@ def install_sniper(app):
     router = APIRouter(prefix="/dashboard/sniper", dependencies=[Depends(require_session)])
 
     @router.get("")
-    def dashboard(request: Request, message: str = "", job_id: int = 0):
+    def dashboard(request: Request, message: str = "", job_id: int = 0, login: str = "", connection_error: bool = False):
         saved = settings()
         configured = bool(saved.get("encrypted_token") or os.getenv("SNIPER_API_TOKEN"))
         state = "Доступ проверен " + esc(saved["verified_at"]) if saved.get("verified_at") else "Ключ настроен, доступ ещё не проверен" if configured else "Аккаунт ещё не подключён"
@@ -328,8 +343,13 @@ def install_sniper(app):
             rows = execute(conn, "SELECT id,name,kind,state,remote_status,created_at FROM sniper_requests ORDER BY created_at DESC LIMIT 100").fetchall()
         email_text = "Добрый день.\nПросим сообщить цены, наличие и сроки поставки:\n" + goods if goods else ""
         history = "".join(f"<tr><td><a href='/dashboard/sniper/requests/{esc(row['id'])}'>{esc(row['name'])}</a></td><td>{'Поиск' if row['kind']=='scan' else 'Рассылка'}</td><td>{esc(row['remote_status'] or row['state'])}</td><td>{esc(row['created_at'])}</td></tr>" for row in rows)
-        body = f"<h1>Sniper Search</h1><p>{esc(message)}</p><section><h2>Подключение</h2><p>{state}</p>"
-        body += start_form(request, "/dashboard/sniper/connect") + "<label>Логин Sniper <input name='login' autocomplete='username' maxlength='255'></label><label>Пароль Sniper <input type='password' name='password' autocomplete='current-password' maxlength='1000'></label><p>Или укажите уже выпущенный API-токен:</p><label>API-токен <input type='password' name='pat' autocomplete='off' maxlength='8192'></label><p class='note'>Используйте пароль аккаунта Sniper, а не пароль почтового ящика. Пароль не сохраняется. Действующий токен автоматически не перевыпускается.</p><button>Подключить и проверить доступ</button></form>"
+        notice = f"<div role='{'alert' if connection_error else 'status'}' style='padding:16px;border:2px solid {'#b3261e' if connection_error else '#1a73e8'};border-radius:8px;margin:12px 0'><b>{esc(message)}</b></div>" if message else ""
+        body = f"<h1>Sniper Search</h1><section><h2>Подключение</h2>{notice}<p>{state}</p>"
+        if configured and not connection_error:
+            body += "<details><summary>Изменить подключение Sniper</summary>"
+        body += start_form(request, "/dashboard/sniper/connect").replace("<form ", "<form autocomplete='off' ", 1) + f"<label>Логин Sniper <input name='sniper_account_login' value='{esc(login[:255])}' autocomplete='off' maxlength='255'></label><label>Пароль Sniper <input type='password' name='sniper_account_password' autocomplete='new-password' maxlength='1000'></label><p>Или укажите уже выпущенный API-токен:</p><label>API-токен <input type='password' name='sniper_pat' autocomplete='new-password' maxlength='8192'></label><p class='note'>Используйте пароль аккаунта Sniper, а не пароль почтового ящика. Пароль не сохраняется. Действующий токен автоматически не перевыпускается.</p><button>Подключить и проверить доступ</button></form>"
+        if configured and not connection_error:
+            body += "</details>"
         if configured:
             body += start_form(request, "/dashboard/sniper/check") + "<button>Проверить доступ без поиска и рассылки</button></form>"
         body += "</section><section><h2>Новый запрос</h2><p>Поиск собирает контакты поставщиков. Рассылка дополнительно ищет поставщиков и отправляет им письмо от вашего аккаунта Sniper.</p>"
@@ -343,13 +363,15 @@ def install_sniper(app):
     @router.post("/connect")
     async def connect(request: Request):
         form = await checked_form(request)
+        entered_login = str(form.get("sniper_account_login", form.get("login", ""))).strip()
         def work():
-            if form.get("pat"):
-                pat = str(form["pat"]).strip()
+            supplied_pat = str(form.get("sniper_pat", form.get("pat", ""))).strip()
+            if supplied_pat:
+                pat = supplied_pat
                 data = SniperClient(pat).languages()
                 save_token(pat, languages=data)
             else:
-                login, password = str(form.get("login", "")).strip(), str(form.get("password", ""))
+                login, password = entered_login, str(form.get("sniper_account_password", form.get("password", "")))
                 if not login or not password or len(login) > 255 or len(password) > 1000:
                     raise ValueError("Введите логин и пароль Sniper или API-токен.")
                 cipher()  # Check durable encryption before issuing a one-time token.
@@ -362,7 +384,7 @@ def install_sniper(app):
             await run_in_threadpool(work)
             return redirect("Sniper подключён. Доступ к API проверен. Поиск и рассылка не запускались.")
         except ValueError as error:
-            return redirect(str(error))
+            return await run_in_threadpool(dashboard, request, message=str(error), login=entered_login, connection_error=True)
 
     @router.post("/check")
     async def check(request: Request):
