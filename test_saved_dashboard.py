@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 import automation_pipeline as pipeline
 import security
 from saved_dashboard import listing_query
+from zakupay_categories import load_categories, save_categories
 
 
 ORDER = {
@@ -19,7 +20,7 @@ ORDER = {
     "finishDate": "2026-10-10", "delay": 0, "region": {"name": "Москва"},
     "customer": {"name": "ООО Строитель", "inn": "7716997861"},
     "orderItems": [{"goodName": "Труба стальная", "count": 2, "unit": {"name": "шт"},
-                    "category": {"name": "Металлопрокат"}, "companiesWithOffersCount": 2}],
+                    "category": {"id": 7, "name": "Металлопрокат"}, "companiesWithOffersCount": 2}],
 }
 
 
@@ -69,7 +70,7 @@ class SavedDashboardTests(unittest.TestCase):
         with patch.object(pipeline, "build_vi_draft") as search:
             cases = [
                 ({"keyword": "СТАЛЬНАЯ", "customer": "строитель", "inn": "7716", "source": "zakupay",
-                  "region": "моск", "category": "Металл", "payment": "prepayment", "min_positions": "1", "max_competitors": "2"}, self.first),
+                  "region": "моск", "category_id": "7", "payment": "prepayment", "min_positions": "1", "max_competitors": "2"}, self.first),
                 ({"title": "склада", "payment": "delay", "delayFrom": "20", "delayTo": "30"}, self.second),
                 ({"creationDateFrom": "2026-09-29", "creationDateTo": "2026-09-29", "finishDateTo": "2026-10-10"}, self.first),
                 ({"source": "manual", "order_id": "M-7"}, self.manual),
@@ -83,6 +84,76 @@ class SavedDashboardTests(unittest.TestCase):
             self.fetch.assert_not_called()
             self.fetch_all.assert_not_called()
             search.assert_not_called()
+
+    def test_categories_use_real_ids_and_reject_invented_or_partial_names(self):
+        changed = copy.deepcopy(ORDER)
+        changed["orderItems"][0]["category"] = {"id": 71, "name": "Металлопрокат специальный"}
+        with pipeline._connect() as conn:
+            conn.execute("UPDATE automation_jobs SET order_json=? WHERE id=?", (json.dumps(changed), self.second["job_id"]))
+        self.assertEqual(self.ids(category_id="7"), [str(self.first["job_id"])])
+        self.assertEqual(self.ids(category_id="71"), [str(self.second["job_id"])])
+        self.assertEqual(self.ids(category="Металлопрокат"), [str(self.first["job_id"])])
+        self.assertEqual(self.ids(category="Металл"), [])
+        self.assertEqual(self.ids(category_id="12345678"), [])
+        response = self.client.get("/dashboard/automation", params={"customer": "no matches", "category_id": "7"})
+        self.assertIn("<select name='category_id'>", response.text)
+        self.assertIn("<option value='7' selected>Металлопрокат</option>", response.text)
+        self.assertIn("<option value='71'", response.text)
+        self.assertNotIn("<input type='text' name='category'", response.text)
+        self.assertIn("пока только категории сохранённых заявок", response.text)
+        self.fetch.assert_not_called()
+        self.fetch_all.assert_not_called()
+
+    def test_official_parent_includes_children_and_survives_failed_refresh(self):
+        reference = [{"id": 1, "name": "Стройматериалы"},
+                     {"id": 7, "name": "Металлопрокат", "parent": {"id": 1}},
+                     {"id": 99, "name": "Крепёж <спец>", "parent": {"id": 1}}]
+        with pipeline._connect() as conn:
+            save_categories(conn, pipeline._execute, reference)
+        self.assertEqual(set(self.ids(category_id="1")), {str(self.first["job_id"]), str(self.second["job_id"])})
+        self.assertEqual(self.ids(category_id="99"), [])
+        response = self.client.get("/dashboard/automation", params={"category_id": "99"})
+        self.assertIn("Стройматериалы → Крепёж &lt;спец&gt;", response.text)
+        self.assertIn("Категории загружены из справочника Закупай", response.text)
+        # A refresh without a configured callback cannot erase the cache.
+        failed = self.client.post("/dashboard/automation/categories/sync", follow_redirects=False)
+        self.assertIn("categories_notice=unavailable", failed.headers["location"])
+        with pipeline._connect() as conn:
+            self.assertEqual(len(load_categories(conn)[0]), 3)
+
+    def test_legacy_snapshots_without_category_ids_use_exact_known_names(self):
+        order = copy.deepcopy(ORDER)
+        order["orderItems"][0]["category"] = {"name": "Товар без ID"}
+        with pipeline._connect() as conn:
+            conn.execute("UPDATE automation_jobs SET order_json=? WHERE id=?", (json.dumps(order), self.first["job_id"]))
+        self.assertEqual(self.ids(category="Товар без ID"), [str(self.first["job_id"])])
+        self.assertEqual(self.ids(category_id="name:товар без id"), [str(self.first["job_id"])])
+        self.assertEqual(self.ids(category="Товар"), [])
+
+    def test_category_refresh_reads_reference_only_and_bad_response_keeps_cache(self):
+        fetch_categories = Mock(return_value=[{"id": 1, "name": "Официальная категория"}])
+        app = FastAPI()
+        pipeline.install_automation_pipeline(app, self.fetch, fetch_all_orders=self.fetch_all, fetch_categories=fetch_categories)
+        security.install_security(app)
+        # Control the startup thread so this also verifies the cache warm-up once.
+        with patch.object(pipeline.threading, "Thread") as thread:
+            with TestClient(app) as client:
+                thread.call_args.kwargs["target"]()
+                self.assertEqual(fetch_categories.call_count, 1)
+                thread.call_args.kwargs["target"]()
+                self.assertEqual(fetch_categories.call_count, 1)
+                self.assertEqual(client.get("/dashboard/automation").status_code, 200)
+                self.assertEqual(client.get("/dashboard/automation/categories/sync", follow_redirects=False).status_code, 303)
+                self.assertEqual(fetch_categories.call_count, 1)
+                good = client.post("/dashboard/automation/categories/sync", follow_redirects=False)
+                self.assertIn("categories_notice=updated", good.headers["location"])
+                fetch_categories.return_value = []
+                failed = client.post("/dashboard/automation/categories/sync", follow_redirects=False)
+                self.assertIn("categories_notice=unavailable", failed.headers["location"])
+        with pipeline._connect() as conn:
+            self.assertEqual(load_categories(conn)[0][0]["name"], "Официальная категория")
+        self.fetch.assert_not_called()
+        self.fetch_all.assert_not_called()
 
     def test_viewed_and_offer_filters_track_actual_state(self):
         self.client.get(f"/dashboard/automation/jobs/{self.first['job_id']}/review")
@@ -189,7 +260,8 @@ class SavedDashboardTests(unittest.TestCase):
 class ProductionNavigationTests(unittest.TestCase):
     def test_legacy_detail_uses_saved_review_and_root_opens_unified_list(self):
         import main_ai
-        with TestClient(main_ai.app) as client, patch.object(main_ai, "_valid_session", return_value=True), \
+        with patch.object(main_ai.app.router, "on_startup", []), TestClient(main_ai.app) as client, \
+                patch.object(main_ai, "_valid_session", return_value=True), \
                 patch.object(main_ai, "saved_job_id", return_value=42) as lookup, \
                 patch.object(security, "_valid_session", return_value=True), \
                 patch.object(main_ai, "fetch_all_orders", side_effect=AssertionError("No external fetch")):

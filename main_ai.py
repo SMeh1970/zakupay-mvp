@@ -10,7 +10,7 @@ from starlette.concurrency import run_in_threadpool
 
 from main import (
     app, api_filter_dict, compact_order, esc, fetch_all_orders, fetch_order_by_id, filter_orders,
-    has_my_offer, max_competitors, zakupay_headers, ZAKUPAY_BASE_URL,
+    has_my_offer, max_competitors, zakupay_headers, ZAKUPAY_BASE_URL, ZAKUPAY_API_KEY, fetch_category_reference,
 )
 from automation_pipeline import (
     begin_offer_submission,
@@ -41,7 +41,7 @@ from abacus_mcp import install_abacus_mcp
 
 ai_panel.analyze_order = analyze_order_v2
 
-DEPLOY_MARKER = "request-filters-visible-2026-10-14"
+DEPLOY_MARKER = "zakupay-category-dropdown-2026-10-15"
 
 
 @app.get("/version")
@@ -208,6 +208,7 @@ install_automation_pipeline(
     fetch_order_by_id=fetch_order_by_id,
     fetch_all_orders=fetch_all_orders,
     has_my_offer=has_my_offer,
+    fetch_categories=fetch_category_reference if ZAKUPAY_API_KEY else None,
 )
 install_procurement(app)
 install_abacus_mcp(

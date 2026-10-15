@@ -109,8 +109,10 @@ class PriceListsCatalogTests(unittest.TestCase):
         self.assertEqual(prices.search_prices(NAME)[0].price, 10)
 
     def test_duplicate_and_disabled_prices(self):
-        old = self.import_price(price=10)
-        duplicate, _ = self.stage(price=10)
+        old, content = self.stage(price=10)
+        prices.activate_list(old, settings())
+        # Re-upload the same bytes; freshly generated XLSX ZIP timestamps vary.
+        duplicate = prices.stage_file(content, "price.xlsx", "Поставщик прайса", "Основной", TODAY)
         self.assertTrue(prices.activate_list(duplicate, settings())["duplicate"])
         self.assertEqual(len(prices.search_prices(NAME)), 1)
         self.client.post(f"/dashboard/prices/{old}/toggle")

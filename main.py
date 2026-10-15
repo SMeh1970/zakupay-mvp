@@ -56,6 +56,21 @@ def zakupay_headers():
     return {"ZakupayToken": ZAKUPAY_API_KEY, "Accept": "application/json"}
 
 
+def fetch_category_reference():
+    """Read the official reference using the server's existing integration token."""
+    from zakupay_categories import normalize_categories
+    response = _zakupay_request(
+        requests.get, f"{ZAKUPAY_BASE_URL.rstrip('/')}/api/v1/refbooks/categories",
+        headers=zakupay_headers(), params={"format": "json"}, allow_redirects=False,
+    )
+    if response.status_code != 200:
+        raise HTTPException(status_code=502, detail="Закупай не отдал справочник категорий.")
+    data = response.json()
+    if not isinstance(data, dict) or data.get("result") is not True:
+        raise ValueError("Закупай не отдал справочник категорий.")
+    return normalize_categories(data.get("categories"))
+
+
 def clean_params(params):
     result = {}
     for key, value in params.items():

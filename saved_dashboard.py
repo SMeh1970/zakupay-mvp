@@ -7,6 +7,7 @@ from urllib.parse import urlencode
 from zoneinfo import ZoneInfo
 
 from invoice_generator import normalize_customer
+from zakupay_categories import category_id, category_choices, category_descendants
 
 
 URL = "/dashboard/automation"
@@ -21,7 +22,7 @@ STATUSES = {
 DEFAULTS = {
     "keyword": "", "title": "", "order_id": "", "customer": "", "inn": "",
     "source": "all", "status": "all", "viewed": "all", "offer": "all",
-    "region": "", "category": "", "payment": "all",
+    "region": "", "category": "", "category_id": "", "payment": "all",
     "creationDateFrom": "", "creationDateTo": "",
     "finishDateFrom": "", "finishDateTo": "",
     "min_positions": "", "max_positions": "", "max_competitors": "",
@@ -95,7 +96,14 @@ def describe(row):
     legacy_items = result.get("items") or []
     summary = result.get("summary") or {}
     sent = bool(result.get("live_offer_created") or row["status"] == "offer_created" or order.get("offers") or any(item.get("offerIds") for item in items))
-    category = " | ".join(_name(item.get("category")) for item in items)
+    categories = {}
+    for item in items:
+        value = item.get("category")
+        name = _name(value).strip()
+        key = category_id(value.get("id")) if isinstance(value, dict) else ""
+        if name:
+            categories[key or "name:" + _norm(name)] = name
+    category = " | ".join(categories.values())
     title = str(order.get("name") or result.get("order_name") or row["subject"] or "")
     search_text = " ".join([title, customer["name"], str(row["order_id"]), str(result.get("manual_reference") or "")] +
                            [str(item.get("goodName") or item.get("name") or "") + " " + str(item.get("comment") or "") for item in items] +
@@ -112,7 +120,7 @@ def describe(row):
         "date": order_datetime(order.get("creationDate") or order.get("publicDate") or result.get("order_creation_date")),
         "finish": order_datetime(order.get("finishDate")),
         "positions": len(items) if items else summary.get("positions") or len(legacy_items),
-        "region": _name(order.get("region")), "category": category,
+        "region": _name(order.get("region")), "category": category, "categories": categories,
         "delay": _number(order.get("delay")), "terms": str(order.get("paymentTerms") or ""),
         "competitors": max(known_competitors) if known_competitors else None,
         "search": search_text,
@@ -148,10 +156,12 @@ def filters_from_query(query):
     return filters, list(dict.fromkeys(errors))
 
 
-def matches(item, filters):
-    for key, field in (("keyword", "search"), ("title", "title"), ("customer", "customer"), ("inn", "inn"), ("region", "region"), ("category", "category")):
+def matches(item, filters, selected_categories=None):
+    for key, field in (("keyword", "search"), ("title", "title"), ("customer", "customer"), ("inn", "inn"), ("region", "region")):
         if filters[key] and _norm(filters[key]) not in _norm(item[field]):
             return False
+    if filters["category_id"] and not set(item["categories"]).intersection(selected_categories or {filters["category_id"]}):
+        return False
     if filters["order_id"] and filters["order_id"] not in {item["order_id"], item["reference"]}:
         return False
     for key in ("source", "status"):
@@ -177,10 +187,29 @@ def matches(item, filters):
     return True
 
 
-def select_page(rows, query):
+def select_page(rows, query, reference=None, reference_updated=""):
     filters, errors = filters_from_query(query)
     saved = [describe(row) for row in rows]
-    filtered = [] if errors else [item for item in saved if matches(item, filters)]
+    reference = reference or []
+    choices = category_choices(saved, reference)
+    # Old links may contain a category name. Accept only one exact known name,
+    # never the previous arbitrary substring search.
+    if filters["category"] and not filters["category_id"]:
+        names = {row["id"]: row["name"] for row in reference}
+        for item in saved:
+            for key, name in item["categories"].items():
+                names.setdefault(key, name)
+        keys = [key for key, name in names.items() if _norm(name) == _norm(filters["category"])]
+        if len(keys) == 1:
+            filters["category_id"], filters["category"] = keys[0], ""
+        else:
+            errors.append("Выберите категорию Закупай из списка: свободный ввод не поддерживается.")
+    if filters["category_id"] and filters["category_id"] not in choices:
+        errors.append("Выбранная категория недоступна. Обновите категории или выберите другую из списка.")
+    if filters["category_id"]:
+        filters["category"] = ""
+    selected = category_descendants(filters["category_id"], reference)
+    filtered = [] if errors else [item for item in saved if matches(item, filters, selected)]
     filtered.sort(key=lambda item: (item["date"].timestamp() if item["date"] else float("-inf"), item["id"]), reverse=True)
     size = int(filters["page_size"])
     pages = max(1, (len(filtered) + size - 1) // size)
@@ -192,6 +221,7 @@ def select_page(rows, query):
         "filters": filters, "errors": errors, "total": len(saved), "matched": len(filtered),
         "page": page, "pages": pages, "size": size,
         "items": filtered[(page - 1) * size:page * size],
+        "category_choices": choices, "category_reference_updated": reference_updated,
     }
 
 
@@ -201,8 +231,11 @@ def filter_form(state):
         minimum = " min='0'" if kind == "number" else ""
         return f"<label>{label}<input type='{kind}' name='{key}' value='{html.escape(filters[key], quote=True)}'{minimum}></label>"
     def select(key, label, options):
-        values = "".join(f"<option value='{value}' {'selected' if filters[key] == value else ''}>{text}</option>" for value, text in options.items())
+        values = "".join(f"<option value='{html.escape(value, quote=True)}' {'selected' if filters[key] == value else ''}>{html.escape(text)}</option>" for value, text in options.items())
         return f"<label>{label}<select name='{key}'>{values}</select></label>"
+    categories = {"": "Все категории", **state["category_choices"]}
+    if filters["category_id"] and filters["category_id"] not in categories:
+        categories[filters["category_id"]] = "Недоступная категория — выберите из списка"
     primary = (
         field("keyword", "Поиск по заявке и товарам") + field("title", "Название заявки") + field("order_id", "Номер заявки") +
         field("customer", "Заказчик") + field("inn", "ИНН заказчика") +
@@ -214,7 +247,7 @@ def filter_form(state):
         select("page_size", "На странице", {"25": "25", "50": "50", "100": "100"})
     )
     advanced = (
-        field("region", "Регион") + field("category", "Категория товаров") +
+        field("region", "Регион") + select("category_id", "Категория Закупай", categories) +
         select("payment", "Условия оплаты", {"all": "Все", "prepayment": "Предоплата / без отсрочки", "delay": "Отсрочка"}) +
         field("min_positions", "Минимум позиций", "number") + field("max_positions", "Максимум позиций", "number") +
         field("max_competitors", "Не более конкурентов", "number") +
@@ -222,9 +255,15 @@ def filter_form(state):
         field("delayFrom", "Отсрочка от, дней", "number") + field("delayTo", "Отсрочка до, дней", "number")
     )
     errors = "".join(f"<p class='filter-error' role='alert'>{html.escape(error)}</p>" for error in state["errors"])
+    category_note = (
+        "Категории загружены из справочника Закупай. Выбор раздела включает его подкатегории."
+        if state["category_reference_updated"] else
+        "В списке категорий пока только категории сохранённых заявок. Нажмите «Обновить категории», чтобы загрузить справочник Закупай."
+    )
     return (
         f"<section class='filter-panel' id='request-filters'><h2>Фильтры заявок</h2>"
         "<p>Чтобы показать только заявки Закупай, выберите источник «Закупай». Фильтры применяются к сохранённым заявкам.</p>"
+        f"<p>{category_note}</p>"
         f"<form method='get' action='{URL}'><div class='filters'>{primary}</div>"
         f"<details open><summary>Регион, категория, оплата и другие параметры</summary><div class='filters'>{advanced}</div></details>"
         f"{errors}<div class='actions'><button class='button' type='submit'>Применить фильтры</button>"

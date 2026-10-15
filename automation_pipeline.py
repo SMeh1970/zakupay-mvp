@@ -34,6 +34,7 @@ from vi_order_match import _contains_brand, _identifiers, _label, _measurements,
 from zakupay_email import parse_zakupay_email
 from invoice_generator import build_invoice_xlsx, customer_validation_error, normalize_customer
 from saved_dashboard import STATUSES, filter_form, listing_query, pagination, select_page
+from zakupay_categories import SCHEMA as CATEGORY_SCHEMA, load_categories, save_categories
 
 
 DB_PATH = os.getenv("AUTOMATION_DB_PATH", "automation.db")
@@ -269,6 +270,7 @@ def _initialize_schema(conn) -> None:
         initialize_price_schema(conn, bool(DATABASE_URL))
         initialize_catalog_schema(conn, bool(DATABASE_URL))
         initialize_sniper_schema(conn, bool(DATABASE_URL))
+        conn.execute(CATEGORY_SCHEMA)
         conn.commit()
         _initialized_database_key = key
 
@@ -1617,7 +1619,48 @@ def process_api_order(order: dict) -> dict:
     return save_api_order_for_manual_start(order)
 
 
-def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, has_my_offer=None):
+def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, has_my_offer=None, fetch_categories=None):
+    category_lock = threading.Lock()
+
+    def refresh_categories(only_if_empty=False):
+        if fetch_categories is None:
+            raise ValueError("Загрузка категорий не настроена.")
+        with category_lock:
+            if only_if_empty:
+                with _connect() as conn:
+                    if load_categories(conn)[0]:
+                        return
+            rows = fetch_categories()
+            with _connect() as conn:
+                count = save_categories(conn, _execute, rows)
+            logger.info("Zakupay category reference saved count=%s", count)
+
+    def warm_categories():
+        try:
+            refresh_categories(only_if_empty=True)
+        except Exception:
+            # Saved request categories remain available; do not discard old cache.
+            logger.warning("Zakupay category reference unavailable; using saved categories")
+
+    if fetch_categories is not None:
+        def start_category_cache():
+            threading.Thread(target=warm_categories, name="zakupay-categories", daemon=True).start()
+        app.router.on_startup.append(start_category_cache)
+
+    @app.post("/dashboard/automation/categories/sync")
+    def automation_categories_sync():
+        try:
+            refresh_categories()
+            notice = "updated"
+        except Exception:
+            logger.warning("Zakupay category refresh failed; keeping existing cache")
+            notice = "unavailable"
+        return Response(status_code=303, headers={"Location": f"/dashboard/automation?categories_notice={notice}"})
+
+    @app.get("/dashboard/automation/categories/sync")
+    def automation_categories_sync_navigation():
+        return Response(status_code=303, headers={"Location": "/dashboard/automation"})
+
     @app.exception_handler(AutomationDatabaseUnavailable)
     async def automation_database_unavailable(request: Request, exc: AutomationDatabaseUnavailable):
         message = html.escape(str(exc))
@@ -2034,9 +2077,12 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
         skipped: int = 0,
         sync_error: str = "",
         sync_notice: str = "",
+        categories_notice: str = "",
     ):
         with _connect() as conn:
-            state = select_page(_execute(conn, listing_query(bool(DATABASE_URL))).fetchall(), request.query_params)
+            reference, reference_updated = load_categories(conn)
+            state = select_page(_execute(conn, listing_query(bool(DATABASE_URL))).fetchall(), request.query_params,
+                                reference, reference_updated)
             ids = [item["id"] for item in state["items"]]
             page_rows = _execute(conn, "SELECT * FROM automation_jobs WHERE id IN (" + ",".join("?" for _ in ids) + ")", tuple(ids)).fetchall() if ids else []
             by_id = {int(row["id"]): row for row in page_rows}
@@ -2126,6 +2172,10 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
                 f"<div class='actions'>{primary_action}{invoice}{send}</div></section>"
             )
         sync_report = ""
+        if categories_notice:
+            message = ("Справочник категорий обновлён." if categories_notice == "updated" else
+                       "Закупай не отдал справочник категорий. Доступный список сохранён; попробуйте обновить позже.")
+            sync_report = f"<p role='status'>{message}</p>"
         if sync_notice == "manual_start":
             sync_report = (
                 "<p style='padding:12px;background:#e8f0fe;border-radius:8px' role='status'>"
@@ -2154,6 +2204,7 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
             ".title{font-size:20px;font-weight:700;color:#174ea6;text-decoration:none}.meta{margin-top:8px;color:#5f6368}.actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.button{background:#1a73e8;color:#fff;padding:10px 13px;border-radius:7px;text-decoration:none;font-weight:700}.secondary{background:#5f6368}.send{background:#188038}.sent{display:inline-block;padding:10px 13px;background:#e6f4ea;color:#137333;border-radius:7px;font-weight:700}.muted{color:#777}@media(max-width:760px){.card{display:block}.actions{margin-top:14px}}</style>"
             "<main><a style='float:right' href='/logout'>Выйти</a><h1>Заявки</h1><p>Откройте заявку и проверьте её состав. Поиск цен запускается только кнопкой внутри заявки; отправка счёта подтверждается отдельно.</p>"
             "<div class='actions'><form method='post' action='/dashboard/automation/sync'><button class='button' type='submit'>Получить из Закупай</button></form>"
+            "<form method='post' action='/dashboard/automation/categories/sync'><button class='button secondary' type='submit'>Обновить категории</button></form>"
             "<a class='button secondary' href='/dashboard/automation/manual'>+ Добавить вручную</a>"
             "<a class='button secondary' href='/dashboard/prices'>Прайсы</a>"
             "<a class='button secondary' href='/dashboard/catalog'>Наш каталог</a>"

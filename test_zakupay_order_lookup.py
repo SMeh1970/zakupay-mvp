@@ -10,6 +10,12 @@ import main
 
 
 class ZakupayOrderLookupTests(unittest.TestCase):
+    def setUp(self):
+        # main may already be imported by other tests before the env default.
+        token = patch.object(main, "ZAKUPAY_API_KEY", "test-token")
+        token.start()
+        self.addCleanup(token.stop)
+
     @patch("main.time.sleep")
     def test_retries_temporary_timeout(self, sleep):
         call = Mock(side_effect=[requests.Timeout("slow"), Mock(status_code=200)])
