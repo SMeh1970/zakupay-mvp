@@ -22,7 +22,7 @@ STATUSES = {
 DEFAULTS = {
     "keyword": "", "title": "", "order_id": "", "customer": "", "inn": "",
     "source": "all", "status": "all", "viewed": "all", "offer": "all",
-    "region": "", "category": "", "category_id": "", "payment": "all",
+    "region": "", "category": "", "category_id": (), "payment": "all",
     "creationDateFrom": "", "creationDateTo": "",
     "finishDateFrom": "", "finishDateTo": "",
     "min_positions": "", "max_positions": "", "max_competitors": "",
@@ -128,7 +128,11 @@ def describe(row):
 
 
 def filters_from_query(query):
-    filters = {key: str(query.get(key, default)).strip() for key, default in DEFAULTS.items()}
+    filters = {key: str(query.get(key, default)).strip() for key, default in DEFAULTS.items() if key != "category_id"}
+    categories = query.getlist("category_id") if hasattr(query, "getlist") else query.get("category_id", ())
+    if isinstance(categories, str):
+        categories = [categories]
+    filters["category_id"] = tuple(dict.fromkeys(str(value).strip() for value in categories if str(value).strip()))
     enums = {"source": {"all", "manual", "zakupay"}, "status": {"all", *STATUSES},
              "viewed": {"all", "yes", "no"}, "offer": {"all", "sent", "unsent"},
              "payment": {"all", "prepayment", "delay"}}
@@ -160,7 +164,7 @@ def matches(item, filters, selected_categories=None):
     for key, field in (("keyword", "search"), ("title", "title"), ("customer", "customer"), ("inn", "inn"), ("region", "region")):
         if filters[key] and _norm(filters[key]) not in _norm(item[field]):
             return False
-    if filters["category_id"] and not set(item["categories"]).intersection(selected_categories or {filters["category_id"]}):
+    if filters["category_id"] and not set(item["categories"]).intersection(selected_categories or set(filters["category_id"])):
         return False
     if filters["order_id"] and filters["order_id"] not in {item["order_id"], item["reference"]}:
         return False
@@ -201,14 +205,16 @@ def select_page(rows, query, reference=None, reference_updated=""):
                 names.setdefault(key, name)
         keys = [key for key, name in names.items() if _norm(name) == _norm(filters["category"])]
         if len(keys) == 1:
-            filters["category_id"], filters["category"] = keys[0], ""
+            filters["category_id"], filters["category"] = (keys[0],), ""
         else:
             errors.append("Выберите категорию Закупай из списка: свободный ввод не поддерживается.")
-    if filters["category_id"] and filters["category_id"] not in choices:
-        errors.append("Выбранная категория недоступна. Обновите категории или выберите другую из списка.")
+    if any(key not in choices for key in filters["category_id"]):
+        errors.append("Одна из выбранных рубрик недоступна. Обновите категории или снимите её отметку.")
     if filters["category_id"]:
         filters["category"] = ""
-    selected = category_descendants(filters["category_id"], reference)
+    selected = set()
+    for key in filters["category_id"]:
+        selected.update(category_descendants(key, reference))
     filtered = [] if errors else [item for item in saved if matches(item, filters, selected)]
     filtered.sort(key=lambda item: (item["date"].timestamp() if item["date"] else float("-inf"), item["id"]), reverse=True)
     size = int(filters["page_size"])
@@ -225,6 +231,77 @@ def select_page(rows, query, reference=None, reference_updated=""):
     }
 
 
+CATEGORY_PICKER_CSS = """
+.category-picker{border:1px solid #c9cdd3;border-radius:9px;padding:14px;margin:0 0 18px;background:#fafbfc}
+.category-picker summary{color:#202124}.category-help{color:#5f6368;font-size:14px;margin:8px 0 12px}
+.category-tools{display:flex;gap:12px;align-items:end;flex-wrap:wrap;margin-bottom:12px}
+.category-tools label{flex:1;min-width:180px;font-size:14px;color:#5f6368}
+.category-tools input{display:block;width:100%;box-sizing:border-box;padding:9px;margin-top:6px;border:1px solid #c9cdd3;border-radius:7px}
+.category-clear{border:1px solid #c9cdd3;background:#fff;color:#174ea6;padding:9px 12px;border-radius:7px;cursor:pointer}
+.category-options{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,290px),1fr));max-height:280px;overflow:auto;gap:4px;padding:4px;background:#fff;border:1px solid #e1e5eb;border-radius:7px}
+.category-option{display:flex;gap:9px;align-items:flex-start;padding:10px;cursor:pointer;font-size:14px;overflow-wrap:anywhere}
+.category-option:has(input:checked){background:#e8f0fe;border-radius:5px;color:#174ea6}
+.category-option input{flex:0 0 auto;width:18px;height:18px;margin:0;accent-color:#1a73e8}
+.category-picker [hidden]{display:none!important}
+"""
+
+
+def category_picker_script(nonce):
+    # Only UI filtering happens here. The checkbox form also works without JS.
+    return f"<script nonce='{html.escape(nonce, quote=True)}'>" + """
+(() => {
+  const picker = document.getElementById('category-picker');
+  if (!picker) return;
+  const rows = Array.from(picker.querySelectorAll('.category-option'));
+  const boxes = rows.map(row => row.querySelector('input'));
+  const search = document.getElementById('category-search');
+  const count = document.getElementById('category-count');
+  const clear = document.getElementById('category-clear');
+  const norm = text => text.toLocaleLowerCase('ru').replaceAll('ё', 'е').trim();
+  const update = () => {
+    const selected = boxes.filter(box => box.checked).length;
+    count.textContent = selected ? 'Выбрано: ' + selected : 'Все рубрики';
+    clear.disabled = selected === 0;
+  };
+  picker.querySelector('.category-tools').hidden = false;
+  boxes.forEach(box => box.addEventListener('change', update));
+  search.addEventListener('input', () => {
+    const words = norm(search.value).split(/\\s+/).filter(Boolean);
+    rows.forEach(row => row.hidden = !words.every(word => norm(row.textContent).includes(word)));
+    document.getElementById('category-no-matches').hidden = rows.some(row => !row.hidden);
+  });
+  clear.addEventListener('click', () => {
+    boxes.forEach(box => box.checked = false);
+    update();
+  });
+  update();
+})();
+</script>"""
+
+
+def category_picker(state):
+    selected = set(state["filters"]["category_id"])
+    choices = dict(state["category_choices"])
+    for key in selected:
+        choices.setdefault(key, "Недоступная рубрика — снимите отметку")
+    options = "".join(
+        f"<label class='category-option'><input type='checkbox' name='category_id' value='{html.escape(key, quote=True)}'"
+        f"{' checked' if key in selected else ''}><span>{html.escape(label)}</span></label>"
+        for key, label in sorted(choices.items(), key=lambda pair: (pair[0] not in selected, pair[1].casefold(), pair[0]))
+    )
+    count = f"Выбрано: {len(selected)}" if selected else "Все рубрики"
+    return (
+        "<details class='category-picker' id='category-picker' open>"
+        f"<summary>Рубрики Закупай · <span id='category-count'>{count}</span></summary>"
+        "<p class='category-help'>Отметьте одну или несколько рубрик. Заявка попадёт в список, если содержит товар хотя бы из одной выбранной рубрики или её подкатегорий. Без отметок — все рубрики.</p>"
+        "<div class='category-tools' hidden><label>Найти рубрику<input type='search' id='category-search' placeholder='Название рубрики' autocomplete='off'></label>"
+        "<button class='category-clear' id='category-clear' type='button'>Снять выбор рубрик</button></div>"
+        f"<div class='category-options' role='group' aria-label='Рубрики Закупай'>{options}</div>"
+        + ("" if options else "<p>Рубрики пока не загружены. Нажмите «Обновить категории».</p>")
+        + "<p id='category-no-matches' hidden role='status'>Рубрики не найдены. Измените текст поиска.</p></details>"
+    )
+
+
 def filter_form(state):
     filters = state["filters"]
     def field(key, label, kind="text"):
@@ -233,9 +310,6 @@ def filter_form(state):
     def select(key, label, options):
         values = "".join(f"<option value='{html.escape(value, quote=True)}' {'selected' if filters[key] == value else ''}>{html.escape(text)}</option>" for value, text in options.items())
         return f"<label>{label}<select name='{key}'>{values}</select></label>"
-    categories = {"": "Все категории", **state["category_choices"]}
-    if filters["category_id"] and filters["category_id"] not in categories:
-        categories[filters["category_id"]] = "Недоступная категория — выберите из списка"
     primary = (
         field("keyword", "Поиск по заявке и товарам") + field("title", "Название заявки") + field("order_id", "Номер заявки") +
         field("customer", "Заказчик") + field("inn", "ИНН заказчика") +
@@ -247,7 +321,7 @@ def filter_form(state):
         select("page_size", "На странице", {"25": "25", "50": "50", "100": "100"})
     )
     advanced = (
-        field("region", "Регион") + select("category_id", "Категория Закупай", categories) +
+        field("region", "Регион") +
         select("payment", "Условия оплаты", {"all": "Все", "prepayment": "Предоплата / без отсрочки", "delay": "Отсрочка"}) +
         field("min_positions", "Минимум позиций", "number") + field("max_positions", "Максимум позиций", "number") +
         field("max_competitors", "Не более конкурентов", "number") +
@@ -265,7 +339,8 @@ def filter_form(state):
         "<p>Чтобы показать только заявки Закупай, выберите источник «Закупай». Фильтры применяются к сохранённым заявкам.</p>"
         f"<p>{category_note}</p>"
         f"<form method='get' action='{URL}'><div class='filters'>{primary}</div>"
-        f"<details open><summary>Регион, категория, оплата и другие параметры</summary><div class='filters'>{advanced}</div></details>"
+        + category_picker(state)
+        + f"<details open><summary>Регион, оплата и другие параметры</summary><div class='filters'>{advanced}</div></details>"
         f"{errors}<div class='actions'><button class='button' type='submit'>Применить фильтры</button>"
         f"<a class='button secondary' href='{URL}'>Сбросить фильтры</a></div></form></section>"
         f"<p class='list-count' role='status'>Сохранено: <b>{state['total']}</b> · По фильтрам: <b>{state['matched']}</b> · Свежие даты сверху</p>"
@@ -275,7 +350,7 @@ def filter_form(state):
 def pagination(state):
     params = {key: value for key, value in state["filters"].items() if value != DEFAULTS[key]}
     def link(page, text):
-        target = URL + "?" + urlencode({**params, "page": page})
+        target = URL + "?" + urlencode({**params, "page": page}, doseq=True)
         return f"<a class='button secondary' href='{html.escape(target, quote=True)}'>{text}</a>"
     previous = link(state["page"] - 1, "← Предыдущая") if state["page"] > 1 else ""
     following = link(state["page"] + 1, "Следующая →") if state["page"] < state["pages"] else ""

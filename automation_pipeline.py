@@ -33,7 +33,7 @@ from supplier_adapters import KrepKompAdapter, VseinstrumentiAdapter, PriceListA
 from vi_order_match import _contains_brand, _identifiers, _label, _measurements, _norm, _requested_brands, _score_details
 from zakupay_email import parse_zakupay_email
 from invoice_generator import build_invoice_xlsx, customer_validation_error, normalize_customer
-from saved_dashboard import STATUSES, filter_form, listing_query, pagination, select_page
+from saved_dashboard import STATUSES, CATEGORY_PICKER_CSS, category_picker_script, filter_form, listing_query, pagination, select_page
 from zakupay_categories import SCHEMA as CATEGORY_SCHEMA, load_categories, save_categories
 
 
@@ -2196,12 +2196,14 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
                 "ничего не удалено. Повторите синхронизацию позже."
                 "</p>"
             )
+        script_nonce = uuid.uuid4().hex
         return Response(content=(
             "<!doctype html><html lang='ru'><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
             "<title>Заявки — Закупай MVP</title><style>body{font-family:Arial;margin:0;background:#f4f6f8;color:#202124}main{max-width:1200px;margin:auto;padding:28px}"
             ".filter-panel{background:#fff;border-radius:12px;padding:20px;margin-top:20px}.filters{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:14px;margin-bottom:18px}.filters label{display:block;color:#5f6368;font-size:14px}.filters input,.filters select{width:100%;box-sizing:border-box;margin-top:6px;padding:9px;border:1px solid #c9cdd3;border-radius:7px;background:#fff;color:#202124}details{margin-bottom:18px}summary{cursor:pointer;font-weight:bold;margin-bottom:14px}.pager{display:flex;justify-content:center;align-items:center;gap:18px;margin:22px 0;flex-wrap:wrap}.filter-error{color:#b3261e}.list-count{color:#5f6368}button.button{border:0;cursor:pointer}.empty{background:#fff;padding:24px;border-radius:12px}"
             ".card{display:flex;justify-content:space-between;gap:20px;background:#fff;border-left:7px solid #9aa0a6;border-radius:12px;padding:18px;margin:12px 0;box-shadow:0 2px 8px #0001}.card.read{background:#e9eef3}.card.unread{background:#fff}.card.ok{border-color:#188038}.card.warn{border-color:#f9ab00}.card.bad{border-color:#d93025}.card.processing{border-color:#1a73e8;background:#e8f0fe}.card.offer-created{background:#e6f4ea;border-color:#188038}.offer-badge,.source-badge{display:inline-block;margin-left:12px;padding:5px 9px;border-radius:12px;background:#188038;color:#fff;font-size:12px;font-weight:700;vertical-align:middle}.source-badge{background:#174ea6}.source-badge.manual{background:#7b1fa2}.progress{height:8px;max-width:460px;background:#c7d5ec;border-radius:5px;margin-top:9px;overflow:hidden}.progress span{display:block;height:100%;background:#1a73e8}"
-            ".title{font-size:20px;font-weight:700;color:#174ea6;text-decoration:none}.meta{margin-top:8px;color:#5f6368}.actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.button{background:#1a73e8;color:#fff;padding:10px 13px;border-radius:7px;text-decoration:none;font-weight:700}.secondary{background:#5f6368}.send{background:#188038}.sent{display:inline-block;padding:10px 13px;background:#e6f4ea;color:#137333;border-radius:7px;font-weight:700}.muted{color:#777}@media(max-width:760px){.card{display:block}.actions{margin-top:14px}}</style>"
+            ".title{font-size:20px;font-weight:700;color:#174ea6;text-decoration:none}.meta{margin-top:8px;color:#5f6368}.actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.button{background:#1a73e8;color:#fff;padding:10px 13px;border-radius:7px;text-decoration:none;font-weight:700}.secondary{background:#5f6368}.send{background:#188038}.sent{display:inline-block;padding:10px 13px;background:#e6f4ea;color:#137333;border-radius:7px;font-weight:700}.muted{color:#777}@media(max-width:760px){.card{display:block}.actions{margin-top:14px}}"
+            + CATEGORY_PICKER_CSS + "</style>"
             "<main><a style='float:right' href='/logout'>Выйти</a><h1>Заявки</h1><p>Откройте заявку и проверьте её состав. Поиск цен запускается только кнопкой внутри заявки; отправка счёта подтверждается отдельно.</p>"
             "<div class='actions'><form method='post' action='/dashboard/automation/sync'><button class='button' type='submit'>Получить из Закупай</button></form>"
             "<form method='post' action='/dashboard/automation/categories/sync'><button class='button secondary' type='submit'>Обновить категории</button></form>"
@@ -2212,8 +2214,9 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
             + sync_report + filter_form(state)
             + ("<p class='muted'>Есть заявки в обработке. Обновите страницу, чтобы увидеть результат поиска.</p>" if has_processing else "")
             + ("".join(cards) if cards else "<p class='empty'>Нет заявок по выбранным фильтрам. Сбросьте фильтры, загрузите заявки из Закупай или добавьте заявку вручную.</p>")
-            + pagination(state) + "</main></html>"
-        ), media_type="text/html", headers={"Cache-Control": "no-store, max-age=0", "Pragma": "no-cache"})
+            + pagination(state) + "</main>" + category_picker_script(script_nonce) + "</html>"
+        ), media_type="text/html", headers={"Cache-Control": "no-store, max-age=0", "Pragma": "no-cache",
+            "Content-Security-Policy": f"default-src 'none'; script-src 'nonce-{script_nonce}'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"})
 
     @app.head("/dashboard/automation/jobs/{job_id}/review")
     def automation_review_head(job_id: int):

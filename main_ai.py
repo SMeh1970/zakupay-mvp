@@ -41,7 +41,7 @@ from abacus_mcp import install_abacus_mcp
 
 ai_panel.analyze_order = analyze_order_v2
 
-DEPLOY_MARKER = "zakupay-category-dropdown-2026-10-15"
+DEPLOY_MARKER = "zakupay-category-multiselect-2026-10-15"
 
 
 @app.get("/version")

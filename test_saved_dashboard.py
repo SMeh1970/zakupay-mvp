@@ -4,6 +4,8 @@ import os
 import re
 import tempfile
 import unittest
+from urllib.parse import parse_qs, urlsplit
+import html
 from unittest.mock import Mock, patch
 
 from fastapi import FastAPI
@@ -96,13 +98,58 @@ class SavedDashboardTests(unittest.TestCase):
         self.assertEqual(self.ids(category="Металл"), [])
         self.assertEqual(self.ids(category_id="12345678"), [])
         response = self.client.get("/dashboard/automation", params={"customer": "no matches", "category_id": "7"})
-        self.assertIn("<select name='category_id'>", response.text)
-        self.assertIn("<option value='7' selected>Металлопрокат</option>", response.text)
-        self.assertIn("<option value='71'", response.text)
+        self.assertIn("type='checkbox' name='category_id' value='7' checked", response.text)
+        self.assertIn("type='checkbox' name='category_id' value='71'", response.text)
+        self.assertNotIn("<select name='category_id'>", response.text)
         self.assertNotIn("<input type='text' name='category'", response.text)
         self.assertIn("пока только категории сохранённых заявок", response.text)
         self.fetch.assert_not_called()
         self.fetch_all.assert_not_called()
+
+    def test_multiple_rubrics_include_either_branch_and_validate_every_selection(self):
+        changed = copy.deepcopy(ORDER)
+        changed["orderItems"][0]["category"] = {"id": 71, "name": "Сантехника"}
+        with pipeline._connect() as conn:
+            conn.execute("UPDATE automation_jobs SET order_json=? WHERE id=?", (json.dumps(changed), self.second["job_id"]))
+            save_categories(conn, pipeline._execute, [
+                {"id": 1, "name": "Металл"}, {"id": 7, "name": "Металлопрокат", "parent": {"id": 1}},
+                {"id": 2, "name": "Инженерные системы"}, {"id": 71, "name": "Сантехника", "parent": {"id": 2}},
+            ])
+        both = {str(self.first["job_id"]), str(self.second["job_id"])}
+        self.assertEqual(set(self.ids(category_id=["7", "71"])), both)
+        self.assertEqual(set(self.ids(category_id=["1", "2"])), both)
+        self.assertEqual(set(self.ids(category_id=["1", "71"])), both)
+        self.assertEqual(self.ids(category_id=["7", "7", ""]), [str(self.first["job_id"])])
+        self.assertEqual(self.ids(category_id=["7", "invented"]), [])
+        response = self.client.get("/dashboard/automation", params={"category_id": ["7", "71"]})
+        self.assertIn("value='7' checked", response.text)
+        self.assertIn("value='71' checked", response.text)
+        self.assertIn("Выбрано: 2", response.text)
+        self.assertIn("id='category-search'", response.text)
+        self.assertIn("type='button'>Снять выбор рубрик", response.text)
+        nonce = re.search(r"<script nonce='([^']+)'", response.text).group(1)
+        self.assertIn(f"script-src 'nonce-{nonce}'", response.headers["content-security-policy"])
+        self.assertNotIn("onclick=", response.text)
+        self.fetch.assert_not_called()
+        self.fetch_all.assert_not_called()
+
+    def test_multiple_rubrics_persist_in_pagination_and_no_selection_means_all(self):
+        for number in range(27):
+            order = copy.deepcopy(ORDER)
+            order["id"] = 1000 + number
+            order["orderItems"][0]["category"] = {"id": 71 if number % 2 else 7, "name": "Другая рубрика" if number % 2 else "Металлопрокат"}
+            pipeline.save_api_order_for_manual_start(order)
+        response = self.client.get("/dashboard/automation", params={"category_id": ["7", "71"], "page_size": "25", "source": "zakupay"})
+        next_url = html.unescape(re.search(r"href='([^']+)'>Следующая", response.text).group(1))
+        params = parse_qs(urlsplit(next_url).query)
+        self.assertEqual(params["category_id"], ["7", "71"])
+        self.assertEqual(params["source"], ["zakupay"])
+        page2 = self.client.get(next_url)
+        self.assertIn("value='7' checked", page2.text)
+        self.assertIn("value='71' checked", page2.text)
+        self.assertIn("По фильтрам: <b>29</b>", page2.text)
+        # Submitting a form with every checkbox cleared sends no category_id.
+        self.assertIn(str(self.manual["job_id"]), self.ids(source="manual"))
 
     def test_official_parent_includes_children_and_survives_failed_refresh(self):
         reference = [{"id": 1, "name": "Стройматериалы"},
