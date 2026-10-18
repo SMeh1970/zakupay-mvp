@@ -36,12 +36,13 @@ from price_lists import install_price_lists
 from own_catalog import install_own_catalog
 from sniper_integration import install_sniper
 from procurement import install_procurement
+from porcelain_panel import install_porcelain
 from security import OAUTH_SCOPE, PANEL_USERNAME, _origin, _sign_payload, _valid_session, current_mcp_resource
 from abacus_mcp import install_abacus_mcp
 
 ai_panel.analyze_order = analyze_order_v2
 
-DEPLOY_MARKER = "zakupay-category-multiselect-2026-10-15"
+DEPLOY_MARKER = "porcelain-proposals-2026-10-17"
 
 
 @app.get("/version")
@@ -211,6 +212,7 @@ install_automation_pipeline(
     fetch_categories=fetch_category_reference if ZAKUPAY_API_KEY else None,
 )
 install_procurement(app)
+install_porcelain(app, fetch_all_orders=fetch_all_orders)
 install_abacus_mcp(
     app,
     fetch_all_orders=fetch_all_orders,

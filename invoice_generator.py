@@ -30,6 +30,21 @@ AVAILABILITY_CONFIRMATION_NOTE = (
 )
 
 
+def validate_seller(profile):
+    if not isinstance(profile, dict):
+        raise ValueError('Выберите реквизиты поставщика счёта')
+    result = {key: ' '.join(str(profile.get(key) or '').split()) for key in SELLER}
+    for key in ('name', 'address', 'bank', 'director'):
+        if not result[key]:
+            raise ValueError('Заполните реквизиты нашей фирмы: ' + key)
+    for key, lengths in (('inn', {10, 12}), ('bik', {9}), ('account', {20}), ('corr_account', {20})):
+        if not result[key].isascii() or not result[key].isdigit() or len(result[key]) not in lengths:
+            raise ValueError('Проверьте реквизиты нашей фирмы: ' + key)
+    if len(result['inn']) == 10 and (not result['kpp'].isascii() or not result['kpp'].isdigit() or len(result['kpp']) != 9):
+        raise ValueError('Укажите КПП нашей организации')
+    return result
+
+
 def normalize_customer(customer: dict | None) -> dict:
     customer = customer if isinstance(customer, dict) else {}
     def clean(value):
@@ -75,6 +90,11 @@ def _customer_text(customer: dict | None) -> str:
 
 
 def build_invoice_xlsx(draft: dict) -> bytes:
+    seller = validate_seller(draft['seller']) if 'seller' in draft else SELLER
+    seller_kpp = f", КПП {seller['kpp']}" if seller.get('kpp') else ''
+    vat_rate = float(draft.get('vat_rate', 0.22))
+    if vat_rate not in {0, 0.1, 0.2, 0.22}:
+        raise ValueError('Выберите ставку НДС для счёта')
     all_rows = draft.get("items") or []
     rows = [row for row in all_rows if row.get("decision") in {"auto_ready", "approved"}]
     if not rows:
@@ -95,16 +115,16 @@ def build_invoice_xlsx(draft: dict) -> bytes:
     header_fill = PatternFill("solid", fgColor="D9EAF7")
 
     ws.merge_cells("A1:F1")
-    ws["A1"] = SELLER["bank"]
+    ws["A1"] = seller["bank"]
     ws["A1"].font = bold
     ws.merge_cells("A2:C2")
-    ws["A2"] = f"БИК {SELLER['bik']}"
+    ws["A2"] = f"БИК {seller['bik']}"
     ws.merge_cells("D2:F2")
-    ws["D2"] = f"к/с {SELLER['corr_account']}"
+    ws["D2"] = f"к/с {seller['corr_account']}"
     ws.merge_cells("A3:C3")
-    ws["A3"] = f"Получатель: {SELLER['name']}, ИНН {SELLER['inn']}, КПП {SELLER['kpp']}"
+    ws["A3"] = f"Получатель: {seller['name']}, ИНН {seller['inn']}{seller_kpp}"
     ws.merge_cells("D3:F3")
-    ws["D3"] = f"р/с {SELLER['account']}"
+    ws["D3"] = f"р/с {seller['account']}"
 
     number = draft.get("invoice_number")
     ws.merge_cells("A5:F5")
@@ -112,7 +132,7 @@ def build_invoice_xlsx(draft: dict) -> bytes:
     ws["A5"].font = title
 
     ws.merge_cells("A7:F7")
-    ws["A7"] = f"Поставщик: {SELLER['name']}, ИНН {SELLER['inn']}, КПП {SELLER['kpp']}, {SELLER['address']}"
+    ws["A7"] = f"Поставщик: {seller['name']}, ИНН {seller['inn']}{seller_kpp}, {seller['address']}"
     ws["A7"].alignment = Alignment(wrap_text=True)
     ws.merge_cells("A8:F8")
     ws["A8"] = f"Покупатель: {customer_text}"
@@ -152,8 +172,9 @@ def build_invoice_xlsx(draft: dict) -> bytes:
         ws.cell(row_num, 6).number_format = '#,##0.00'
 
     footer = start + 1 + len(rows)
-    vat = round(total * 22 / 122, 2)
-    for label, value in (("Итого:", total), ("В том числе НДС 22%:", vat), ("Всего к оплате:", total)):
+    vat = round(total * vat_rate / (1 + vat_rate), 2)
+    vat_label = f"В том числе НДС {vat_rate * 100:g}%:" if vat_rate else 'Без НДС:'
+    for label, value in (("Итого:", total), (vat_label, vat), ("Всего к оплате:", total)):
         ws.merge_cells(start_row=footer, start_column=1, end_row=footer, end_column=5)
         ws.cell(footer, 1, label).font = bold
         ws.cell(footer, 6, value).font = bold
@@ -161,7 +182,7 @@ def build_invoice_xlsx(draft: dict) -> bytes:
         footer += 1
 
     ws.merge_cells(start_row=footer + 1, start_column=1, end_row=footer + 1, end_column=6)
-    ws.cell(footer + 1, 1, "Оплата: 100% предоплата. Доставка включена в стоимость.")
+    ws.cell(footer + 1, 1, draft.get('payment_note') or "Оплата: 100% предоплата. Доставка включена в стоимость.")
     ws.merge_cells(start_row=footer + 2, start_column=1, end_row=footer + 2, end_column=6)
     ws.cell(footer + 2, 1, AVAILABILITY_CONFIRMATION_NOTE)
     ws.cell(footer + 2, 1).alignment = Alignment(wrap_text=True)
@@ -172,7 +193,7 @@ def build_invoice_xlsx(draft: dict) -> bytes:
         ws.cell(footer + 3, 1, f"Частичный счёт: не включено неподтверждённых позиций — {excluded}.")
         signature_row += 1
     ws.merge_cells(start_row=signature_row, start_column=1, end_row=signature_row, end_column=3)
-    ws.cell(signature_row, 1, f"Руководитель: __________________ / {SELLER['director']} /")
+    ws.cell(signature_row, 1, f"Руководитель: __________________ / {seller['director']} /")
     ws.freeze_panes = "A12"
     ws.page_setup.orientation = "landscape"
     ws.page_setup.fitToWidth = 1
