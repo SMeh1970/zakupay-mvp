@@ -64,5 +64,16 @@ class TileAutopilotTests(unittest.TestCase):
         self.assertEqual(len(auto.saved_reviews()),1)
         self.assertEqual(auto.saved_reviews()[0]['job_id'],self.job)
 
+    @patch.object(auto.managed,'configured',return_value=False)
+    @patch.object(auto,'fetch_prices',return_value=({},'Источник лучших цен Закупай: HTTP 401'))
+    def test_provider_probe_retains_denial_and_runs_once_per_day(self,fetch,_):
+        auto.check_queue(self.fetch,self.headers,'https://prodavay.sel-be.ru',Mock())
+        auto.probe_provider_once(self.headers,'https://prodavay.sel-be.ru')
+        report=json.loads(auto.saved_reviews()[0]['report_json'])
+        self.assertIn('401',report['provider_result'])
+        self.assertEqual(report['status'],'blocked')
+        auto.probe_provider_once(self.headers,'https://prodavay.sel-be.ru')
+        self.assertEqual(fetch.call_count,1)
+
 
 if __name__=='__main__':unittest.main()

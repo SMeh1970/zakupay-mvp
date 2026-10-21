@@ -66,6 +66,32 @@ def persist(job_id, report):
              json.dumps(report, ensure_ascii=False, allow_nan=False), report['checked_at']))
 
 
+def probe_provider_once(headers, base):
+    """One authenticated read diagnoses the separate numeric-price provider.
+
+    Even an expired request can establish whether this integration token is
+    accepted. It cannot authorize a sale. No response bodies/credentials logged.
+    """
+    rows = saved_reviews()
+    if not rows: return
+    row = rows[0]
+    report = json.loads(row['report_json'])
+    from tile_offer_policy import timestamp
+    clock = datetime.now(timezone.utc)
+    for entry in rows:
+        previous = timestamp(json.loads(entry['report_json']).get('provider_checked_at'))
+        if previous and (clock - previous).total_seconds() < 86400: return
+    with database() as conn:
+        saved = execute(conn, 'SELECT order_json FROM automation_jobs WHERE id=?', (row['job_id'],)).fetchone()
+    if not saved: return
+    prices, error = fetch_prices(json.loads(saved['order_json']), base, headers)
+    count = sum(1 for price in prices.values() if price.get('price') is not None)
+    report['provider_checked_at'] = clock.isoformat()
+    report['provider_result'] = error or ('Числовых цен получено: ' + str(count)
+        + '. Единицы, НДС и доставка проверяются отдельно.')
+    persist(row['job_id'], report)
+
+
 def check_queue(fetch_order, headers, base, has_offer, *, limit=5):
     """Bounded reads; one entry per order, latest saved job, no supplier search."""
     if not _lock.acquire(blocking=False): return {'status': 'busy', 'checked': 0}
@@ -141,7 +167,7 @@ def install_tile_autopilot(app, *, fetch_order, headers, base, has_offer):
             due_label = due.astimezone(ZoneInfo('Europe/Moscow')).strftime('%d.%m.%Y %H:%M МСК') if due else 'Не определено'
             cards.append(f"<section><h2>Заявка №{row['order_id']}</h2><p>"
                          + ('Ожидание 24 часов' if row['status'] == 'waiting' else 'Отправка остановлена')
-                         + f" · Не ранее: {esc(due_label)}</p><ul>{reasons}</ul>"
+                         + f" · Не ранее: {esc(due_label)}</p><p>{esc(r.get('provider_result') or '')}</p><ul>{reasons}</ul>"
                          + '<div class="scroll"><table><tr><th>№</th><th>Заявка</th><th>Подбор</th><th>Лучшая цена</th><th>−5%</th><th>Минимум</th></tr>'
                          + lines + f"</table></div><a href='/dashboard/automation/jobs/{row['job_id']}/tiles'>Проверить подбор и доставку</a></section>")
         return page('<h1>Автоматические предложения: проверка готовности</h1>'
@@ -172,6 +198,7 @@ def install_tile_autopilot(app, *, fetch_order, headers, base, has_offer):
     def initial_check():
         try:
             check()
+            probe_provider_once(headers, base)
         except Exception:
             logger.warning('Initial tile preflight unavailable; no commercial writes')
 
