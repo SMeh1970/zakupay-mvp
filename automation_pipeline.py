@@ -2086,6 +2086,7 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
             state = select_page(_execute(conn, listing_query(bool(DATABASE_URL))).fetchall(), request.query_params,
                                 reference, reference_updated)
             ids = [item["id"] for item in state["items"]]
+            listing_details = {item["id"]: item for item in state["items"]}
             page_rows = _execute(conn, "SELECT * FROM automation_jobs WHERE id IN (" + ",".join("?" for _ in ids) + ")", tuple(ids)).fetchall() if ids else []
             by_id = {int(row["id"]): row for row in page_rows}
             rows = [by_id[job_id] for job_id in ids if job_id in by_id]
@@ -2158,6 +2159,17 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
                 progress_bar = f"<div class='progress'><span style='width:{progress_percent}%'></span></div>"
             offer_badge = "<span class='offer-badge'>СЧЁТ ВЫСТАВЛЕН</span>" if offer_created else ""
             source_badge = "<span class='source-badge manual'>РУЧНОЙ ВВОД</span>" if is_manual else "<span class='source-badge'>ЗАКУПАЙ</span>"
+            quantity_matches = listing_details[int(row["id"])]["matching_quantity_rows"]
+            quantity_label = ""
+            if quantity_matches:
+                lines = "".join(
+                    "<li>" + html.escape(match["name"][:180] or f"Позиция {match['position']}")
+                    + " — <b>" + html.escape(f"{match['quantity']:g}" if match["quantity"] is not None else "не указано")
+                    + " " + html.escape(match["unit"]) + "</b></li>"
+                    for match in quantity_matches[:5]
+                )
+                more = f"<li>Ещё подходящих позиций: {len(quantity_matches) - 5}</li>" if len(quantity_matches) > 5 else ""
+                quantity_label = "<div class='meta quantity-match'><b>По фильтру количества:</b><ul>" + lines + more + "</ul></div>"
             display_number = html.escape(str(result.get("manual_reference") or "без номера")) if is_manual else str(row["order_id"])
             primary_action = (
                 f"<a class='button' target='_blank' rel='noopener' href='/dashboard/automation/jobs/{row['id']}/review'>Открыть заявку</a>"
@@ -2168,6 +2180,7 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
                 f"<section class='card {cls} {'offer-created' if offer_created else ''} {'read' if viewed else 'unread'}'><div><a class='title' target='_blank' rel='noopener' href='/dashboard/automation/jobs/{row['id']}/review'>"
                 f"Заявка №{display_number}{order_label}</a>{source_badge}{offer_badge}<div class='meta'>{html.escape(' · '.join(parts))}</div>"
                 f"<div class='meta'><b>Дата заявки:</b> {html.escape(order_date)} · <b>Заказчик:</b> {html.escape(customer_name)}</div>"
+                f"{quantity_label}"
                 f"{progress_bar}"
                 f"<div class='meta'><b>Поставщики:</b> {html.escape(suppliers_label)}</div>"
                 f"<div class='meta'>Статус: {'счёт выставлен в Закупай' if offer_created else 'поиск цен не запускался' if pending else html.escape(STATUSES.get(row['status'], 'Требуется проверка'))} · счёт: {row['invoice_number'] or '—'}</div></div>"

@@ -258,6 +258,33 @@ class SavedDashboardTests(unittest.TestCase):
                 self.assertIn("class='filter-error'", response.text)
                 self.assertEqual(self.ids(**params), [])
 
+    def test_quantity_and_product_text_cannot_match_different_lines(self):
+        order = copy.deepcopy(ORDER)
+        order.update(id=401, name="Керамогранит и материалы для фасада")
+        order["orderItems"] = [
+            {"goodName": "Керамогранит серый 600х600", "count": 430, "unit": {"name": "кв.м."},
+             "category": {"id": 7, "name": "Материалы"}},
+            {"goodName": "Утеплитель фасадный", "count": 6600, "unit": {"name": "м²"},
+             "category": {"id": 7, "name": "Материалы"}},
+        ]
+        saved = pipeline.save_api_order_for_manual_start(order)
+        for params in ({"keyword": "керамогранит"}, {"keyword": "керамогранит", "category_id": "7"}):
+            self.assertEqual(self.ids(**params, quantity_min="1000", quantity_unit="м²"), [])
+            self.assertEqual(self.ids(**params, quantity_min="400", quantity_max="430", quantity_unit="м²"), [str(saved["job_id"])])
+        response = self.client.get("/dashboard/automation", params={"keyword": "керамогранит", "quantity_min": "400", "quantity_unit": "м²"})
+        proof = re.search(r"<div class='meta quantity-match'>(.*?)</div>", response.text).group(1)
+        self.assertIn("Керамогранит серый 600х600", proof)
+        self.assertIn("430 м²", proof)
+        self.assertNotIn("Утеплитель", proof)
+        # A title or another row's comment must not lend its keyword to a large unrelated quantity.
+        order["orderItems"][0]["goodName"] = "Плитка напольная"
+        with pipeline._connect() as conn:
+            conn.execute("UPDATE automation_jobs SET order_json=? WHERE id=?", (json.dumps(order), saved["job_id"]))
+        self.assertEqual(self.ids(keyword="керамогранит", quantity_min="400", quantity_unit="м²"), [])
+        self.assertEqual(self.ids(keyword="керамогранит"), [str(saved["job_id"])])
+        self.fetch.assert_not_called()
+        self.fetch_all.assert_not_called()
+
     def test_active_filters_render_orange_state_and_quantity_survives_pagination(self):
         for number in range(26):
             pipeline.save_api_order_for_manual_start({**copy.deepcopy(ORDER), "id": 500 + number})

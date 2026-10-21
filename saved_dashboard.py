@@ -135,11 +135,14 @@ def describe(row):
     competitors = [_number(item.get("companiesWithOffersCount")) for item in items]
     known_competitors = [number for number in competitors if number is not None]
     quantity_rows = []
-    for item in items or legacy_items:
+    for position, item in enumerate(items or legacy_items, 1):
         category_value = item.get("category")
         category_key = category_id(category_value.get("id")) if isinstance(category_value, dict) else ""
         category_name = _name(category_value).strip()
         quantity_rows.append({
+            "position": position,
+            "name": str(item.get("goodName") or item.get("name") or item.get("requested_name") or ""),
+            "search": _norm(str(item.get("goodName") or item.get("name") or item.get("requested_name") or "") + " " + str(item.get("comment") or "")),
             "quantity": _number(item.get("count") if item.get("count") is not None else item.get("quantity")),
             "unit": normalize_unit(item.get("unit") or item.get("unitName")),
             "category": category_key or ("name:" + _norm(category_name) if category_name else ""),
@@ -198,6 +201,19 @@ def filters_from_query(query):
     return filters, list(dict.fromkeys(errors))
 
 
+def matching_quantity_rows(item, filters, selected_categories=None):
+    """Every product constraint must match the same source line."""
+    lower, upper = _number(filters["quantity_min"]), _number(filters["quantity_max"])
+    categories = selected_categories or set(filters["category_id"])
+    keyword = _norm(filters["keyword"])
+    return [row for row in item["quantity_rows"] if
+            row["unit"] == filters["quantity_unit"]
+            and (not keyword or keyword in row["search"])
+            and (not categories or row["category"] in categories)
+            and (lower is None or (row["quantity"] is not None and row["quantity"] >= lower))
+            and (upper is None or (row["quantity"] is not None and row["quantity"] <= upper))]
+
+
 def matches(item, filters, selected_categories=None):
     for key, field in (("keyword", "search"), ("title", "title"), ("customer", "customer"), ("inn", "inn"), ("region", "region")):
         if filters[key] and _norm(filters[key]) not in _norm(item[field]):
@@ -207,15 +223,7 @@ def matches(item, filters, selected_categories=None):
     if filters["order_id"] and filters["order_id"] not in {item["order_id"], item["reference"]}:
         return False
     if filters["quantity_unit"]:
-        lower, upper = _number(filters["quantity_min"]), _number(filters["quantity_max"])
-        categories = selected_categories or set(filters["category_id"])
-        if not any(
-            row["unit"] == filters["quantity_unit"]
-            and (not categories or row["category"] in categories)
-            and (lower is None or (row["quantity"] is not None and row["quantity"] >= lower))
-            and (upper is None or (row["quantity"] is not None and row["quantity"] <= upper))
-            for row in item["quantity_rows"]
-        ):
+        if not matching_quantity_rows(item, filters, selected_categories):
             return False
     for key in ("source", "status"):
         if filters[key] != "all" and filters[key] != item[key]:
@@ -279,10 +287,13 @@ def select_page(rows, query, reference=None, reference_updated=""):
         page = min(pages, max(1, int(query.get("page", "1"))))
     except (ValueError, TypeError):
         page = 1
+    visible = filtered[(page - 1) * size:page * size]
+    for item in visible:
+        item["matching_quantity_rows"] = matching_quantity_rows(item, filters, selected) if filters["quantity_unit"] else []
     return {
         "filters": filters, "errors": errors, "total": len(saved), "matched": len(filtered),
         "page": page, "pages": pages, "size": size,
-        "items": filtered[(page - 1) * size:page * size],
+        "items": visible,
         "category_choices": choices, "category_reference_updated": reference_updated,
         "unit_choices": unit_choices,
     }
@@ -414,7 +425,7 @@ def filter_form(state):
         f"<form method='get' action='{URL}'><div class='filters'>{primary}</div>"
         + category_picker(state)
         + f"<h3>Количество товара</h3><div class='filters'>{quantity}</div>"
-        + "<p class='quantity-help'>Хотя бы одна позиция в выбранных рубриках должна соответствовать диапазону и единице. Границы включены; количества разных строк не суммируются, единицы не пересчитываются.</p>"
+        + "<p class='quantity-help'>При выборе количества текст из поля «Поиск по заявке и товарам», рубрика, единица и диапазон проверяются в одной товарной строке. Например: «керамогранит», от 100 м² — количество других товаров не учитывается. Границы включены; строки не суммируются, единицы не пересчитываются.</p>"
         + f"<details open><summary>Регион, оплата и другие параметры</summary><div class='filters'>{advanced}</div></details>"
         f"{errors}<div class='actions'><button class='button' type='submit'>Применить фильтры</button>"
         f"<a class='button secondary' href='{URL}'>Сбросить фильтры</a></div></form></section>"
