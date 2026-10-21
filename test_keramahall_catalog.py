@@ -131,12 +131,11 @@ class ManagedCatalogTests(unittest.TestCase):
 
     def test_configured_application_starts_and_only_current_source_can_prepare_new_quotes(self):
         with patch.dict(os.environ, {"KERAMAHALL_CATALOG_API_KEY": "test-key"}):
-            with patch.object(api, "sync_catalog") as sync, patch.object(panel.threading, "Thread") as thread, patch("apscheduler.schedulers.background.BackgroundScheduler") as scheduler:
+            with patch.object(api, "sync_catalog") as sync, patch.object(panel, "start_catalog_thread") as thread, patch("apscheduler.schedulers.background.BackgroundScheduler") as scheduler:
                 app = FastAPI()
                 panel.install_porcelain(app, lambda: [])
                 with TestClient(app):
                     thread.assert_called_once()
-                    thread.return_value.start.assert_called_once()
                 sync.assert_not_called()
                 scheduler.return_value.add_job.assert_called_once()
                 self.assertEqual(scheduler.return_value.add_job.call_args.kwargs["hours"], 1)
