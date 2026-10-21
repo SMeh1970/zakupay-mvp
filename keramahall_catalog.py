@@ -4,9 +4,10 @@ import io
 import json
 import os
 import re
+import threading
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 
 import requests
 
@@ -62,7 +63,7 @@ def _get(url, maximum, image=False):
         raise ValueError("Не удалось связаться с API КерамаХолл. Сохранённые версии не изменены.") from None
 
 
-def sync_catalog():
+def _sync_catalog():
     from porcelain import MAX_IMPORT, import_catalog, load_catalog
     raw = _get(ORIGIN + "/api/v1/catalog", 4 * 1024 * 1024)
     try:
@@ -135,3 +136,43 @@ def sync_catalog():
                     archive.writestr(name, content)
     key = import_catalog(output.getvalue())
     return {"id": key, "changed": True, "products": len(products)}
+
+
+_sync_lock = threading.Lock()
+
+
+def sync_status():
+    from price_lists import database, execute
+    with database() as conn:
+        row = execute(conn, "SELECT last_attempt,last_success,last_error,catalog_id FROM tile_catalog_sync WHERE id=1").fetchone()
+    return dict(row) if row else {}
+
+
+def sync_catalog(force=True):
+    """Manual refresh or persisted daily refresh; failed reads never replace data."""
+    from price_lists import database, execute
+    if not _sync_lock.acquire(blocking=False):
+        return {"skipped": True, "reason": "running"}
+    try:
+        now = datetime.now(timezone.utc)
+        state = sync_status()
+        if not force:
+            for field, interval in (("last_success", timedelta(days=1)), ("last_attempt", timedelta(hours=1))):
+                if state.get(field) and now - datetime.fromisoformat(state[field]) < interval:
+                    return {"skipped": True, "reason": "not_due"}
+        stamp = now.isoformat()
+        with database() as conn:
+            execute(conn, "INSERT INTO tile_catalog_sync(id,last_attempt) VALUES(1,?) ON CONFLICT(id) DO UPDATE SET last_attempt=excluded.last_attempt", (stamp,))
+        try:
+            result = _sync_catalog()
+        except Exception as exc:
+            # External errors can contain credentials. Persist only our own bounded messages.
+            safe = str(exc)[:300] if isinstance(exc, ValueError) else "Не удалось обновить каталог. Предыдущая версия сохранена."
+            with database() as conn:
+                execute(conn, "UPDATE tile_catalog_sync SET last_error=? WHERE id=1", (safe,))
+            raise ValueError(safe) from None
+        with database() as conn:
+            execute(conn, "UPDATE tile_catalog_sync SET last_success=?,last_error=NULL,catalog_id=? WHERE id=1", (datetime.now(timezone.utc).isoformat(), result["id"]))
+        return result
+    finally:
+        _sync_lock.release()
