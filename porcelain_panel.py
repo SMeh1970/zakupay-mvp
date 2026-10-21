@@ -15,7 +15,7 @@ from starlette.concurrency import run_in_threadpool
 
 import porcelain as tiles
 import keramahall_catalog as managed_catalog
-from invoice_generator import build_invoice_xlsx, normalize_customer
+from invoice_generator import build_invoice_xlsx, normalize_customer, product_qr_png
 from price_lists import database, execute, norm, number
 
 SOURCE_FOLDER = 'https://drive.google.com/drive/folders/1Qr9A-rRbzfgFHj6yB29JsgUfCUpuvVUF'
@@ -24,6 +24,10 @@ CALCULATOR_URL = 'https://keramahall-delivery.mehmans.chatgpt.site/'
 URL = '/dashboard/tiles'
 esc = lambda value: html.escape('' if value is None else str(value), quote=True)
 logger = logging.getLogger('zakupay.tiles')
+
+def start_catalog_thread(target):
+    threading.Thread(target=target,name='keramahall-daily',daemon=True).start()
+
 
 
 def page(body, title='Керамогранит'):
@@ -149,7 +153,10 @@ def customer_html(s):
     firm = s['seller']; rows=[]
     for line in s['lines']:
         p=line['product']; image=f"<img width='220' src='photos/{esc(p['id'])}.jpg' alt='{esc(p['name'])}'>" if p.get('image') else '<p>Фото не представлено</p>'
-        rows.append(f"<h2>{esc(line['requested_name'])}</h2><p>Предлагаемый аналог: <b>{esc(p['name'])} · {esc(p.get('format'))}</b></p>{image}"
+        url=tiles.product_page_url(p)
+        linked_name=f"<a href='{esc(url)}' target='_blank' rel='noopener'>{esc(p['name'])} · {esc(p.get('format'))}</a>" if url else f"{esc(p['name'])} · {esc(p.get('format'))}"
+        qr=f"<p><a href='{esc(url)}'>Открыть фото и характеристики товара</a><br><img width='100' height='100' src='qr/{esc(p['id'])}.png' alt='QR-код страницы товара'></p>" if url else ''
+        rows.append(f"<h2>{esc(line['requested_name'])}</h2><p>Предлагаемый аналог: <b>{linked_name}</b></p>{image}{qr}"
             f"<p>{esc(p.get('color'))} · {esc(p.get('pattern'))} · {esc(p.get('surface'))} · толщина {esc(p.get('thickness_mm'))} мм</p>"
             f"<p>Количество к отгрузке: {line['quantity']:g} м²; цена: {line['proposed_unit_price']:.2f} ₽/м²; сумма: {line['amount']:.2f} ₽.</p>")
     return (f"<!doctype html><html lang='ru'><meta charset='utf-8'><title>Предложение</title><body><h1>Предложение по заявке № {esc(s['order_id'])}</h1><p>{esc(firm['name'])} · ИНН {esc(firm['inn'])}</p>"
@@ -164,6 +171,11 @@ def bundle(quote):
     with zipfile.ZipFile(output,'w',zipfile.ZIP_DEFLATED) as z:
         z.writestr('invoice.xlsx',build_invoice_xlsx(draft))
         z.writestr('proposal.html',customer_html(s).encode())
+        for line in s['lines']:
+            url=tiles.product_page_url(line['product'])
+            name='qr/'+line['product']['id']+'.png'
+            if url and name not in z.namelist():
+                z.writestr(name,product_qr_png(url))
         for key in {l['product']['id'] for l in s['lines'] if l['product'].get('image')}:
             image=tiles.catalogue_image(quote['catalog_id'],key)
             if not image: raise ValueError('Не найдено фото выбранного товара')
@@ -340,7 +352,7 @@ def install_porcelain(app, fetch_all_orders=None):
         def managed_startup_sync():
             scheduler.add_job(daily_sync, 'interval', hours=1, id='keramahall-daily', max_instances=1, coalesce=True)
             scheduler.start()
-            threading.Thread(target=daily_sync,name='keramahall-daily',daemon=True).start()
+            start_catalog_thread(daily_sync)
 
         app.router.on_startup.append(managed_startup_sync)
         app.router.on_shutdown.append(lambda: scheduler.shutdown(wait=False) if scheduler.running else None)
