@@ -52,6 +52,18 @@ class ManagedCatalogTests(unittest.TestCase):
             self.assertEqual(get.call_count, 1)
             self.assertIsNone(api.sync_status()["last_error"])
 
+    def test_next_moscow_day_refreshes_even_before_24_hours(self):
+        from datetime import datetime
+        from price_lists import database, execute
+        with patch.object(api, "_get", side_effect=self.response):
+            api.sync_catalog()
+        with database() as conn:
+            execute(conn, "UPDATE tile_catalog_sync SET last_success=?,last_attempt=? WHERE id=1", ("2026-10-21T14:00:00+03:00", "2026-10-21T14:00:00+03:00"))
+        with patch.object(api, "datetime", wraps=datetime) as clock, patch.object(api, "_get", side_effect=self.response) as get:
+            clock.now.return_value = datetime.fromisoformat("2026-10-22T08:00:00+03:00")
+            self.assertFalse(api.sync_catalog(force=False)["changed"])
+            self.assertEqual(get.call_count, 1)
+
     def test_daily_failure_keeps_catalog_and_success_timestamp(self):
         with patch.object(api, "_get", side_effect=self.response):
             api.sync_catalog()
