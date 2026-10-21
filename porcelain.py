@@ -18,6 +18,14 @@ from price_lists import database, execute, norm, number
 MAX_IMPORT = 12 * 1024 * 1024
 
 
+def product_page_url(product):
+    """Stable customer link, independent of prices and saved quote versions."""
+    key = str(product.get('id') or '')
+    if not re.fullmatch(r'[A-Za-z0-9_-]{1,80}', key):
+        return None
+    return 'https://keramahall-delivery.mehmans.chatgpt.site/products/' + key
+
+
 def schema_statements(postgres):
     serial, blob = ("BIGSERIAL", "BYTEA") if postgres else ("INTEGER", "BLOB")
     auto = "" if postgres else " AUTOINCREMENT"
@@ -407,7 +415,8 @@ def invoice_draft(snapshot):
     if snapshot['issues']:
         raise ValueError('Счёт пока недоступен: ' + '; '.join(snapshot['issues']))
     rows = [{'decision': 'approved', 'requested_name': line['requested_name'], 'selected': {'name': line['product']['name'] + ' ' + str(line['product'].get('format') or '')},
-             'quantity': line['quantity'], 'unit': 'м²', 'proposed_unit_price': line['proposed_unit_price']} for line in snapshot['lines']]
+             'quantity': line['quantity'], 'unit': 'м²', 'proposed_unit_price': line['proposed_unit_price'],
+             'product_url': product_page_url(line['product'])} for line in snapshot['lines']]
     rows.append({'decision': 'approved', 'requested_name': 'Доставка по адресу: ' + snapshot['address'], 'quantity': 1,
                  'unit': 'услуга', 'proposed_unit_price': snapshot['delivery_price']})
     return {**snapshot, 'items': rows, 'payment_note': 'Оплата: 100% предоплата. Доставка указана отдельной строкой.'}
