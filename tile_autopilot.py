@@ -1,0 +1,179 @@
+"""Persistent preflight queue for the user's automatic tile offer policy.
+
+No outbound commercial POST is made until the price/delivery/account providers
+are verified. The queue records the concrete missing inputs instead of silently
+substituting a floor price or approving a fuzzy match.
+"""
+from __future__ import annotations
+
+import json
+import logging
+import threading
+from datetime import datetime, timezone
+
+import requests
+from fastapi import Request, HTTPException
+from fastapi.responses import RedirectResponse
+from starlette.concurrency import run_in_threadpool
+
+import keramahall_catalog as managed
+import porcelain as tiles
+from price_lists import database, execute
+from porcelain_panel import page, esc
+from tile_offer_policy import POLICY_VERSION, competitor_prices, due_at, evaluate, relevant_items
+
+URL = '/dashboard/tiles/automatic'
+_lock = threading.Lock()
+logger = logging.getLogger('zakupay.tile_auto')
+
+
+def initialize_schema(conn):
+    conn.execute('''CREATE TABLE IF NOT EXISTS tile_auto_reviews (
+        order_id BIGINT PRIMARY KEY, job_id BIGINT NOT NULL, status TEXT NOT NULL,
+        due_at TEXT, report_json TEXT NOT NULL, checked_at TEXT NOT NULL)''')
+
+
+def fetch_prices(order, base, headers):
+    ids = [item['id'] for _, item in relevant_items(order) if item.get('id') is not None]
+    if not ids:
+        return {}, 'Нет ID подходящих позиций'
+    url = base.rstrip('/') + '/core/supplier/getoffersdeviationpercent'
+    try:
+        response = requests.post(url, headers={**headers(), 'X-Requested-With': 'XMLHttpRequest',
+                                              'Accept': 'application/json'},
+                                 json=ids, timeout=15, allow_redirects=False)
+        if response.status_code != 200:
+            return {}, 'Источник лучших цен Закупай: HTTP ' + str(response.status_code)
+        prices = competitor_prices(response.json(), datetime.now(timezone.utc).isoformat())
+        return prices, '' if prices else 'Источник Закупай не вернул числовые лучшие цены'
+    except (requests.RequestException, ValueError, TypeError):
+        return {}, 'Не удалось проверить числовые лучшие цены Закупай'
+
+
+def saved_reviews():
+    with database() as conn:
+        rows = execute(conn, 'SELECT * FROM tile_auto_reviews ORDER BY checked_at DESC LIMIT 100').fetchall()
+    return [dict(row) for row in rows]
+
+
+def persist(job_id, report):
+    with database() as conn:
+        execute(conn, '''INSERT INTO tile_auto_reviews(order_id,job_id,status,due_at,report_json,checked_at)
+            VALUES (?,?,?,?,?,?) ON CONFLICT(order_id) DO UPDATE SET
+            job_id=excluded.job_id,status=excluded.status,due_at=excluded.due_at,
+            report_json=excluded.report_json,checked_at=excluded.checked_at''',
+            (report['order_id'], job_id, report['status'], report['due_at'],
+             json.dumps(report, ensure_ascii=False, allow_nan=False), report['checked_at']))
+
+
+def check_queue(fetch_order, headers, base, has_offer, *, limit=5):
+    """Bounded reads; one entry per order, latest saved job, no supplier search."""
+    if not _lock.acquire(blocking=False): return {'status': 'busy', 'checked': 0}
+    checked = 0
+    try:
+        clock = datetime.now(timezone.utc)
+        if managed.configured(): managed.sync_catalog(force=False)
+        catalog = tiles.load_catalog()
+        if not catalog or not managed.is_managed(catalog['data']): catalog = None
+        seller = next((p for p in tiles.sellers().values() if p.get('inn') == '5638073633'), None)
+        with database() as conn:
+            rows = execute(conn, '''SELECT j.id,j.order_id,j.order_json FROM automation_jobs j
+                LEFT JOIN tile_auto_reviews r ON r.order_id=j.order_id
+                WHERE j.order_json IS NOT NULL AND j.status != 'offer_created'
+                AND j.id=(SELECT MAX(k.id) FROM automation_jobs k WHERE k.order_id=j.order_id)
+                ORDER BY COALESCE(r.checked_at,''),j.id DESC LIMIT 500''').fetchall()
+        for row in rows:
+            original = json.loads(row['order_json'])
+            if original.get('source') == 'manual_entry' or not list(relevant_items(original)): continue
+            with database() as conn:
+                prior = execute(conn, 'SELECT checked_at FROM tile_auto_reviews WHERE order_id=?', (row['order_id'],)).fetchone()
+            if prior:
+                from tile_offer_policy import timestamp
+                previous = timestamp(prior['checked_at'])
+                if previous and (clock - previous).total_seconds() < 3600: continue
+            due = due_at(original)
+            # Mature/active orders are re-read before matching. No stale saved
+            # list can authorize an external offer.
+            source_error, prices = '', {}
+            order = original
+            if due and clock >= due and str(original.get('finishDate') or '')[:10] >= clock.date().isoformat():
+                try:
+                    order = fetch_order(int(row['order_id']), force=True)
+                    if not order: raise ValueError('missing')
+                    if has_offer(order):
+                        source_error = 'Предложение уже есть в Закупай'
+                    else:
+                        prices, source_error = fetch_prices(order, base, headers)
+                except Exception:
+                    source_error = 'Не удалось проверить актуальную заявку Закупай'
+                    order = original
+            report = evaluate(order, catalog, prices, clock=clock, seller=seller)
+            if source_error: report['blockers'].insert(0, source_error)
+            # These providers have not been configured/validated in this project.
+            # Surface that fact even when all product lines happen to match.
+            report['blockers'].append('Для автоотправки требуется настройка НДС СВ и проверка счёта СВ в Закупай')
+            if report['status'] != 'waiting': report['status'] = 'blocked'
+            persist(row['id'], report)
+            checked += 1
+            if checked >= limit: break
+        return {'status': 'checked', 'checked': checked}
+    finally:
+        _lock.release()
+
+
+def install_tile_autopilot(app, *, fetch_order, headers, base, has_offer):
+    def check():
+        return check_queue(fetch_order, headers, base, has_offer)
+
+    @app.get(URL)
+    def automatic_page():
+        cards = []
+        for row in saved_reviews():
+            r = json.loads(row['report_json'])
+            reasons = ''.join('<li>' + esc(value) + '</li>' for value in r['blockers'])
+            lines = ''.join('<tr><td>' + esc(line['position']) + '</td><td>' + esc(line['requested_name'])
+                            + '</td><td>' + esc((line.get('product') or {}).get('name')) + '</td><td>'
+                            + esc(line.get('best_price')) + '</td><td>' + esc(line.get('target_price'))
+                            + '</td><td>' + esc(line.get('floor')) + '</td></tr>' for line in r['lines'])
+            from zoneinfo import ZoneInfo
+            from tile_offer_policy import timestamp
+            due = timestamp(row['due_at'])
+            due_label = due.astimezone(ZoneInfo('Europe/Moscow')).strftime('%d.%m.%Y %H:%M МСК') if due else 'Не определено'
+            cards.append(f"<section><h2>Заявка №{row['order_id']}</h2><p>"
+                         + ('Ожидание 24 часов' if row['status'] == 'waiting' else 'Отправка остановлена')
+                         + f" · Не ранее: {esc(due_label)}</p><ul>{reasons}</ul>"
+                         + '<div class="scroll"><table><tr><th>№</th><th>Заявка</th><th>Подбор</th><th>Лучшая цена</th><th>−5%</th><th>Минимум</th></tr>'
+                         + lines + f"</table></div><a href='/dashboard/automation/jobs/{row['job_id']}/tiles'>Проверить подбор и доставку</a></section>")
+        return page('<h1>Автоматические предложения: проверка готовности</h1>'
+                    + '<p>Обычные заявки — не раньше 24 часов после публикации; срочные — без задержки. '
+                    + 'Цена на 5% ниже лучшей цены Закупай. Минимум товара: 60×60 — 920 ₽/м²; 60×120 — 1440 ₽/м². '
+                    + 'При включённой доставке минимум проверяется после вычета её доли.</p>'
+                    + '<p class="notice">Проверка работает в пробном режиме. Реальная автоматическая отправка ещё не подключена: '
+                    + 'нужны проверенный числовой источник лучших цен, доставка по адресу и коммерческие настройки СВ.</p>'
+                    + f"<form method='post' action='{URL}/check'><button>Проверить следующие 5 заявок</button></form>"
+                    + ''.join(cards or ['<section>Проверок пока нет. Нажмите кнопку выше.</section>']))
+
+    @app.post(URL + '/check')
+    async def run_check(request: Request):
+        origin = request.headers.get('origin')
+        if origin and origin.rstrip('/') != str(request.base_url).rstrip('/'):
+            raise HTTPException(403, 'Неверный источник запроса')
+        try:
+            await run_in_threadpool(check)
+        except Exception:
+            logger.warning('Tile automatic preflight unavailable; no commercial writes')
+            raise HTTPException(503, 'Проверка временно недоступна. Предложения не отправлены.') from None
+        return RedirectResponse(URL, 303)
+
+    # No continuous timer until a usable numeric best-price provider and the
+    # commercial settings exist. This avoids waking Neon to repeat known blockers.
+    app.state.tile_auto_check = check
+
+    def initial_check():
+        try:
+            check()
+        except Exception:
+            logger.warning('Initial tile preflight unavailable; no commercial writes')
+
+    app.router.on_startup.append(lambda: threading.Thread(
+        target=initial_check, name='tile-offer-preflight', daemon=True).start())

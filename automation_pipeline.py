@@ -272,6 +272,8 @@ def _initialize_schema(conn) -> None:
         initialize_catalog_schema(conn, bool(DATABASE_URL))
         initialize_sniper_schema(conn, bool(DATABASE_URL))
         initialize_tile_schema(conn, bool(DATABASE_URL))
+        from tile_autopilot import initialize_schema as initialize_tile_auto_schema
+        initialize_tile_auto_schema(conn)
         conn.execute(CATEGORY_SCHEMA)
         conn.commit()
         _initialized_database_key = key

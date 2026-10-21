@@ -38,7 +38,7 @@ def page(body, title='Керамогранит'):
         ".grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px}.products{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px}.product{border:1px solid #ddd;border-radius:8px;padding:12px}img{width:160px;height:140px;object-fit:contain;max-width:100%}"
         "a{color:#174ea6}button,.button{display:inline-block;background:#1a73e8;color:#fff;border:0;padding:11px 15px;border-radius:7px;text-decoration:none;cursor:pointer;margin:5px 0}.error{color:#b3261e}.notice{background:#fff3d4;padding:12px;border-radius:7px}.muted{color:#5f6368}.scroll{overflow-x:auto}table{width:100%;border-collapse:collapse}td,th{text-align:left;padding:9px;border-bottom:1px solid #ddd;vertical-align:top}"
         "</style><main><a href='/dashboard/automation'>← Заявки</a> · <a href='/dashboard/tiles'>Керамогранит</a> · <a href='/dashboard/tiles/sellers'>Наши фирмы</a>"
-        + body + '</main></html>', headers={'Cache-Control': 'no-store', 'Content-Security-Policy': "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"})
+        + " · <a href='/dashboard/tiles/automatic'>Автоматические предложения</a>" + body + '</main></html>', headers={'Cache-Control': 'no-store', 'Content-Security-Policy': "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"})
 
 
 def field(name, label, value='', kind='text'):

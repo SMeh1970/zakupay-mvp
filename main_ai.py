@@ -37,12 +37,13 @@ from own_catalog import install_own_catalog
 from sniper_integration import install_sniper
 from procurement import install_procurement
 from porcelain_panel import install_porcelain
+from tile_autopilot import install_tile_autopilot
 from security import OAUTH_SCOPE, PANEL_USERNAME, _origin, _sign_payload, _valid_session, current_mcp_resource
 from abacus_mcp import install_abacus_mcp
 
 ai_panel.analyze_order = analyze_order_v2
 
-DEPLOY_MARKER = "named-model-pages-2026-10-21"
+DEPLOY_MARKER = "tile-offer-policy-24h-2026-10-22"
 
 
 @app.get("/version")
@@ -213,6 +214,8 @@ install_automation_pipeline(
 )
 install_procurement(app)
 install_porcelain(app, fetch_all_orders=fetch_all_orders)
+install_tile_autopilot(app, fetch_order=fetch_order_by_id, headers=zakupay_headers,
+                       base=ZAKUPAY_BASE_URL, has_offer=has_my_offer)
 install_abacus_mcp(
     app,
     fetch_all_orders=fetch_all_orders,
