@@ -136,11 +136,15 @@ class AutomaticPolicyTests(unittest.TestCase):
         self.assertIsNone(result['101']['delivery_included'])
         self.assertIsNone(result['101']['unit'])
 
+    @patch('tile_autopilot.requests.get')
     @patch('tile_autopilot.requests.post')
-    def test_best_price_probe_is_read_only_exact_endpoint_no_redirects(self, post):
+    def test_best_price_probe_is_read_only_exact_endpoint_no_redirects(self, post, get):
         post.return_value=Mock(status_code=401)
+        get.return_value=Mock(status_code=200)
         prices,error=fetch_prices(self.order,'https://prodavay.sel-be.ru',lambda:{'ZakupayToken':'test'})
         self.assertEqual(prices,{});self.assertIn('401',error)
+        self.assertIn('контроль API заявок: HTTP 200',error)
+        self.assertEqual(get.call_args.args[0],'https://prodavay.sel-be.ru/api/v1/orders')
         self.assertEqual(post.call_args.args[0],'https://prodavay.sel-be.ru/core/supplier/getoffersdeviationpercent')
         self.assertEqual(post.call_args.kwargs['json'],[101])
         self.assertIs(post.call_args.kwargs['allow_redirects'],False)

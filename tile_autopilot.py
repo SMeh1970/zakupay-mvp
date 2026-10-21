@@ -43,7 +43,15 @@ def fetch_prices(order, base, headers):
                                               'Accept': 'application/json'},
                                  json=ids, timeout=15, allow_redirects=False)
         if response.status_code != 200:
-            return {}, 'Источник лучших цен Закупай: HTTP ' + str(response.status_code)
+            error = 'Источник лучших цен Закупай: HTTP ' + str(response.status_code)
+            if response.status_code in (401, 403):
+                try:
+                    control = requests.get(base.rstrip('/') + '/api/v1/orders', headers=headers(),
+                        params={'page':1, 'pageSize':1, 'isoDate':'true'}, timeout=15, allow_redirects=False)
+                    error += '; контроль API заявок: HTTP ' + str(control.status_code)
+                except requests.RequestException:
+                    error += '; контроль API заявок: нет ответа'
+            return {}, error
         prices = competitor_prices(response.json(), datetime.now(timezone.utc).isoformat())
         return prices, '' if prices else 'Источник Закупай не вернул числовые лучшие цены'
     except (requests.RequestException, ValueError, TypeError):
@@ -79,14 +87,16 @@ def probe_provider_once(headers, base):
     from tile_offer_policy import timestamp
     clock = datetime.now(timezone.utc)
     for entry in rows:
-        previous = timestamp(json.loads(entry['report_json']).get('provider_checked_at'))
-        if previous and (clock - previous).total_seconds() < 86400: return
+        saved_report = json.loads(entry['report_json'])
+        previous = timestamp(saved_report.get('provider_checked_at'))
+        if saved_report.get('provider_probe_version') == 2 and previous and (clock - previous).total_seconds() < 86400: return
     with database() as conn:
         saved = execute(conn, 'SELECT order_json FROM automation_jobs WHERE id=?', (row['job_id'],)).fetchone()
     if not saved: return
     prices, error = fetch_prices(json.loads(saved['order_json']), base, headers)
     count = sum(1 for price in prices.values() if price.get('price') is not None)
     report['provider_checked_at'] = clock.isoformat()
+    report['provider_probe_version'] = 2
     report['provider_result'] = error or ('Числовых цен получено: ' + str(count)
         + '. Единицы, НДС и доставка проверяются отдельно.')
     persist(row['job_id'], report)
