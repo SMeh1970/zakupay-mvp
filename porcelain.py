@@ -22,6 +22,9 @@ def schema_statements(postgres):
     serial, blob = ("BIGSERIAL", "BYTEA") if postgres else ("INTEGER", "BLOB")
     auto = "" if postgres else " AUTOINCREMENT"
     return [
+        """CREATE TABLE IF NOT EXISTS tile_catalog_sync (
+            id INTEGER PRIMARY KEY, last_attempt TEXT, last_success TEXT,
+            last_error TEXT, catalog_id BIGINT)""",
         f"""CREATE TABLE IF NOT EXISTS tile_catalogs (
             id {serial} PRIMARY KEY{auto}, content_hash TEXT NOT NULL UNIQUE,
             catalog_json TEXT NOT NULL, archive_bytes {blob} NOT NULL, imported_at TEXT NOT NULL)""",
