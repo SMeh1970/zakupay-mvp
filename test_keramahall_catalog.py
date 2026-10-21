@@ -9,6 +9,9 @@ from unittest.mock import patch
 import automation_pipeline as pipeline
 import keramahall_catalog as api
 import porcelain as tiles
+import porcelain_panel as panel
+from fastapi import FastAPI, HTTPException
+from fastapi.testclient import TestClient
 from test_porcelain import PRODUCT, ORDER, archive
 
 
@@ -81,6 +84,25 @@ class ManagedCatalogTests(unittest.TestCase):
         quote = tiles.make_quote(ORDER, catalog, form)
         self.assertEqual(quote["lines"][0]["proposed_unit_price"], 2390)
         self.assertIsNone(tiles.make_quote(ORDER, catalog, {**form, "price_1": ""})["lines"][0]["proposed_unit_price"])
+
+    def test_configured_application_starts_and_only_current_source_can_prepare_new_quotes(self):
+        with patch.dict(os.environ, {"KERAMAHALL_CATALOG_API_KEY": "test-key"}):
+            with patch.object(api, "sync_catalog") as sync, patch.object(panel.threading, "Thread") as thread:
+                app = FastAPI()
+                panel.install_porcelain(app, lambda: [])
+                with TestClient(app):
+                    thread.assert_called_once()
+                    thread.return_value.start.assert_called_once()
+                sync.assert_not_called()
+            with self.assertRaises(HTTPException):
+                panel.required_proposal_catalog(self.old_id)
+            # Historical snapshots remain readable.
+            self.assertEqual(panel.required_catalog(self.old_id)["id"], self.old_id)
+            with patch.object(api, "_get", side_effect=self.response):
+                current = api.sync_catalog()["id"]
+            self.assertEqual(panel.required_proposal_catalog(current)["id"], current)
+            with self.assertRaises(HTTPException):
+                panel.required_proposal_catalog(self.old_id)
 
 
 if __name__ == "__main__":

@@ -75,6 +75,15 @@ def required_quote(quote_id):
     return quote
 
 
+def required_proposal_catalog(catalog_id):
+    catalog = required_catalog(catalog_id)
+    if managed_catalog.configured():
+        current = required_catalog()
+        if catalog['id'] != current['id'] or not managed_catalog.is_managed(catalog['data']):
+            raise HTTPException(409, 'Каталог обновился. Повторите подбор из текущего управляемого каталога КерамаХолл.')
+    return catalog
+
+
 def photo(catalog_id, product):
     return f"<img loading='lazy' alt='{esc(product['name'])}' src='{URL}/catalogs/{catalog_id}/images/{esc(product['id'])}'>" if product.get('image') else "<p class='muted'>Однозначного фото нет</p>"
 
@@ -248,7 +257,7 @@ def install_porcelain(app, fetch_all_orders=None):
         form=dict(await request.form()); order=await run_in_threadpool(order_for_job,job_id)
         form.setdefault('address',tiles.delivery_address(order))
         try:
-            catalog=await run_in_threadpool(required_catalog,int(form.get('catalog_id') or 0))
+            catalog=await run_in_threadpool(required_proposal_catalog,int(form.get('catalog_id') or 0))
             snapshot=await run_in_threadpool(tiles.make_quote,order,catalog,form)
             key=await run_in_threadpool(tiles.save_quote,job_id,catalog,snapshot)
         except ValueError as exc: raise HTTPException(400,str(exc))
@@ -261,7 +270,7 @@ def install_porcelain(app, fetch_all_orders=None):
     async def tile_revise(quote_id: int, request: Request):
         quote=await run_in_threadpool(required_quote,quote_id); form=dict(await request.form())
         try:
-            catalog=await run_in_threadpool(required_catalog,quote['catalog_id'])
+            catalog=await run_in_threadpool(required_proposal_catalog,quote['catalog_id'])
             snapshot=await run_in_threadpool(tiles.make_quote,quote['snapshot']['order_snapshot'],catalog,form)
             key=await run_in_threadpool(tiles.save_quote,quote['job_id'],catalog,snapshot)
         except ValueError as exc: raise HTTPException(400,str(exc))
@@ -319,6 +328,6 @@ def install_porcelain(app, fetch_all_orders=None):
                 try: managed_catalog.sync_catalog(); logger.info('Managed KeramaHall catalogue synced')
                 except Exception: logger.warning('Managed KeramaHall catalogue sync unavailable; use the private sync action')
             threading.Thread(target=sync,daemon=True).start()
-        app.add_event_handler('startup',managed_startup_sync)
+        app.router.on_startup.append(managed_startup_sync)
     elif os.getenv('KERAMAHALL_BOOTSTRAP_URL'):
         app.router.on_startup.append(lambda: threading.Thread(target=bootstrap,name='porcelain-import',daemon=True).start())
