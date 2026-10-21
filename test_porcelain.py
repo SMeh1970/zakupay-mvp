@@ -168,9 +168,19 @@ class PorcelainTests(unittest.TestCase):
             self.assertTrue(any('ИП Тестовый' in v for v in values))
             self.assertFalse(any('5017134957' in v for v in values))
 
+    def test_known_aliases_do_not_repeat_in_product_selection(self):
+        alias = {**PRODUCT, 'id': 'KH-ALIAS', 'alias_of': PRODUCT['id']}
+        data = {'products': [PRODUCT, alias]}
+        self.assertEqual([r['product']['id'] for r in tiles.find_analogues(data, '', 20)], [PRODUCT['id']])
+        self.assertEqual([r['product']['id'] for r in tiles.find_analogues({'products':[alias]}, '', 20)], ['KH-ALIAS'])
+
     def test_customer_links_cannot_expose_supplier_or_arbitrary_urls(self):
         from invoice_generator import customer_product_link
         self.assertIsNone(tiles.product_page_url({'id': '../admin'}))
+        origin='https://keramahall-delivery.mehmans.chatgpt.site/products/'
+        self.assertEqual(tiles.product_page_url({'id':'KH-1','public_slug':'western-60x60'}),origin+'western-60x60')
+        self.assertEqual(tiles.product_page_url({'id':'KH-1','product_url':origin+'western-60x60'}),origin+'western-60x60')
+        self.assertEqual(tiles.product_page_url({'id':'KH-1','product_url':'https://supplier.example/product'}),origin+'KH-1')
         self.assertIsNone(customer_product_link('https://supplier.example/product'))
         self.assertIsNone(customer_product_link('javascript:alert(1)'))
         self.assertIsNone(customer_product_link('https://keramahall-delivery.mehmans.chatgpt.site/admin'))
