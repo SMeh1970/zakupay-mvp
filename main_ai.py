@@ -42,7 +42,7 @@ from abacus_mcp import install_abacus_mcp
 
 ai_panel.analyze_order = analyze_order_v2
 
-DEPLOY_MARKER = "managed-keramahall-api-2026-10-21"
+DEPLOY_MARKER = "keramahall-daily-sync-2026-10-21"
 
 
 @app.get("/version")
