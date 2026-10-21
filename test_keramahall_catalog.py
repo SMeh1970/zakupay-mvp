@@ -35,6 +35,38 @@ class ManagedCatalogTests(unittest.TestCase):
     def response(self, url, maximum, image=False):
         return self.image if image else json.dumps(self.source).encode()
 
+    def test_daily_refresh_persists_success_and_skips_restarts(self):
+        with patch.object(api, "_get", side_effect=self.response) as get:
+            first = api.sync_catalog(force=False)
+            self.assertTrue(first["changed"])
+            status = api.sync_status()
+            self.assertTrue(status["last_success"])
+            get.reset_mock()
+            self.assertEqual(api.sync_catalog(force=False)["reason"], "not_due")
+            get.assert_not_called()
+            # A persisted timestamp older than a day permits the next read.
+            from price_lists import database, execute
+            with database() as conn:
+                execute(conn, "UPDATE tile_catalog_sync SET last_success=?,last_attempt=? WHERE id=1", ("2020-01-01T00:00:00+00:00", "2020-01-01T00:00:00+00:00"))
+            self.assertFalse(api.sync_catalog(force=False)["changed"])
+            self.assertEqual(get.call_count, 1)
+            self.assertIsNone(api.sync_status()["last_error"])
+
+    def test_daily_failure_keeps_catalog_and_success_timestamp(self):
+        with patch.object(api, "_get", side_effect=self.response):
+            api.sync_catalog()
+        saved = tiles.load_catalog()["id"]
+        success = api.sync_status()["last_success"]
+        with patch.object(api, "_get", side_effect=ValueError("API недоступен")):
+            with self.assertRaisesRegex(ValueError, "недоступен"):
+                api.sync_catalog()
+        self.assertEqual(tiles.load_catalog()["id"], saved)
+        self.assertEqual(api.sync_status()["last_success"], success)
+        self.assertEqual(api.sync_status()["last_error"], "API недоступен")
+        with patch.object(api, "_get") as get:
+            api.sync_catalog(force=False)
+            get.assert_not_called()
+
     def test_managed_values_dates_and_photos_are_versioned_without_refreshing_stock(self):
         with patch.object(api, "_get", side_effect=self.response) as get:
             imported = api.sync_catalog()
@@ -87,13 +119,16 @@ class ManagedCatalogTests(unittest.TestCase):
 
     def test_configured_application_starts_and_only_current_source_can_prepare_new_quotes(self):
         with patch.dict(os.environ, {"KERAMAHALL_CATALOG_API_KEY": "test-key"}):
-            with patch.object(api, "sync_catalog") as sync, patch.object(panel.threading, "Thread") as thread:
+            with patch.object(api, "sync_catalog") as sync, patch.object(panel.threading, "Thread") as thread, patch("apscheduler.schedulers.background.BackgroundScheduler") as scheduler:
                 app = FastAPI()
                 panel.install_porcelain(app, lambda: [])
                 with TestClient(app):
                     thread.assert_called_once()
                     thread.return_value.start.assert_called_once()
                 sync.assert_not_called()
+                scheduler.return_value.add_job.assert_called_once()
+                self.assertEqual(scheduler.return_value.add_job.call_args.kwargs["hours"], 1)
+                scheduler.return_value.shutdown.assert_called_once()
             with self.assertRaises(HTTPException):
                 panel.required_proposal_catalog(self.old_id)
             # Historical snapshots remain readable.
