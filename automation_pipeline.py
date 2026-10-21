@@ -33,7 +33,7 @@ from supplier_adapters import KrepKompAdapter, VseinstrumentiAdapter, PriceListA
 from vi_order_match import _contains_brand, _identifiers, _label, _measurements, _norm, _requested_brands, _score_details
 from zakupay_email import parse_zakupay_email
 from invoice_generator import build_invoice_xlsx, customer_validation_error, normalize_customer
-from saved_dashboard import STATUSES, CATEGORY_PICKER_CSS, category_picker_script, filter_form, listing_query, pagination, select_page
+from saved_dashboard import STATUSES, CATEGORY_PICKER_CSS, category_picker_script, filter_highlight_script, filter_form, listing_query, pagination, select_page
 from zakupay_categories import SCHEMA as CATEGORY_SCHEMA, load_categories, save_categories
 
 
@@ -2217,7 +2217,7 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
             + sync_report + filter_form(state)
             + ("<p class='muted'>Есть заявки в обработке. Обновите страницу, чтобы увидеть результат поиска.</p>" if has_processing else "")
             + ("".join(cards) if cards else "<p class='empty'>Нет заявок по выбранным фильтрам. Сбросьте фильтры, загрузите заявки из Закупай или добавьте заявку вручную.</p>")
-            + pagination(state) + "</main>" + category_picker_script(script_nonce) + "</html>"
+            + pagination(state) + "</main>" + category_picker_script(script_nonce) + filter_highlight_script(script_nonce) + "</html>"
         ), media_type="text/html", headers={"Cache-Control": "no-store, max-age=0", "Pragma": "no-cache",
             "Content-Security-Policy": f"default-src 'none'; script-src 'nonce-{script_nonce}'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"})
 

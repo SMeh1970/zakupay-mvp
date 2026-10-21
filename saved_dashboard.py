@@ -2,6 +2,8 @@
 
 import html
 import json
+import math
+import unicodedata
 from datetime import datetime
 from urllib.parse import urlencode
 from zoneinfo import ZoneInfo
@@ -26,10 +28,31 @@ DEFAULTS = {
     "creationDateFrom": "", "creationDateTo": "",
     "finishDateFrom": "", "finishDateTo": "",
     "min_positions": "", "max_positions": "", "max_competitors": "",
+    "quantity_min": "", "quantity_max": "", "quantity_unit": "",
     "delayFrom": "", "delayTo": "", "page_size": "25",
 }
 DATE_FIELDS = {"creationDateFrom", "creationDateTo", "finishDateFrom", "finishDateTo"}
-NUMBER_FIELDS = {"min_positions", "max_positions", "max_competitors", "delayFrom", "delayTo"}
+NUMBER_FIELDS = {"min_positions", "max_positions", "max_competitors", "delayFrom", "delayTo", "quantity_min", "quantity_max"}
+
+UNIT_ALIASES = {
+    "шт": "шт", "штука": "шт", "штуки": "шт", "штук": "шт", "pcs": "шт",
+    "м2": "м²", "m2": "м²", "квм": "м²", "мкв": "м²", "квметр": "м²", "квметров": "м²", "квадратныйметр": "м²",
+    "м3": "м³", "m3": "м³", "кубм": "м³", "мкуб": "м³", "кубметр": "м³", "кубметров": "м³", "кубическийметр": "м³",
+    "м": "м", "метр": "м", "метров": "м", "погм": "м", "мп": "м",
+    "кг": "кг", "килограмм": "кг", "килограммов": "кг",
+    "т": "т", "тонна": "т", "тонн": "т", "л": "л", "литр": "л", "литров": "л",
+    "уп": "упак", "упак": "упак", "упаковка": "упак", "упаковок": "упак",
+    "компл": "компл", "комплект": "компл", "комплектов": "компл",
+}
+COMMON_UNITS = ("шт", "м", "м²", "м³", "кг", "т", "л", "упак", "компл")
+
+
+def normalize_unit(value):
+    if isinstance(value, dict):
+        value = value.get("name") or value.get("shortName") or ""
+    text = unicodedata.normalize("NFKC", str(value or "")).casefold().strip()
+    key = "".join(text.replace(".", "").split())
+    return UNIT_ALIASES.get(key, text)
 
 
 def order_datetime(raw):
@@ -58,7 +81,8 @@ def _norm(value):
 
 def _number(value):
     try:
-        return float(value) if value is not None and str(value).strip() else None
+        number = float(str(value).strip().replace(",", ".")) if value is not None and str(value).strip() else None
+        return number if number is not None and math.isfinite(number) else None
     except (ValueError, TypeError):
         return None
 
@@ -110,6 +134,16 @@ def describe(row):
                            [str(item.get("requested_name") or "") for item in legacy_items])
     competitors = [_number(item.get("companiesWithOffersCount")) for item in items]
     known_competitors = [number for number in competitors if number is not None]
+    quantity_rows = []
+    for item in items or legacy_items:
+        category_value = item.get("category")
+        category_key = category_id(category_value.get("id")) if isinstance(category_value, dict) else ""
+        category_name = _name(category_value).strip()
+        quantity_rows.append({
+            "quantity": _number(item.get("count") if item.get("count") is not None else item.get("quantity")),
+            "unit": normalize_unit(item.get("unit") or item.get("unitName")),
+            "category": category_key or ("name:" + _norm(category_name) if category_name else ""),
+        })
     return {
         "id": int(row["id"]), "order_id": str(row["order_id"]),
         "reference": str(result.get("manual_reference") or ""), "title": title,
@@ -124,6 +158,7 @@ def describe(row):
         "delay": _number(order.get("delay")), "terms": str(order.get("paymentTerms") or ""),
         "competitors": max(known_competitors) if known_competitors else None,
         "search": search_text,
+        "quantity_rows": quantity_rows,
     }
 
 
@@ -133,6 +168,7 @@ def filters_from_query(query):
     if isinstance(categories, str):
         categories = [categories]
     filters["category_id"] = tuple(dict.fromkeys(str(value).strip() for value in categories if str(value).strip()))
+    filters["quantity_unit"] = normalize_unit(filters["quantity_unit"])
     enums = {"source": {"all", "manual", "zakupay"}, "status": {"all", *STATUSES},
              "viewed": {"all", "yes", "no"}, "offer": {"all", "sent", "unsent"},
              "payment": {"all", "prepayment", "delay"}}
@@ -154,9 +190,11 @@ def filters_from_query(query):
     for lower, upper in (("creationDateFrom", "creationDateTo"), ("finishDateFrom", "finishDateTo")):
         if filters[lower] and filters[upper] and filters[lower] > filters[upper]:
             errors.append("Начало периода не может быть позже его окончания.")
-    for lower, upper in (("min_positions", "max_positions"), ("delayFrom", "delayTo")):
+    for lower, upper in (("min_positions", "max_positions"), ("delayFrom", "delayTo"), ("quantity_min", "quantity_max")):
         if _number(filters[lower]) is not None and _number(filters[upper]) is not None and _number(filters[lower]) > _number(filters[upper]):
             errors.append("Минимальное значение не может превышать максимальное.")
+    if (filters["quantity_min"] or filters["quantity_max"]) and not filters["quantity_unit"]:
+        errors.append("Для фильтра количества выберите единицу измерения.")
     return filters, list(dict.fromkeys(errors))
 
 
@@ -168,6 +206,17 @@ def matches(item, filters, selected_categories=None):
         return False
     if filters["order_id"] and filters["order_id"] not in {item["order_id"], item["reference"]}:
         return False
+    if filters["quantity_unit"]:
+        lower, upper = _number(filters["quantity_min"]), _number(filters["quantity_max"])
+        categories = selected_categories or set(filters["category_id"])
+        if not any(
+            row["unit"] == filters["quantity_unit"]
+            and (not categories or row["category"] in categories)
+            and (lower is None or (row["quantity"] is not None and row["quantity"] >= lower))
+            and (upper is None or (row["quantity"] is not None and row["quantity"] <= upper))
+            for row in item["quantity_rows"]
+        ):
+            return False
     for key in ("source", "status"):
         if filters[key] != "all" and filters[key] != item[key]:
             return False
@@ -196,6 +245,13 @@ def select_page(rows, query, reference=None, reference_updated=""):
     saved = [describe(row) for row in rows]
     reference = reference or []
     choices = category_choices(saved, reference)
+    unit_choices = {unit: unit for unit in COMMON_UNITS}
+    for item in saved:
+        for row in item["quantity_rows"]:
+            if row["unit"]:
+                unit_choices.setdefault(row["unit"], row["unit"])
+    if filters["quantity_unit"] and filters["quantity_unit"] not in unit_choices:
+        errors.append("Выберите единицу измерения из списка.")
     # Old links may contain a category name. Accept only one exact known name,
     # never the previous arbitrary substring search.
     if filters["category"] and not filters["category_id"]:
@@ -228,6 +284,7 @@ def select_page(rows, query, reference=None, reference_updated=""):
         "page": page, "pages": pages, "size": size,
         "items": filtered[(page - 1) * size:page * size],
         "category_choices": choices, "category_reference_updated": reference_updated,
+        "unit_choices": unit_choices,
     }
 
 
@@ -240,9 +297,13 @@ CATEGORY_PICKER_CSS = """
 .category-clear{border:1px solid #c9cdd3;background:#fff;color:#174ea6;padding:9px 12px;border-radius:7px;cursor:pointer}
 .category-options{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,290px),1fr));max-height:280px;overflow:auto;gap:4px;padding:4px;background:#fff;border:1px solid #e1e5eb;border-radius:7px}
 .category-option{display:flex;gap:9px;align-items:flex-start;padding:10px;cursor:pointer;font-size:14px;overflow-wrap:anywhere}
-.category-option:has(input:checked){background:#e8f0fe;border-radius:5px;color:#174ea6}
+.category-option:has(input:checked){background:#fff3e0;border-radius:5px;color:#70430b}
 .category-option input{flex:0 0 auto;width:18px;height:18px;margin:0;accent-color:#1a73e8}
 .category-picker [hidden]{display:none!important}
+.filter-cell{padding:9px;border:1px solid transparent;border-radius:8px}
+.filters .filter-cell.active-filter,.category-picker.active-filter{background:#fff3e0;border-color:#efc18d}
+.filters .active-filter input,.filters .active-filter select{background:#fff8ef;border-color:#dfb274}
+.quantity-help{color:#5f6368;font-size:14px;margin:0 0 18px}
 """
 
 
@@ -262,6 +323,7 @@ def category_picker_script(nonce):
     const selected = boxes.filter(box => box.checked).length;
     count.textContent = selected ? 'Выбрано: ' + selected : 'Все рубрики';
     clear.disabled = selected === 0;
+    picker.classList.toggle('active-filter', selected > 0);
   };
   picker.querySelector('.category-tools').hidden = false;
   boxes.forEach(box => box.addEventListener('change', update));
@@ -291,7 +353,7 @@ def category_picker(state):
     )
     count = f"Выбрано: {len(selected)}" if selected else "Все рубрики"
     return (
-        "<details class='category-picker' id='category-picker' open>"
+        f"<details class='category-picker{' active-filter' if selected else ''}' id='category-picker' open>"
         f"<summary>Рубрики Закупай · <span id='category-count'>{count}</span></summary>"
         "<p class='category-help'>Отметьте одну или несколько рубрик. Заявка попадёт в список, если содержит товар хотя бы из одной выбранной рубрики или её подкатегорий. Без отметок — все рубрики.</p>"
         "<div class='category-tools' hidden><label>Найти рубрику<input type='search' id='category-search' placeholder='Название рубрики' autocomplete='off'></label>"
@@ -304,12 +366,17 @@ def category_picker(state):
 
 def filter_form(state):
     filters = state["filters"]
+    def label_start(key):
+        active = " active-filter" if filters[key] != DEFAULTS[key] else ""
+        return f"<label class='filter-cell{active}' data-filter-default='{html.escape(str(DEFAULTS[key]), quote=True)}'>"
     def field(key, label, kind="text"):
         minimum = " min='0'" if kind == "number" else ""
-        return f"<label>{label}<input type='{kind}' name='{key}' value='{html.escape(filters[key], quote=True)}'{minimum}></label>"
+        if key in {"quantity_min", "quantity_max"}:
+            minimum += " step='any' inputmode='decimal'"
+        return f"{label_start(key)}{label}<input type='{kind}' name='{key}' value='{html.escape(filters[key], quote=True)}'{minimum}></label>"
     def select(key, label, options):
         values = "".join(f"<option value='{html.escape(value, quote=True)}' {'selected' if filters[key] == value else ''}>{html.escape(text)}</option>" for value, text in options.items())
-        return f"<label>{label}<select name='{key}'>{values}</select></label>"
+        return f"{label_start(key)}{label}<select name='{key}'>{values}</select></label>"
     primary = (
         field("keyword", "Поиск по заявке и товарам") + field("title", "Название заявки") + field("order_id", "Номер заявки") +
         field("customer", "Заказчик") + field("inn", "ИНН заказчика") +
@@ -328,6 +395,12 @@ def filter_form(state):
         field("finishDateFrom", "Поставка от", "date") + field("finishDateTo", "Поставка до", "date") +
         field("delayFrom", "Отсрочка от, дней", "number") + field("delayTo", "Отсрочка до, дней", "number")
     )
+    quantity = (
+        field("quantity_min", "Количество от", "number") + field("quantity_max", "Количество до", "number") +
+        select("quantity_unit", "Единица измерения", {"": "Без ограничения", **state["unit_choices"],
+               **({filters["quantity_unit"]: "Недоступная единица — измените выбор"}
+                  if filters["quantity_unit"] and filters["quantity_unit"] not in state["unit_choices"] else {})})
+    )
     errors = "".join(f"<p class='filter-error' role='alert'>{html.escape(error)}</p>" for error in state["errors"])
     category_note = (
         "Категории загружены из справочника Закупай. Выбор раздела включает его подкатегории."
@@ -340,11 +413,29 @@ def filter_form(state):
         f"<p>{category_note}</p>"
         f"<form method='get' action='{URL}'><div class='filters'>{primary}</div>"
         + category_picker(state)
+        + f"<h3>Количество товара</h3><div class='filters'>{quantity}</div>"
+        + "<p class='quantity-help'>Хотя бы одна позиция в выбранных рубриках должна соответствовать диапазону и единице. Границы включены; количества разных строк не суммируются, единицы не пересчитываются.</p>"
         + f"<details open><summary>Регион, оплата и другие параметры</summary><div class='filters'>{advanced}</div></details>"
         f"{errors}<div class='actions'><button class='button' type='submit'>Применить фильтры</button>"
         f"<a class='button secondary' href='{URL}'>Сбросить фильтры</a></div></form></section>"
         f"<p class='list-count' role='status'>Сохранено: <b>{state['total']}</b> · По фильтрам: <b>{state['matched']}</b> · Свежие даты сверху</p>"
     )
+
+
+def filter_highlight_script(nonce):
+    return f"<script nonce='{html.escape(nonce, quote=True)}'>" + """
+(() => {
+  const panel = document.getElementById('request-filters');
+  if (!panel) return;
+  panel.querySelectorAll('.filter-cell').forEach(cell => {
+    const control = cell.querySelector('input, select');
+    const update = () => cell.classList.toggle('active-filter', control.value.trim() !== cell.dataset.filterDefault);
+    control.addEventListener('input', update);
+    control.addEventListener('change', update);
+    update();
+  });
+})();
+</script>"""
 
 
 def pagination(state):

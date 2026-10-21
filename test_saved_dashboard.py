@@ -220,6 +220,71 @@ class SavedDashboardTests(unittest.TestCase):
         self.assertNotIn("<script>alert(1)</script>", response.text)
         self.assertIn("&lt;script&gt;", response.text)
 
+    def test_quantity_range_uses_one_line_unit_and_selected_rubric(self):
+        order = copy.deepcopy(ORDER)
+        order["id"] = 400
+        order["orderItems"] = [
+            {"count": 150, "unit": {"name": "шт."}, "category": {"id": 7, "name": "Металл"}},
+            {"count": 5.25, "unit": {"name": "кв. м"}, "category": {"id": 71, "name": "Плитка"}},
+            {"count": 60, "unit": {"name": "м²"}, "category": {"id": 71, "name": "Плитка"}},
+            {"count": 60, "unit": {"name": "м2"}, "category": {"id": 71, "name": "Плитка"}},
+        ]
+        saved = pipeline.save_api_order_for_manual_start(order)
+        expected = [str(saved["job_id"])]
+        self.assertEqual(self.ids(quantity_min="5,25", quantity_max="5.25", quantity_unit="м²"), expected)
+        self.assertEqual(self.ids(quantity_min="150", quantity_max="150", quantity_unit="шт"), expected)
+        self.assertEqual(self.ids(quantity_min="100", quantity_unit="м²"), [])
+        self.assertEqual(self.ids(quantity_max="6", quantity_unit="м²", category_id="7"), [])
+        self.assertEqual(self.ids(quantity_max="6", quantity_unit="м²", category_id="71"), expected)
+        self.assertEqual(self.ids(quantity_unit="кв.м"), expected)
+        self.fetch.assert_not_called()
+        self.fetch_all.assert_not_called()
+
+    def test_quantity_validation_zero_unknowns_and_legacy_snapshot(self):
+        result = pipeline._pending_search_result(ORDER)
+        result["items"] = [{"requested_name": "Остаток", "quantity": 0, "unit": "кг"}]
+        with pipeline._connect() as conn:
+            conn.execute("UPDATE automation_jobs SET order_json=NULL,result_json=? WHERE id=?", (json.dumps(result), self.first["job_id"]))
+        self.assertEqual(self.ids(quantity_min="0", quantity_max="0", quantity_unit="кг"), [str(self.first["job_id"])])
+        self.assertEqual(self.ids(quantity_min="0.001", quantity_unit="кг"), [])
+        for params in (
+            {"quantity_min": "1"}, {"quantity_min": "3", "quantity_max": "2", "quantity_unit": "шт"},
+            {"quantity_min": "-1", "quantity_unit": "шт"}, {"quantity_min": "nan", "quantity_unit": "шт"},
+            {"quantity_max": "inf", "quantity_unit": "шт"}, {"quantity_unit": "выдуманная единица"},
+        ):
+            with self.subTest(params=params):
+                response = self.client.get("/dashboard/automation", params=params)
+                self.assertEqual(response.status_code, 200)
+                self.assertIn("class='filter-error'", response.text)
+                self.assertEqual(self.ids(**params), [])
+
+    def test_active_filters_render_orange_state_and_quantity_survives_pagination(self):
+        for number in range(26):
+            pipeline.save_api_order_for_manual_start({**copy.deepcopy(ORDER), "id": 500 + number})
+        response = self.client.get("/dashboard/automation", params={
+            "source": "zakupay", "quantity_min": "0", "quantity_max": "2", "quantity_unit": "шт",
+            "category_id": "7", "max_competitors": "0",
+        })
+        for name in ("source", "quantity_min", "quantity_max", "quantity_unit", "max_competitors"):
+            self.assertRegex(response.text, rf"<label class='filter-cell active-filter'[^>]*>[^<]*<(?:input|select)[^>]*name='{name}'")
+        self.assertIn("class='category-picker active-filter'", response.text)
+        self.assertIn("background:#fff3e0", response.text)
+        self.assertIn("control.addEventListener('input', update)", response.text)
+        self.assertIn("picker.classList.toggle('active-filter', selected > 0)", response.text)
+        # Remove the zero-competitor restriction to obtain the second page.
+        response = self.client.get("/dashboard/automation", params={
+            "source": "zakupay", "quantity_min": "0", "quantity_max": "2", "quantity_unit": "шт", "category_id": "7",
+        })
+        next_url = html.unescape(re.search(r"href='([^']+)'>Следующая", response.text).group(1))
+        params = parse_qs(urlsplit(next_url).query)
+        self.assertEqual(params["quantity_min"], ["0"])
+        self.assertEqual(params["quantity_max"], ["2"])
+        self.assertEqual(params["quantity_unit"], ["шт"])
+        self.assertEqual(self.client.get(next_url).status_code, 200)
+        reset = self.client.get("/dashboard/automation")
+        self.assertNotIn("class='filter-cell active-filter'", reset.text)
+        self.assertNotIn("class='category-picker active-filter'", reset.text)
+
     def test_pagination_keeps_filters_and_newest_order_beyond_old_300_limit(self):
         with pipeline._connect() as conn:
             for number in range(300):
