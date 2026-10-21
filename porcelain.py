@@ -307,7 +307,7 @@ def make_quote(order, catalog, form):
             raise ValueError(f'Позиция {index}: площадь коробки должна быть положительной')
         boxes = math.ceil(Decimal(str(area)) * (1 + Decimal(str(reserve))/100) / Decimal(str(box))) if box and box > 0 else None
         shipped = float(Decimal(str(boxes)) * Decimal(str(box))) if boxes else None
-        price = number(form.get(f'price_{index}'))
+        price = number(form.get(f'price_{index}')) if f'price_{index}' in form else number(p.get('price_rub_m2'))
         if price is not None and price <= 0:
             raise ValueError(f'Позиция {index}: цена должна быть больше нуля')
         pallet_area = number(form.get(f'pallet_{index}')) if form.get(f'pallet_{index}') not in (None, '') else number(p.get('pallet_m2')) or number(p.get('pallet_m2_estimate'))

@@ -14,6 +14,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from starlette.concurrency import run_in_threadpool
 
 import porcelain as tiles
+import keramahall_catalog as managed_catalog
 from invoice_generator import build_invoice_xlsx, normalize_customer
 from price_lists import database, execute, norm, number
 
@@ -63,6 +64,8 @@ def order_for_job(job_id):
 def required_catalog(catalog_id=None):
     catalog = tiles.load_catalog(catalog_id)
     if not catalog: raise HTTPException(409, 'Сначала загрузите каталог керамогранита')
+    if catalog_id is None and managed_catalog.configured() and not managed_catalog.is_managed(catalog['data']):
+        raise HTTPException(409, 'Сначала синхронизируйте управляемый каталог КерамаХолл. Старая копия не используется для нового предложения.')
     return catalog
 
 
@@ -163,6 +166,7 @@ def install_porcelain(app, fetch_all_orders=None):
     @app.get(URL)
     def tile_index(q: str=''):
         catalog=tiles.load_catalog()
+        if managed_catalog.configured() and catalog and not managed_catalog.is_managed(catalog['data']): catalog=None
         with database() as conn:
             rows=execute(conn,'SELECT id,order_id,order_json FROM automation_jobs WHERE order_json IS NOT NULL ORDER BY id DESC LIMIT 500').fetchall()
         jobs=[]
@@ -179,12 +183,22 @@ def install_porcelain(app, fetch_all_orders=None):
             f"<h2>Заявки с керамогранитом среди последних 500 сохранённых</h2><ul>{''.join(jobs) or '<li>Пока нет подходящих заявок</li>'}</ul></section>"
             f"<section><h2>Каталог: {len(catalog['data']['products']) if catalog else 0} позиций</h2>{'<ul class=notice>'+warnings+'</ul>' if warnings else ''}<form method='get'>{field('q','Поиск по характеристикам: цвет, рисунок, формат, поверхность',q)}<button>Подобрать аналоги</button></form>"
             f"<p class='notice'>Цены, НДС, наличие, упаковка и соответствие аналога проверяются перед счётом. Доставка по исходным тарифам — только Москва и МО.</p><div class='products'>{cards}</div></section>"
+            + (f"<section><h2>Источник цен и остатков — управляемый КерамаХолл</h2><p><a href='{managed_catalog.ORIGIN}' target='_blank' rel='noopener'>Открыть каталог</a></p>"
+               + f"<p>Дата обновления остатков: {esc((catalog or {}).get('data',{}).get('stock_as_of') or 'не указана')}. Дата обращения к API не обновляет дату остатков.</p>"
+               + "<form method='post' action='/dashboard/tiles/sync-catalog'><button>Синхронизировать каталог по API</button></form></section>" if managed_catalog.configured() else
             f"<section><h2>Обновление исходных данных</h2><p><a href='{SOURCE_FOLDER}' target='_blank' rel='noopener'>Папка проекта</a> · <a href='{WORKBOOK_URL}' target='_blank' rel='noopener'>Рабочая Google Таблица</a></p>"
             f"<form method='post' enctype='multipart/form-data' action='{URL}/import'><label>ZIP с catalog.json и фото или XLSX рабочей таблицы<input type='file' name='file' accept='.zip,.xlsx' required></label><button>Импортировать новую версию</button></form>"
-            "<p>Google Таблица используется как источник. После её изменения загрузите обновлённый XLSX; фоновой синхронизации пока нет. Сохранённые предложения сохраняют свои версии цен, характеристик и фото.</p></section>")
+            "<p>Google Таблица используется как источник. После её изменения загрузите обновлённый XLSX; фоновой синхронизации пока нет. Сохранённые предложения сохраняют свои версии цен, характеристик и фото.</p></section>"))
+
+    @app.post(URL+'/sync-catalog')
+    async def tile_catalog_sync():
+        try: await run_in_threadpool(managed_catalog.sync_catalog)
+        except ValueError as exc: raise HTTPException(502,str(exc))
+        return RedirectResponse(URL,303)
 
     @app.post(URL+'/import')
     async def tile_import(request: Request):
+        if managed_catalog.configured(): raise HTTPException(409, 'Источник — управляемый КерамаХолл. Обновите данные в нём и синхронизируйте каталог по API.')
         form=await request.form(); upload=form.get('file')
         if not upload or not hasattr(upload,'read'): raise HTTPException(400,'Выберите файл')
         content=await upload.read(tiles.MAX_IMPORT+1)
@@ -216,7 +230,8 @@ def install_porcelain(app, fetch_all_orders=None):
             found=tiles.find_analogues(catalog['data'],name+' '+features)
             options=[('', 'Не включать позицию')]+[(r['product']['id'],r['product']['name']+' · '+str(r['product'].get('format') or '')) for r in found]
             unit=item.get('unit') or {}; unit=unit.get('name') if isinstance(unit,dict) else unit
-            area=item.get('count') if norm(str(unit).replace('²','2')) in {'м2','кв м','м кв','квадратный метр'} else ''
+            from saved_dashboard import normalize_unit
+            area=item.get('count') if normalize_unit(unit)=='м²' else ''
             rows.append(f"<section><h2>{i}. {esc(name)}</h2><p>Количество в заявке: {esc(item.get('count'))} {esc(unit)}</p>"
                 + field(f'features_{i}','Уточнить цвет / рисунок / характеристики',features)
                 + f"<button type='submit' formmethod='get' formaction='/dashboard/automation/jobs/{job_id}/tiles'>Обновить варианты</button>"
@@ -298,5 +313,12 @@ def install_porcelain(app, fetch_all_orders=None):
         except Exception:
             logger.warning('Porcelain catalogue import unavailable; use private upload form')
 
-    if os.getenv('KERAMAHALL_BOOTSTRAP_URL'):
+    if managed_catalog.configured():
+        def managed_startup_sync():
+            def sync():
+                try: managed_catalog.sync_catalog(); logger.info('Managed KeramaHall catalogue synced')
+                except Exception: logger.warning('Managed KeramaHall catalogue sync unavailable; use the private sync action')
+            threading.Thread(target=sync,daemon=True).start()
+        app.add_event_handler('startup',managed_startup_sync)
+    elif os.getenv('KERAMAHALL_BOOTSTRAP_URL'):
         app.router.on_startup.append(lambda: threading.Thread(target=bootstrap,name='porcelain-import',daemon=True).start())
