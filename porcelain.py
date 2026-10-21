@@ -42,6 +42,8 @@ def schema_statements(postgres):
         "CREATE INDEX IF NOT EXISTS idx_tile_quotes_job ON tile_quotes(job_id,id)",
         """CREATE TABLE IF NOT EXISTS tile_sellers (
             id TEXT PRIMARY KEY, profile_json TEXT NOT NULL, updated_at TEXT NOT NULL)""",
+        """CREATE TABLE IF NOT EXISTS tile_catalog_sync_state (
+            id TEXT PRIMARY KEY, last_attempt_at TEXT, last_success_at TEXT, last_error TEXT, source_status_json TEXT)""",
     ]
 
 
@@ -205,7 +207,7 @@ def is_tile(text):
 GROUPS = {
     'color': {'белый': r'\bбел(?:ый|ая|ое|ые|ого|ой|ую|ых|ыми|ом|ому)\b|white|вайт', 'серый': r'\bсер(?:ый|ая|ое|ые|ого|ой|ую|ых|ыми|ом|ому)\b|grey|gray|грей', 'бежевый': r'беж|beige',
               'черный': r'черн|black|блэк', 'коричневый': r'коричн|brown', 'кремовый': r'крем|cream',
-              'антрацит': r'антрацит|anthracite'},
+              'антрацит': r'антрацит|anthracite', 'многоцветный': r'многоцвет|multicolou?r'},
     'pattern': {'мрамор': r'мрамор|marble|калакт|calacat', 'бетон': r'бетон|concrete',
                 'дерево': r'дерев|дуб|wood', 'камень': r'камень|камен|stone',
                 'травертин': r'траверт|travert', 'орнамент': r'орнамент|пэчворк|patchwork',
@@ -280,6 +282,34 @@ def delivery_address(order):
     if isinstance(value, dict):
         return str(value.get('fullAddress') or value.get('address') or value.get('name') or '')
     return str(value)
+
+
+def automatic_selection(data, order):
+    """Choose priced, sufficiently stocked matches; unknown requirements need a person."""
+    from saved_dashboard import normalize_unit
+    selected, used = {}, defaultdict(float)
+    for i, item in enumerate(order.get('orderItems') or [], 1):
+        name = str(item.get('goodName') or item.get('name') or '')
+        unit = item.get('unit') or {}
+        if not is_tile(name) or normalize_unit(unit.get('name') if isinstance(unit, dict) else unit) != 'м²':
+            continue
+        area = number(item.get('count'))
+        if not area or area <= 0:
+            continue
+        candidates = []
+        named = {p['id'] for p in data['products'] if norm(p.get('name')) and re.search(r'\b' + re.escape(norm(p['name'])) + r'\b', norm(name))}
+        for match in find_analogues(data, name, len(data['products'])):
+            p = match['product']; price = number(p.get('price_rub_m2')); stock = number(p.get('stock_m2')); box = number(p.get('box_m2'))
+            if named and p['id'] not in named:
+                continue
+            quantity = math.ceil(Decimal(str(area)) / Decimal(str(box))) * box if box and box > 0 else area
+            if match['unknown'] or price is None or price <= 0 or stock is None or used[p['id']] + quantity > stock + 1e-6:
+                continue
+            candidates.append((price, -match['score'], p['id'], quantity))
+        if candidates:
+            _, _, key, quantity = min(candidates)
+            selected[i] = key; used[key] += quantity
+    return selected
 
 
 def sellers():

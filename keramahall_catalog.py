@@ -64,6 +64,16 @@ def _get(url, maximum, image=False):
         raise ValueError("Не удалось связаться с API КерамаХолл. Сохранённые версии не изменены.") from None
 
 
+def _save_sync_status(attempt, success=None, error=None, source=None):
+    from price_lists import database, execute
+    prior = sync_status()
+    with database() as conn:
+        execute(conn, """INSERT INTO tile_catalog_sync_state(id,last_attempt_at,last_success_at,last_error,source_status_json)
+            VALUES ('keramahall',?,?,?,?) ON CONFLICT(id) DO UPDATE SET last_attempt_at=excluded.last_attempt_at,
+            last_success_at=excluded.last_success_at,last_error=excluded.last_error,source_status_json=excluded.source_status_json""",
+            (attempt, success or prior.get('last_success_at'), error, json.dumps(source if source is not None else prior.get('source_status') or {}, ensure_ascii=False)))
+
+
 def _sync_catalog():
     from porcelain import MAX_IMPORT, import_catalog, load_catalog
     raw = _get(ORIGIN + "/api/v1/catalog", 4 * 1024 * 1024)
@@ -98,7 +108,7 @@ def _sync_catalog():
         raise ValueError("API КерамаХолл вернул неполный каталог.") from None
     previous = load_catalog()
     if previous and is_managed(previous["data"]) and previous["data"].get("source_fingerprint") == fingerprint:
-        return {"id": previous["id"], "changed": False, "products": len(products)}
+        return {"id": previous["id"], "changed": False, "products": len(products), "_source_status": source.get("synchronization") or {}}
     cached = {}
     if previous:
         previous = load_catalog(previous["id"], with_archive=True)
@@ -136,7 +146,7 @@ def _sync_catalog():
                         raise ValueError("Слишком большой каталог фотографий КерамаХолл.")
                     archive.writestr(name, content)
     key = import_catalog(output.getvalue())
-    return {"id": key, "changed": True, "products": len(products)}
+    return {"id": key, "changed": True, "products": len(products), "_source_status": source.get("synchronization") or {}}
 
 
 _sync_lock = threading.Lock()
@@ -146,18 +156,24 @@ def sync_status():
     from price_lists import database, execute
     with database() as conn:
         row = execute(conn, "SELECT last_attempt,last_success,last_error,catalog_id FROM tile_catalog_sync WHERE id=1").fetchone()
-    return dict(row) if row else {}
+    with database() as conn:
+        details = execute(conn, "SELECT * FROM tile_catalog_sync_state WHERE id='keramahall'").fetchone()
+    result = {**(dict(details) if details else {}), **(dict(row) if row else {})}
+    result['last_attempt_at'] = result.get('last_attempt') or result.get('last_attempt_at')
+    result['last_success_at'] = result.get('last_success') or result.get('last_success_at')
+    result['source_status'] = json.loads(result.get('source_status_json') or '{}')
+    return result
 
 
 def sync_catalog(force=True):
     """Manual refresh or persisted daily refresh; failed reads never replace data."""
     from price_lists import database, execute
-    if not _sync_lock.acquire(blocking=False):
+    if not _sync_lock.acquire(blocking=force):
         return {"skipped": True, "reason": "running"}
     try:
         now = datetime.now(timezone.utc)
         state = sync_status()
-        if not force:
+        if not force and state.get('source_status_json') is not None:
             if state.get("last_success"):
                 previous = datetime.fromisoformat(state["last_success"])
                 if previous.astimezone(ZoneInfo("Europe/Moscow")).date() >= now.astimezone(ZoneInfo("Europe/Moscow")).date():
@@ -174,9 +190,11 @@ def sync_catalog(force=True):
             safe = str(exc)[:300] if isinstance(exc, ValueError) else "Не удалось обновить каталог. Предыдущая версия сохранена."
             with database() as conn:
                 execute(conn, "UPDATE tile_catalog_sync SET last_error=? WHERE id=1", (safe,))
+            _save_sync_status(stamp, error=safe)
             raise ValueError(safe) from None
         with database() as conn:
             execute(conn, "UPDATE tile_catalog_sync SET last_success=?,last_error=NULL,catalog_id=? WHERE id=1", (datetime.now(timezone.utc).isoformat(), result["id"]))
+        _save_sync_status(stamp, datetime.now(timezone.utc).isoformat(), source=result.pop("_source_status", {}))
         return result
     finally:
         _sync_lock.release()

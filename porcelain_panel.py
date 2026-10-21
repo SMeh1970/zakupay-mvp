@@ -6,6 +6,7 @@ import logging
 import os
 import threading
 import zipfile
+from datetime import datetime, timezone
 from urllib.parse import urlencode, urlsplit
 
 import requests
@@ -83,8 +84,11 @@ def required_proposal_catalog(catalog_id):
     catalog = required_catalog(catalog_id)
     if managed_catalog.configured():
         current = required_catalog()
-        if catalog['id'] != current['id'] or not managed_catalog.is_managed(catalog['data']):
-            raise HTTPException(409, 'Каталог обновился. Повторите подбор из текущего управляемого каталога КерамаХолл.')
+        if not managed_catalog.is_managed(catalog['data']):
+            raise HTTPException(409, 'Повторите подбор из управляемого каталога КерамаХолл.')
+        # IDs survive refreshes. Revalidate chosen items, prices and summed stock
+        # against the freshly fetched version; historical quote reads stay pinned.
+        return current
     return catalog
 
 
@@ -97,7 +101,26 @@ def product_card(catalog_id, product, check=None):
     stock = 'неизвестно' if product.get('stock_m2') is None else f"{product['stock_m2']:g} м² по снимку"
     price = 'не заполнена' if product.get('price_rub_m2') is None else f"{product['price_rub_m2']:g} ₽/м²"
     match = '' if check is None else f"<p>{esc('; '.join(check['reasons']) or 'Характеристики требуют уточнения')}</p><p class='muted'>{esc('; '.join(check['unknown']))}</p>"
-    return f"<div class='product'>{photo(catalog_id,product)}<h3>{esc(product['name'])}</h3><p>{esc(details)}</p><p>Наличие: {esc(stock)}</p><p>Цена в каталоге: {esc(price)} · НДС источника: {esc(product.get('vat') or 'не указан')}</p>{match}</div>"
+    return f"<div class='product'>{photo(catalog_id,product)}<h3>{esc(product['name'])}</h3><p>{esc(details)}</p><p>Наличие: {esc(stock)}</p><p>Дата данных об остатке: {esc(product.get('stock_as_of') or 'не указана')} · {esc(age_label(product.get('stock_as_of')))}</p><p>Цена в каталоге: {esc(price)} · НДС источника: {esc(product.get('vat') or 'не указан')}</p>{match}</div>"
+
+
+def age_label(value):
+    try:
+        date=datetime.fromisoformat(str(value).replace('Z','+00:00'))
+        if date.tzinfo is None: return 'возраст неизвестен'
+        hours=max(0,int((datetime.now(timezone.utc)-date).total_seconds()//3600))
+        return f'возраст {hours} ч'
+    except (ValueError, TypeError): return 'возраст неизвестен'
+
+
+def sync_status_html():
+    if not managed_catalog.configured(): return ''
+    state=managed_catalog.sync_status(); source=state.get('source_status') or {}
+    return (f"<p>Последняя успешная загрузка API в MVP: {esc(state.get('last_success_at') or 'ещё не подтверждена')} · {esc(age_label(state.get('last_success_at')))}.</p>"
+        + (f"<p class='error'>Ошибка загрузки: {esc(state['last_error'])}. Используется последняя успешная версия.</p>" if state.get('last_error') else '')
+        + f"<p>Google Таблица → КерамаХолл: {'автоматически раз в сутки' if source.get('automatic_enabled') else 'автоматическое подключение ещё не подтверждено'}. Последний успех: {esc(source.get('last_success_at') or 'не подтверждён')} · {esc(age_label(source.get('last_success_at')))}. Статус: {esc(source.get('status') or 'неизвестен')}.</p>"
+        + (f"<p class='error'>{esc(source['last_error'])}</p>" if source.get('last_error') else '')
+        + "<p>Время загрузки не является датой подтверждения поставщиком. На бесплатном сервере фоновая загрузка MVP работает только во время его работы; перед расчётом проверяется API.</p>")
 
 
 def calculator_link(snapshot, catalog):
@@ -195,7 +218,6 @@ def install_porcelain(app, fetch_all_orders=None):
             order=json.loads(row['order_json'] or '{}')
             if any(tiles.is_tile(item.get('goodName') or item.get('name')) for item in order.get('orderItems',[])):
                 jobs.append(f"<li><a href='/dashboard/automation/jobs/{row['id']}/tiles'>№ {row['order_id']} — {esc(order.get('name'))}</a></li>")
-        sync_state=managed_catalog.sync_status() if managed_catalog.configured() else {}
         found=tiles.find_analogues(catalog['data'],q,200) if catalog else []
         cards=''.join(product_card(catalog['id'],r['product'],r if q else None) for r in found)
         warnings=''.join(f"<li>{esc(message)}</li>" for message in catalog['data'].get('workbook_import_warnings',[])) if catalog else ''
@@ -207,8 +229,7 @@ def install_porcelain(app, fetch_all_orders=None):
             f"<p class='notice'>Цены, НДС, наличие, упаковка и соответствие аналога проверяются перед счётом. Доставка по исходным тарифам — только Москва и МО.</p><div class='products'>{cards}</div></section>"
             + (f"<section><h2>Источник цен и остатков — управляемый КерамаХолл</h2><p><a href='{managed_catalog.ORIGIN}' target='_blank' rel='noopener'>Открыть каталог</a></p>"
                + f"<p>Дата обновления остатков: {esc((catalog or {}).get('data',{}).get('stock_as_of') or 'не указана')}. Дата обращения к API не обновляет дату остатков.</p>"
-               + f"<p>Обновление с сайта — раз в сутки. Последняя успешная проверка: {esc(sync_state.get('last_success') or 'ожидается')}. При простое сервера обновление запускается после пробуждения.</p>"
-               + (f"<p class='error'>Ошибка обновления: {esc(sync_state['last_error'])}. Используется предыдущий каталог.</p>" if sync_state.get('last_error') else '')
+               + sync_status_html()
                + "<form method='post' action='/dashboard/tiles/sync-catalog'><button>Синхронизировать каталог по API</button></form></section>" if managed_catalog.configured() else
             f"<section><h2>Обновление исходных данных</h2><p><a href='{SOURCE_FOLDER}' target='_blank' rel='noopener'>Папка проекта</a> · <a href='{WORKBOOK_URL}' target='_blank' rel='noopener'>Рабочая Google Таблица</a></p>"
             f"<form method='post' enctype='multipart/form-data' action='{URL}/import'><label>ZIP с catalog.json и фото или XLSX рабочей таблицы<input type='file' name='file' accept='.zip,.xlsx' required></label><button>Импортировать новую версию</button></form>"
@@ -244,6 +265,7 @@ def install_porcelain(app, fetch_all_orders=None):
     @app.get('/dashboard/automation/jobs/{job_id}/tiles')
     def tile_job(job_id: int, request: Request):
         catalog=required_catalog(); order=order_for_job(job_id); rows=[]
+        automatic=tiles.automatic_selection(catalog['data'],order)
         with database() as conn:
             previous=execute(conn,'SELECT id,created_at FROM tile_quotes WHERE job_id=? ORDER BY id DESC LIMIT 30',(job_id,)).fetchall()
         history=''.join(f"<li><a href='{URL}/quotes/{r['id']}'>Предложение № {r['id']} — {esc(r['created_at'])}</a></li>" for r in previous)
@@ -252,6 +274,9 @@ def install_porcelain(app, fetch_all_orders=None):
             if not tiles.is_tile(name): continue
             features=request.query_params.get(f'features_{i}','')
             found=tiles.find_analogues(catalog['data'],name+' '+features)
+            auto_id=automatic.get(i)
+            if auto_id and not any(r['product']['id']==auto_id for r in found):
+                found += [r for r in tiles.find_analogues(catalog['data'],name+' '+features,len(catalog['data']['products'])) if r['product']['id']==auto_id]
             options=[('', 'Не включать позицию')]+[(r['product']['id'],r['product']['name']+' · '+str(r['product'].get('format') or '')) for r in found]
             unit=item.get('unit') or {}; unit=unit.get('name') if isinstance(unit,dict) else unit
             from saved_dashboard import normalize_unit
@@ -259,12 +284,14 @@ def install_porcelain(app, fetch_all_orders=None):
             rows.append(f"<section><h2>{i}. {esc(name)}</h2><p>Количество в заявке: {esc(item.get('count'))} {esc(unit)}</p>"
                 + field(f'features_{i}','Уточнить цвет / рисунок / характеристики',features)
                 + f"<button type='submit' formmethod='get' formaction='/dashboard/automation/jobs/{job_id}/tiles'>Обновить варианты</button>"
-                + select(f'product_{i}','Наш предлагаемый аналог',options,request.query_params.get(f'product_{i}',''))
+                + select(f'product_{i}','Наш предлагаемый аналог',options,request.query_params.get(f'product_{i}',automatic.get(i,'')))
                 + field(f'area_{i}','Требуемая площадь, м² (если в заявке штуки/коробки — укажите пересчёт)',request.query_params.get(f'area_{i}',area),'number')
                 + "<div class='products'>"+''.join(product_card(catalog['id'],r['product'],r) for r in found)+"</div></section>")
         return page(f"<h1>Подбор аналога к заявке № {esc(order.get('id'))}</h1><p>Адрес доставки: {esc(tiles.delivery_address(order) or 'в заявке не указан')}</p>"
             + (f"<section><h2>Сохранённые предложения по заявке</h2><ul>{history}</ul></section>" if history else '')
+            + "<p>Автоматически выбирается самый дешёвый вариант с подтверждёнными в каталоге характеристиками и достаточным остатком по сумме строк. Неизвестные характеристики требуют ручного выбора.</p>"
             + f"<form method='post' action='/dashboard/automation/jobs/{job_id}/tiles/prepare'><input type='hidden' name='catalog_id' value='{catalog['id']}'>"
+            + ("<input type='hidden' name='seller' value='firm-5638073633-002580'>" if 'firm-5638073633-002580' in tiles.sellers() else '')
             + ''.join(rows) + ("<button>Выбрать аналоги и подготовить расчёт</button>" if rows else '<p>В сохранённых позициях керамогранит не найден.</p>')+'</form>')
 
     @app.post('/dashboard/automation/jobs/{job_id}/tiles/prepare')
@@ -272,6 +299,7 @@ def install_porcelain(app, fetch_all_orders=None):
         form=dict(await request.form()); order=await run_in_threadpool(order_for_job,job_id)
         form.setdefault('address',tiles.delivery_address(order))
         try:
+            if managed_catalog.configured(): await run_in_threadpool(managed_catalog.sync_catalog)
             catalog=await run_in_threadpool(required_proposal_catalog,int(form.get('catalog_id') or 0))
             snapshot=await run_in_threadpool(tiles.make_quote,order,catalog,form)
             key=await run_in_threadpool(tiles.save_quote,job_id,catalog,snapshot)
@@ -285,6 +313,7 @@ def install_porcelain(app, fetch_all_orders=None):
     async def tile_revise(quote_id: int, request: Request):
         quote=await run_in_threadpool(required_quote,quote_id); form=dict(await request.form())
         try:
+            if managed_catalog.configured(): await run_in_threadpool(managed_catalog.sync_catalog)
             catalog=await run_in_threadpool(required_proposal_catalog,quote['catalog_id'])
             snapshot=await run_in_threadpool(tiles.make_quote,quote['snapshot']['order_snapshot'],catalog,form)
             key=await run_in_threadpool(tiles.save_quote,quote['job_id'],catalog,snapshot)

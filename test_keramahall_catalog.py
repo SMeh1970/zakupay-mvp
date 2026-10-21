@@ -147,8 +147,43 @@ class ManagedCatalogTests(unittest.TestCase):
             with patch.object(api, "_get", side_effect=self.response):
                 current = api.sync_catalog()["id"]
             self.assertEqual(panel.required_proposal_catalog(current)["id"], current)
+            with patch.object(api, "_get", side_effect=self.response):
+                self.source['content_sha256'] = 'c' * 64
+                self.source['products'][0]['price_rub_m2'] = 2500
+                latest = api.sync_catalog()['id']
+            refreshed = panel.required_proposal_catalog(current)
+            self.assertEqual(refreshed['id'], latest)
+            self.assertEqual(refreshed['data']['products'][0]['price_rub_m2'], 2500)
+            self.assertEqual(panel.required_catalog(current)['id'], current)
             with self.assertRaises(HTTPException):
                 panel.required_proposal_catalog(self.old_id)
+
+    def test_failed_refresh_keeps_success_date_and_records_error(self):
+        self.source['synchronization'] = {'automatic_enabled': False, 'status': 'not_connected'}
+        with patch.object(api, '_get', side_effect=self.response):
+            api.sync_catalog()
+        before = api.sync_status()
+        with patch.object(api, '_get', side_effect=ValueError('API временно недоступен')):
+            with self.assertRaises(ValueError): api.sync_catalog()
+        after = api.sync_status()
+        self.assertEqual(after['last_success_at'], before['last_success_at'])
+        self.assertEqual(after['last_error'], 'API временно недоступен')
+        self.assertFalse(after['source_status']['automatic_enabled'])
+
+    def test_automatic_selection_requires_known_features_summed_stock_and_respects_named_model(self):
+        cheap = {**PRODUCT, 'id': 'CHEAP', 'name': 'Серый аналог', 'price_rub_m2': 100, 'stock_m2': 60}
+        dear = {**PRODUCT, 'id': 'DEAR', 'name': 'Другая модель', 'price_rub_m2': 200, 'stock_m2': 100}
+        order = copy.deepcopy(ORDER)
+        order['orderItems'].append(copy.deepcopy(order['orderItems'][0]))
+        self.assertEqual(tiles.automatic_selection({'products': [dear, cheap]}, order), {1: 'CHEAP', 2: 'DEAR'})
+        cheap['thickness_mm'] = None
+        self.assertEqual(tiles.automatic_selection({'products': [cheap]}, order), {})
+        cheap['thickness_mm'] = 9
+        order['orderItems'] = order['orderItems'][:1]
+        order['orderItems'][0]['goodName'] += ' Другая модель'
+        self.assertEqual(tiles.automatic_selection({'products': [dear, cheap]}, order), {1: 'DEAR'})
+        order['orderItems'][0]['goodName'] = 'Керамогранит многоцветный 600х600х9 мм матовый'
+        self.assertEqual(tiles.automatic_selection({'products': [dear, cheap]}, order), {})
 
 
 if __name__ == "__main__":
