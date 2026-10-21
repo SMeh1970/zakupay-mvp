@@ -118,13 +118,20 @@ class PorcelainTests(unittest.TestCase):
         packet=self.client.get(ready_url+'/bundle')
         self.assertEqual(packet.status_code,200)
         with zipfile.ZipFile(io.BytesIO(packet.content)) as z:
-            self.assertEqual(set(z.namelist()),{'invoice.xlsx','proposal.html','photos/KH-GRAY.jpg'})
+            self.assertEqual(set(z.namelist()),{'invoice.xlsx','proposal.html','photos/KH-GRAY.jpg','qr/KH-GRAY.png'})
             self.assertNotIn(b'NEW-IMAGE',z.read('photos/KH-GRAY.jpg'))
             self.assertNotIn('Грузоподъёмность',z.read('proposal.html').decode())
             self.assertNotIn('4790',z.read('proposal.html').decode())
+            target='https://keramahall-delivery.mehmans.chatgpt.site/products/KH-GRAY'
+            self.assertIn("href='"+target+"'",z.read('proposal.html').decode())
+            self.assertTrue(z.read('qr/KH-GRAY.png').startswith(b'\x89PNG'))
             book=load_workbook(io.BytesIO(z.read('invoice.xlsx')),data_only=True)
             values=[c.value for row in book.active for c in row]
             self.assertIn(45320,values);self.assertIn('В том числе НДС 22%:',values)
+            self.assertEqual(book.active['B12'].hyperlink.target,target)
+            self.assertIsNone(book.active['B13'].hyperlink, 'delivery is not a product')
+            self.assertEqual(book['Товары и QR']['A3'].hyperlink.target,target)
+            self.assertEqual(len(book['Товары и QR']._images),1)
         self.assertEqual(tiles.load_quote(ready_id)['snapshot']['seller']['inn'],SELLER['inn'])
         history=self.client.get(f'/dashboard/automation/jobs/{self.job}/tiles')
         self.assertIn(ready_url,history.text)
@@ -160,6 +167,14 @@ class PorcelainTests(unittest.TestCase):
             self.assertIn('Без НДС:',values)
             self.assertTrue(any('ИП Тестовый' in v for v in values))
             self.assertFalse(any('5017134957' in v for v in values))
+
+    def test_customer_links_cannot_expose_supplier_or_arbitrary_urls(self):
+        from invoice_generator import customer_product_link
+        self.assertIsNone(tiles.product_page_url({'id': '../admin'}))
+        self.assertIsNone(customer_product_link('https://supplier.example/product'))
+        self.assertIsNone(customer_product_link('javascript:alert(1)'))
+        self.assertIsNone(customer_product_link('https://keramahall-delivery.mehmans.chatgpt.site/admin'))
+        self.assertIsNone(customer_product_link('https://keramahall-delivery.mehmans.chatgpt.site/products/KH-GRAY?secret=1'))
 
     def test_archive_rejects_missing_image_and_duplicate_ids(self):
         with self.assertRaises(ValueError):tiles.import_catalog(archive([PRODUCT,PRODUCT]))
