@@ -20,10 +20,14 @@ MAX_IMPORT = 12 * 1024 * 1024
 
 def product_page_url(product):
     """Stable customer link, independent of prices and saved quote versions."""
-    key = str(product.get('id') or '')
-    if not re.fullmatch(r'[A-Za-z0-9_-]{1,80}', key):
+    origin = 'https://keramahall-delivery.mehmans.chatgpt.site/products/'
+    supplied = str(product.get('product_url') or '')
+    if supplied.startswith(origin) and re.fullmatch(r'[A-Za-z0-9_-]{1,160}', supplied[len(origin):]):
+        return supplied
+    key = str(product.get('public_slug') or product.get('id') or '')
+    if not re.fullmatch(r'[A-Za-z0-9_-]{1,160}', key):
         return None
-    return 'https://keramahall-delivery.mehmans.chatgpt.site/products/' + key
+    return origin + key
 
 
 def schema_statements(postgres):
@@ -268,7 +272,10 @@ def assess(requested, product):
 
 def find_analogues(data, requested, limit=8):
     found = []
+    ids = {p['id'] for p in data['products']}
     for p in data['products']:
+        if p.get('alias_of') in ids:
+            continue
         check = assess(requested, p)
         if check['conflicts']:
             continue
