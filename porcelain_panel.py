@@ -183,6 +183,7 @@ def install_porcelain(app, fetch_all_orders=None):
             order=json.loads(row['order_json'] or '{}')
             if any(tiles.is_tile(item.get('goodName') or item.get('name')) for item in order.get('orderItems',[])):
                 jobs.append(f"<li><a href='/dashboard/automation/jobs/{row['id']}/tiles'>№ {row['order_id']} — {esc(order.get('name'))}</a></li>")
+        sync_state=managed_catalog.sync_status() if managed_catalog.configured() else {}
         found=tiles.find_analogues(catalog['data'],q,200) if catalog else []
         cards=''.join(product_card(catalog['id'],r['product'],r if q else None) for r in found)
         warnings=''.join(f"<li>{esc(message)}</li>" for message in catalog['data'].get('workbook_import_warnings',[])) if catalog else ''
@@ -194,6 +195,8 @@ def install_porcelain(app, fetch_all_orders=None):
             f"<p class='notice'>Цены, НДС, наличие, упаковка и соответствие аналога проверяются перед счётом. Доставка по исходным тарифам — только Москва и МО.</p><div class='products'>{cards}</div></section>"
             + (f"<section><h2>Источник цен и остатков — управляемый КерамаХолл</h2><p><a href='{managed_catalog.ORIGIN}' target='_blank' rel='noopener'>Открыть каталог</a></p>"
                + f"<p>Дата обновления остатков: {esc((catalog or {}).get('data',{}).get('stock_as_of') or 'не указана')}. Дата обращения к API не обновляет дату остатков.</p>"
+               + f"<p>Обновление с сайта — раз в сутки. Последняя успешная проверка: {esc(sync_state.get('last_success') or 'ожидается')}. При простое сервера обновление запускается после пробуждения.</p>"
+               + (f"<p class='error'>Ошибка обновления: {esc(sync_state['last_error'])}. Используется предыдущий каталог.</p>" if sync_state.get('last_error') else '')
                + "<form method='post' action='/dashboard/tiles/sync-catalog'><button>Синхронизировать каталог по API</button></form></section>" if managed_catalog.configured() else
             f"<section><h2>Обновление исходных данных</h2><p><a href='{SOURCE_FOLDER}' target='_blank' rel='noopener'>Папка проекта</a> · <a href='{WORKBOOK_URL}' target='_blank' rel='noopener'>Рабочая Google Таблица</a></p>"
             f"<form method='post' enctype='multipart/form-data' action='{URL}/import'><label>ZIP с catalog.json и фото или XLSX рабочей таблицы<input type='file' name='file' accept='.zip,.xlsx' required></label><button>Импортировать новую версию</button></form>"
@@ -323,11 +326,23 @@ def install_porcelain(app, fetch_all_orders=None):
             logger.warning('Porcelain catalogue import unavailable; use private upload form')
 
     if managed_catalog.configured():
+        from apscheduler.schedulers.background import BackgroundScheduler
+        scheduler = BackgroundScheduler(timezone='UTC')
+
+        def daily_sync():
+            try:
+                result = managed_catalog.sync_catalog(force=False)
+                if not result.get('skipped'):
+                    logger.info('Managed KeramaHall daily catalogue synced: %s products', result.get('products'))
+            except Exception:
+                logger.warning('Managed KeramaHall daily sync failed; previous catalogue retained')
+
         def managed_startup_sync():
-            def sync():
-                try: managed_catalog.sync_catalog(); logger.info('Managed KeramaHall catalogue synced')
-                except Exception: logger.warning('Managed KeramaHall catalogue sync unavailable; use the private sync action')
-            threading.Thread(target=sync,daemon=True).start()
+            scheduler.add_job(daily_sync, 'interval', hours=1, id='keramahall-daily', max_instances=1, coalesce=True)
+            scheduler.start()
+            threading.Thread(target=daily_sync,name='keramahall-daily',daemon=True).start()
+
         app.router.on_startup.append(managed_startup_sync)
+        app.router.on_shutdown.append(lambda: scheduler.shutdown(wait=False) if scheduler.running else None)
     elif os.getenv('KERAMAHALL_BOOTSTRAP_URL'):
         app.router.on_startup.append(lambda: threading.Thread(target=bootstrap,name='porcelain-import',daemon=True).start())
