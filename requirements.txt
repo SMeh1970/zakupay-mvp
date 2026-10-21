@@ -10,3 +10,4 @@ xlrd>=2.0.1,<3
 psycopg[binary]
 PyJWT[crypto]
 cryptography
+qrcode[pil]>=8,<9
