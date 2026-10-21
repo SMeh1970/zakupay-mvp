@@ -11,6 +11,21 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
 
+def customer_product_link(value):
+    """Accept only our public product pages, never supplier or arbitrary URLs."""
+    value = str(value or '')
+    return value if re.fullmatch(r'https://keramahall-delivery\.mehmans\.chatgpt\.site/products/[A-Za-z0-9_-]{1,80}', value) else None
+
+
+def product_qr_png(url):
+    import qrcode
+    if not customer_product_link(url):
+        raise ValueError('Недопустимая ссылка на товар')
+    output = BytesIO()
+    qrcode.make(url, error_correction=qrcode.constants.ERROR_CORRECT_M, box_size=6, border=4).save(output, format='PNG')
+    return output.getvalue()
+
+
 SELLER = {
     "name": 'ООО «АВИОР»',
     "full_name": 'Общество с ограниченной ответственностью «АВИОР»',
@@ -151,6 +166,7 @@ def build_invoice_xlsx(draft: dict) -> bytes:
         cell.alignment = Alignment(horizontal="center", vertical="center")
 
     total = 0.0
+    product_links = []
     for row_num, item in enumerate(rows, start + 1):
         qty = float(item.get("quantity") or 0)
         price = float(item.get("proposed_unit_price") or 0)
@@ -170,6 +186,11 @@ def build_invoice_xlsx(draft: dict) -> bytes:
             cell.alignment = Alignment(wrap_text=True, vertical="top")
         ws.cell(row_num, 5).number_format = '#,##0.00'
         ws.cell(row_num, 6).number_format = '#,##0.00'
+        product_url = customer_product_link(item.get('product_url'))
+        if product_url:
+            ws.cell(row_num, 2).hyperlink = product_url
+            ws.cell(row_num, 2).font = Font(color='17569B', underline='single')
+            product_links.append((str(values[1] or ''), product_url))
 
     footer = start + 1 + len(rows)
     vat = round(total * vat_rate / (1 + vat_rate), 2)
@@ -198,6 +219,32 @@ def build_invoice_xlsx(draft: dict) -> bytes:
     ws.page_setup.orientation = "landscape"
     ws.page_setup.fitToWidth = 1
     ws.sheet_properties.pageSetUpPr.fitToPage = True
+
+    if product_links:
+        from openpyxl.drawing.image import Image
+        products = wb.create_sheet('Товары и QR')
+        products.column_dimensions['A'].width = 78
+        products.column_dimensions['B'].width = 22
+        products.append(['Товар — фото и характеристики', 'Открыть с телефона'])
+        products['A1'].font = products['B1'].font = bold
+        products.append(['На листе «Счёт» нажмите название товара. Для распечатки используйте QR-код.'])
+        products['A2'].alignment = Alignment(wrap_text=True, vertical='center')
+        products.row_dimensions[2].height = 32
+        for row, (name, url) in enumerate(dict.fromkeys(product_links), 3):
+            cell = products.cell(row, 1, name + '\n' + url)
+            cell.hyperlink = url
+            cell.font = Font(color='17569B', underline='single')
+            cell.alignment = Alignment(wrap_text=True, vertical='center')
+            qr = Image(BytesIO(product_qr_png(url)))
+            qr.width = qr.height = 124
+            products.add_image(qr, f'B{row}')
+            products.row_dimensions[row].height = 98
+        products.freeze_panes = 'A3'
+        products.page_setup.orientation = 'landscape'
+        products.page_setup.fitToWidth = 1
+        products.page_setup.fitToHeight = 0
+        products.sheet_properties.pageSetUpPr.fitToPage = True
+        products.print_title_rows = '1:2'
 
     output = BytesIO()
     wb.save(output)
