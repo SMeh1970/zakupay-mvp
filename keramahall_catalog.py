@@ -8,6 +8,7 @@ import threading
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone, timedelta
+from zoneinfo import ZoneInfo
 
 import requests
 
@@ -157,9 +158,12 @@ def sync_catalog(force=True):
         now = datetime.now(timezone.utc)
         state = sync_status()
         if not force:
-            for field, interval in (("last_success", timedelta(days=1)), ("last_attempt", timedelta(hours=1))):
-                if state.get(field) and now - datetime.fromisoformat(state[field]) < interval:
+            if state.get("last_success"):
+                previous = datetime.fromisoformat(state["last_success"])
+                if previous.astimezone(ZoneInfo("Europe/Moscow")).date() >= now.astimezone(ZoneInfo("Europe/Moscow")).date():
                     return {"skipped": True, "reason": "not_due"}
+            if state.get("last_attempt") and now - datetime.fromisoformat(state["last_attempt"]) < timedelta(hours=1):
+                return {"skipped": True, "reason": "not_due"}
         stamp = now.isoformat()
         with database() as conn:
             execute(conn, "INSERT INTO tile_catalog_sync(id,last_attempt) VALUES(1,?) ON CONFLICT(id) DO UPDATE SET last_attempt=excluded.last_attempt", (stamp,))
