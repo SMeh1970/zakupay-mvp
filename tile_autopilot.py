@@ -51,6 +51,12 @@ def fetch_prices(order, base, headers):
                     error += '; контроль API заявок: HTTP ' + str(control.status_code)
                 except requests.RequestException:
                     error += '; контроль API заявок: нет ответа'
+                try:
+                    comparison = requests.get(base.rstrip('/') + '/api/v1/orders/' + str(int(order['id']))
+                        + '/offer-compare-report', headers=headers(), timeout=15, allow_redirects=False)
+                    error += '; официальный отчёт сравнения: HTTP ' + str(comparison.status_code)
+                except requests.RequestException:
+                    error += '; официальный отчёт сравнения: нет ответа'
             return {}, error
         prices = competitor_prices(response.json(), datetime.now(timezone.utc).isoformat())
         return prices, '' if prices else 'Источник Закупай не вернул числовые лучшие цены'
@@ -89,14 +95,14 @@ def probe_provider_once(headers, base):
     for entry in rows:
         saved_report = json.loads(entry['report_json'])
         previous = timestamp(saved_report.get('provider_checked_at'))
-        if saved_report.get('provider_probe_version') == 2 and previous and (clock - previous).total_seconds() < 86400: return
+        if saved_report.get('provider_probe_version') == 3 and previous and (clock - previous).total_seconds() < 86400: return
     with database() as conn:
         saved = execute(conn, 'SELECT order_json FROM automation_jobs WHERE id=?', (row['job_id'],)).fetchone()
     if not saved: return
     prices, error = fetch_prices(json.loads(saved['order_json']), base, headers)
     count = sum(1 for price in prices.values() if price.get('price') is not None)
     report['provider_checked_at'] = clock.isoformat()
-    report['provider_probe_version'] = 2
+    report['provider_probe_version'] = 3
     report['provider_result'] = error or ('Числовых цен получено: ' + str(count)
         + '. Единицы, НДС и доставка проверяются отдельно.')
     persist(row['job_id'], report)
