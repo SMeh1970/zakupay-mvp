@@ -44,6 +44,16 @@ class PreparedCatalogTests(unittest.TestCase):
         self.assertEqual(compare(extract("Крепление М10"), extract("Крепление М10"))["status"], "matched")
         self.assertFalse(any(a["parameter"] == "Марка стали" for a in extract("Отвод стальной крутоизогнутый Ду100")["attributes"]))
 
+    def test_real_order_product_noun_and_connection_conflicts(self):
+        for requested, offered in [
+            ('Дверь межкомнатная. Полотно ПВХ пленка 800х2000', 'СОЮЗ Стеновая панель ХДФ в ПВХ пленке 2700х238х6мм'),
+            ('Rainbowl Дозатор для жидкого мыла с креплением к стене', 'КЕРАМИН Писсуар с креплением угловым скрытым'),
+            ('Инсталляция для унитаза ТЕСЕ без крепления', 'САНИТА Умывальник без крепления'),
+            ('Отвод под грувлок Ду25, 90гр', 'Отвод 90гр. Ду25 под приварку Ст.20'),
+            ('Труба профильная 60*40*3 (6м)', 'Труба профильная 100х100х4мм (6м)'),
+        ]:
+            self.assertEqual(compare(extract(requested), extract(offered))["status"], "conflict", requested)
+
     def test_inventory_profile_preserves_unknown_units_and_on_order(self):
         book = Workbook()
         book.active.title = "Лист1"

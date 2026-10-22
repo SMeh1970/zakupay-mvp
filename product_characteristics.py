@@ -5,13 +5,18 @@ No attributes are derived from worksheet formatting or neighbouring products.
 """
 import re
 
-VERSION = "2026-10-22.2"
+VERSION = "2026-10-22.3"
 N = r"\d+(?:[.,]\d+)?"
 CATEGORIES = [
     (r"фанер", "Фанера"), (r"зенков", "Зенковки"),
     (r"труба\s+профильн", "Профильные трубы"),
     (r"\bтруб[аы]\b", "Трубы"), (r"\bсверл", "Сверла"),
     (r"\bотвод\w*", "Отводы"), (r"\bпереход\w*", "Переходы"), (r"\bтройник\w*", "Тройники"),
+    (r"\bдвер[ьи]\w*", "Двери"), (r"\bпанел[ьи]\w*", "Панели"),
+    (r"\bдозатор\w*", "Дозаторы"), (r"\bинсталляци\w*", "Инсталляции"),
+    (r"\bписсуар\w*", "Писсуары"), (r"\bумывальник\w*|\bраковин\w*", "Раковины"),
+    (r"\bунитаз\w*", "Унитазы"), (r"\bсмесител\w*", "Смесители"),
+    (r"\bпрофил[ьи]\w*", "Профили"), (r"\bподвес\w*", "Подвесы"),
     (r"\bметчик", "Метчики"), (r"\bфрез", "Фрезы"),
     (r"подшипник", "Подшипники"), (r"штанген", "Измерительный инструмент"),
     (r"\bкруг\b", "Абразивные круги"),
@@ -21,10 +26,17 @@ CATEGORIES = [
     (r"\bклей\b", "Клеи"), (r"цемент|алебастр|\bгипс\b", "Вяжущие"),
 ]
 
+# These categories currently have dedicated dimensional/identity extraction.
+# Recognising a noun or colour alone in other categories is not confirmation.
+MATCH_CATEGORIES = {"Фанера", "Зенковки", "Трубы", "Профильные трубы", "Крепёж", "Сверла", "Отводы", "Переходы", "Тройники"}
+
 
 def extract(name):
     text = str(name or "")
-    category = next((c for p, c in CATEGORIES if re.search(p, text, re.I)), "Не определена")
+    categories = [(m.start(), n, c) for n, (p, c) in enumerate(CATEGORIES) if (m := re.search(p, text, re.I))]
+    # The earliest product noun wins: "дверь ... ПВХ плёнка" is a door,
+    # "писсуар ... с креплением" is a urinal, not a fastener.
+    category = min(categories)[2] if categories else "Не определена"
     attributes = []
 
     def add(key, value, unit, match, ambiguous=False):
@@ -55,6 +67,11 @@ def extract(name):
         if m:
             size("Наружный диаметр", m, 1, 3)
             size("Толщина стенки", m, 2, 3)
+    elif category == "Профильные трубы":
+        m = re.search(r"(" + N + r")\s*[хx×*]\s*(" + N + r")\s*[хx×*]\s*(" + N + r")\s*(мм|см)?", text, re.I)
+        if m:
+            for k, i in [("Высота сечения", 1), ("Ширина сечения", 2), ("Толщина стенки", 3)]:
+                size(k, m, i, 4)
     elif category == "Фанера":
         m = re.search(r"(" + N + r")\s*[хx×*]\s*(" + N + r")\s*[хx×*]\s*(" + N + r")\s*(мм|см)?", text, re.I)
         if m:
@@ -121,6 +138,10 @@ def extract(name):
         (r"с виброгасителем", "Виброгаситель", True),
         (r"электросварн\w*|\bсварн\w*|\bэ/с\b", "Тип трубы", "Сварная"),
         (r"бесшовн\w*|\bб/ш\b", "Тип трубы", "Бесшовная"),
+        (r"грувлок\w*", "Тип соединения", "Грувлок"),
+        (r"под приварку", "Тип соединения", "Сварное"),
+        (r"резьбов\w*", "Тип соединения", "Резьбовое"),
+        (r"\bНГ\b", "Горючесть", "НГ"),
     ]:
         m = re.search(pattern, text, re.I)
         if m:
@@ -134,6 +155,8 @@ def extract(name):
 
 def compare(request, product):
     conflicts, missing = [], []
+    if request["category"] not in MATCH_CATEGORIES:
+        missing.append("Категория требует ручной проверки")
     if not request["attributes"]:
         missing.append("Обязательные характеристики не выделены")
     if request["category"] != "Не определена":
