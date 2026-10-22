@@ -44,12 +44,12 @@ from abacus_mcp import install_abacus_mcp
 
 ai_panel.analyze_order = analyze_order_v2
 
-DEPLOY_MARKER = "invoice-submit-deadlines-2026-10-22"
+DEPLOY_MARKER = "catalog-supplier-comparison-2026-10-22"
 
 
 @app.get("/version")
 def version_marker():
-    return {"deploy": DEPLOY_MARKER, "offer_panel": True, "abacus_mcp": True, "supplier_comparison": True}
+    return {"deploy": DEPLOY_MARKER, "offer_panel": True, "abacus_mcp": True, "supplier_comparison": True, "catalog_comparison": True}
 
 
 _OPTIONAL_NUMERIC_QUERY_FIELDS = {

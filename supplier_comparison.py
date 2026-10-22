@@ -128,7 +128,7 @@ def lexical_tokens(name):
 
 def candidates(item):
     seen, out = set(), []
-    for candidate in [item.get("selected")] + list(item.get("candidates") or []) + list(item.get("rejected_candidates") or []):
+    for candidate in [item.get("selected")] + list(item.get("candidates") or []) + list(item.get("rejected_candidates") or []) + list(item.get("catalog_candidates") or []):
         if not candidate or candidate.get("error") or not candidate.get("name"):
             continue
         key = quote_key(candidate)
@@ -169,42 +169,63 @@ def conversion(item, candidate):
                ("л", "мл"): 1000, ("мл", "л"): .001}
     if (supplied, requested) in factors:
         return factors[(supplied, requested)], "Перевод единиц"
-    lengths = attributes(candidate.get("name")).get("Длина изделия") or []
+    from catalog_comparison import records
+    lengths = [r["value"] for r in records(candidate.get("name"), candidate)
+               if r["field"] == "Длина изделия" and not r["ambiguous"] and r["value"].endswith(" мм")]
     if supplied == "шт" and requested == "м" and len(lengths) == 1:
         return number(lengths[0].split()[0]) / 1000, "Длина изделия из наименования"
     return None, "Коэффициент не указан"
 
 
 def offer_view(item, candidate):
+    from catalog_comparison import effective_quote, records, without_evidence, fingerprint
     source = item.get("comparison_source") or item
     state = settings(item)
+    original_candidate = candidate
+    key = quote_key(candidate)
+    candidate = effective_quote(candidate, state, key)
     decisions = state.get("features") or {}
-    required = attributes(source.get("requested_name"))
-    found = attributes(candidate.get("name"))
-    if candidate.get("brand"):
-        found["Бренд"] = [str(candidate["brand"])]
+    required_records = records(source.get("requested_name"))
+    found_records = records(candidate.get("name"), candidate)
+    required, found = {}, {}
+    for record in required_records:
+        required.setdefault(record["field"], []).append(record["value"])
+    for record in found_records:
+        found.setdefault(record["field"], []).append(record)
     features = []
     for field in sorted(set(required) | set(found)):
-        for value in found.get(field) or ["Не указано"]:
+        for record in found.get(field) or [dict(value="Не указано", unit=None, ambiguous=True, evidence="", origin="missing")]:
+            value = record["value"]
+            ambiguous = record["ambiguous"] or any(r["ambiguous"] for r in required_records if r["field"] == field)
             identifier = feature_id(field, value)
-            same = value in required.get(field, [])
-            differs = field in required and not same
+            if ambiguous:
+                identifier += ":" + feature_id("Предложение", key + fingerprint(original_candidate))
+            same = value in required.get(field, []) and not ambiguous
+            differs = (field in required and not same) or ambiguous
             features.append(dict(id=identifier, field=field, value=value, required=required.get(field, []),
-                                 state=decisions.get(identifier, "pending" if differs else "matched"), differs=differs))
+                state=decisions.get(identifier, "pending" if differs else "matched"), differs=differs,
+                unit=record.get("unit"), evidence=record.get("evidence"), origin=record.get("origin"),
+                ambiguous=ambiguous, offer_specific=ambiguous))
+    if candidate.get("catalog_prepared") and (candidate.get("category") == "Не определена" or
+            "Категория требует ручной проверки" in candidate.get("match", {}).get("missing", [])):
+        identifier = feature_id("Проверка категории", key + fingerprint(original_candidate))
+        features.append(dict(id=identifier, field="Проверка категории", value=candidate.get("category") or "Не определена",
+            required=[], state=decisions.get(identifier, "pending"), differs=True, ambiguous=True, offer_specific=True,
+            evidence="Правила разбора этой категории неполные", origin="parser"))
     # A fallback for arbitrary products/parameters. Whole tokens avoid substring
     # exclusions (e.g. 20 must not reject 200). Unknown text remains reviewable.
-    wanted = set(lexical_tokens(source.get("requested_name")))
-    extras = [t for t in dict.fromkeys(lexical_tokens(candidate.get("name"))) if t not in wanted and len(t) > 1]
+    wanted = set(lexical_tokens(without_evidence(source.get("requested_name"), required_records)))
+    offered_words = lexical_tokens(without_evidence(candidate.get("name"), found_records))
+    extras = [t for t in dict.fromkeys(offered_words) if t not in wanted and len(t) > 1]
     for token in extras:
         field, value = "Слово в наименовании", token
         identifier = feature_id(field, value)
         features.append(dict(id=identifier, field=field, value=value, required=[],
                              state=decisions.get(identifier, "pending"), differs=True))
-    for token in sorted(wanted - set(lexical_tokens(candidate.get("name")))):
+    for token in sorted(wanted - set(offered_words)):
         identifier = feature_id("Нет слова из заявки", token)
         features.append(dict(id=identifier, field="Нет слова из заявки", value=token, required=[token],
                              state=decisions.get(identifier, "pending"), differs=True))
-    key = quote_key(candidate)
     factor, factor_source = conversion(item, candidate)
     price, need = number(candidate.get("price")), number(source.get("quantity"))
     supplier_unit = str(candidate.get("unit") or "не указана")
@@ -214,6 +235,7 @@ def offer_view(item, candidate):
         explicit_qty = number(candidate.get("qty"))
     quantity = explicit_qty
     historical = candidate.get("source_type") in {"price_list", "own_catalog"}
+    quantity_unconfirmed = bool(candidate.get("catalog_prepared") and not candidate.get("quantity_confirmed"))
     stock = number(candidate.get("stock")) if not historical else None
     if quantity is None and factor and need is not None:
         quantity = need / factor
@@ -225,7 +247,10 @@ def offer_view(item, candidate):
     differs_qty = need is not None and converted is not None and not math.isclose(need, converted, abs_tol=1e-7)
     # Quantity approval is bound to the actual proposal, its units and original
     # demand. A price/stock refresh cannot reuse approval of another amount.
-    qty_id = feature_id("Количество", json.dumps([quantity, supplier_unit, converted, need, requested_unit]))
+    qty_identity = [quantity, supplier_unit, converted, need, requested_unit]
+    if candidate.get("catalog_prepared"):
+        qty_identity.append(fingerprint(original_candidate))
+    qty_id = feature_id("Количество", json.dumps(qty_identity))
     qty_state = (state.get("quantities") or {}).get(key, {})
     qty_decision = qty_state.get("decision", "pending") if qty_state.get("id") == qty_id else "pending"
     if not differs_qty:
@@ -251,6 +276,12 @@ def offer_view(item, candidate):
         reasons.append("Количество отклонено" if qty_decision == "rejected" else "Подтвердите количество")
     if not factor:
         reasons.append("Нужен коэффициент пересчёта")
+    if candidate.get("catalog_prepared") and candidate.get("pricing_ready") is not True:
+        reasons.append("Подтвердите цену, валюту и НДС")
+    if quantity_unconfirmed:
+        reasons.append("Количество поставщика не подтверждено")
+    if candidate.get("catalog_unavailable"):
+        reasons.append("Предложение отсутствует в актуальном подборе прайсов")
     if price is None or price <= 0 or quantity is None or quantity <= 0:
         reasons.append("Нет положительной цены или количества")
     if state.get("cells", {}).get(key) is False:
@@ -265,8 +296,17 @@ def offer_view(item, candidate):
                 total=total, features=features, eligible=admissible, reasons=reasons,
                 enabled=state.get("cells", {}).get(key) is not False,
                 selected=quote_key(item.get("selected") or {}) == key and item.get("decision") in {"approved", "auto_ready"},
-                stock=stock, availability="Наличие требует подтверждения" if historical or stock is None else "Остаток поставщика",
-                source_date=candidate.get("price_date"), url=safe_url(candidate.get("url") or candidate.get("source_url")))
+                stock=stock, availability=("Количество предложения подтверждено оператором" if candidate.get("catalog_prepared") and candidate.get("quantity_confirmed") else "Наличие требует подтверждения" if historical or stock is None else "Остаток поставщика"),
+                source_date=candidate.get("price_date"), url=safe_url(candidate.get("url") or candidate.get("source_url")),
+                catalog_prepared=bool(candidate.get("catalog_prepared")), pricing_ready=candidate.get("pricing_ready", True),
+                currency=candidate.get("currency") if candidate.get("catalog_prepared") else "RUB",
+                raw_price=candidate.get("confirmed_raw_price", candidate.get("original_price")), vat_mode=candidate.get("vat_mode"), vat_rate=candidate.get("vat_rate"),
+                quantity_unconfirmed=quantity_unconfirmed, document_stock=candidate.get("price_list_stock"),
+                stock_unit=candidate.get("stock_unit"), warehouse=candidate.get("warehouse"),
+                source_filename=candidate.get("source_filename"), source_sheet=candidate.get("source_sheet"), source_row=candidate.get("source_row"),
+                email_received_at=candidate.get("source_provenance", {}).get("email_received_at"),
+                product_url=f"/dashboard/prices/products/{int(candidate['catalog_product_id'])}" if candidate.get("catalog_prepared") and candidate.get("catalog_product_id") else None,
+                original_url=f"/dashboard/prices/{int(candidate['source_list_id'])}/file" if candidate.get("catalog_prepared") and candidate.get("source_list_id") else None)
 
 
 def safe_url(value):
@@ -318,6 +358,7 @@ def model(result, raw=None):
         source = item.get("comparison_source") or item
         rows.append(dict(position=item.get("position"), name=source.get("requested_name"), quantity=source.get("quantity"),
                          unit=source.get("unit"), offers=views, active=bool(item.get("comparison")),
+                         catalog_search=item.get("catalog_search"),
                          rules=[dict(id=k, state=v) for k, v in (settings(item).get("features") or {}).items()]))
     return dict(revision=revision(raw) if raw is not None else None, order_name=result.get("order_name"),
                 order_id=result.get("order_id"), source_label=result.get("source_label") or "Закупай",
@@ -340,6 +381,10 @@ def apply_selection(item, candidate, result):
     if not view["eligible"] or not supplier_enabled(result, view["supplier"]):
         raise ValueError("Сначала примите отличия и количество, включите предложение и поставщика.")
     activate(item)
+    from catalog_comparison import effective_quote
+    candidate = effective_quote(candidate, settings(item), quote_key(candidate))
+    if candidate.get("catalog_prepared"):
+        item["candidates"] = [c for c in item.get("candidates", []) if quote_key(c) != quote_key(candidate)] + [copy.deepcopy(candidate)]
     item.update(selected=copy.deepcopy(candidate), quantity=view["converted_quantity"], purchase_units=view["quantity"],
                 pack_size=view["factor"], purchase_price=view["price"],
                 proposed_unit_price=round(view["unit_price"] * (1 + result.get("markup", DEFAULT_MARKUP)), 2),
@@ -383,17 +428,22 @@ def preserve_comparison(new, old):
         source = previous.get("comparison_source") or previous
         if number(source.get("quantity")) != number(item.get("quantity")) or unit(source.get("unit")) != unit(item.get("unit")):
             continue
-        for field in ("comparison", "comparison_source"):
+        for field in ("comparison", "comparison_source", "catalog_candidates", "catalog_search"):
             if previous.get(field):
                 item[field] = copy.deepcopy(previous[field])
     reconcile(new)
 
 
-def mutate(result, payload):
+def mutate(result, payload, conn=None):
     action = payload.get("action")
     if result.get("live_offer_created"):
         raise ValueError("Предложение уже отправлено. Сравнение доступно только для просмотра.")
-    if action == "mode":
+    if action == "load_catalog":
+        if conn is None:
+            raise ValueError("Для подбора нужен доступ к сохранённым прайсам")
+        from catalog_comparison import load_offers
+        load_offers(result, conn, payload.get("position"))
+    elif action == "mode":
         if payload.get("value") not in {"sum", "price"}:
             raise ValueError("Неизвестный режим")
         result.setdefault("comparison", {})["mode"] = payload["value"]
@@ -426,7 +476,13 @@ def mutate(result, payload):
             if candidate is None:
                 raise ValueError("Предложение не найдено")
             view = offer_view(item, candidate)
-            if action == "quantity":
+            if action == "confirm_terms":
+                from catalog_comparison import confirm_terms
+                confirm_terms(state, view["key"], candidate, payload)
+            elif action == "confirm_proposal":
+                from catalog_comparison import confirm_proposal
+                confirm_proposal(state, view["key"], candidate, payload)
+            elif action == "quantity":
                 decision = payload.get("decision")
                 if decision not in {"accepted", "rejected", "pending"} or not view["quantity_differs"]:
                     raise ValueError("Количество не отличается")
@@ -465,7 +521,10 @@ def install_supplier_comparison(app):
         row = _execute(conn, "SELECT * FROM automation_jobs WHERE id=?", (job_id,)).fetchone()
         if not row or not row["result_json"]:
             raise HTTPException(404, "Сохранённый результат не найден. Сначала выполните поиск по заявке.")
-        return row, json.loads(row["result_json"])
+        result = json.loads(row["result_json"])
+        from catalog_comparison import hydrate_request
+        hydrate_request(result, row["order_json"])
+        return row, result
 
     @app.get("/dashboard/comparison/assets/{name}")
     def asset(name: str, request: Request):
@@ -487,8 +546,9 @@ def install_supplier_comparison(app):
         <nav><a href="/dashboard/automation">Закупай <span>MVP</span></a><a href="/dashboard/automation/jobs/{job_id}/review">← К проверке заявки</a><a href="/dashboard/prices">Прайсы</a></nav>
         <main><div class="eyebrow">ЗАКУПКИ / СРАВНЕНИЕ ПРЕДЛОЖЕНИЙ</div><h1>Выбрать поставщиков</h1><p id="order-title" class="subtitle"></p>
         <div id="message" role="status" aria-live="polite"></div><section id="summary" class="summary"></section>
-        <section class="toolbar"><label>Показывать и выбирать минимум по <select id="mode"><option value="sum">сумме предложения</option><option value="price">цене за единицу заявки</option></select></label><label><input type="checkbox" id="show-excluded" checked> Показывать исключённые</label><button id="show-all">Показать все столбцы</button><button id="export">Скачать CSV</button></section>
-        <p class="hint">✓ принимает значение характеристики у всех поставщиков этой позиции. ✗ исключает все предложения с этим значением. Решение по количеству относится к конкретному предложению. Пересчёт единиц показан отдельно.</p>
+        <section class="toolbar"><button id="load-catalog">Подобрать из прайсов</button><label>Показывать и выбирать минимум по <select id="mode"><option value="sum">сумме предложения</option><option value="price">цене за единицу заявки</option></select></label><label><input type="checkbox" id="show-excluded" checked> Показывать исключённые</label><button id="show-all">Показать все столбцы</button><button id="export">Скачать CSV</button></section>
+        <p class="hint">«Подобрать из прайсов» использует подготовленную базу без запросов к API и интернету. Характеристики показываются с источниками. Исправление распознавания открывается в карточке товара; принятие отклонения относится к этой позиции заявки.</p>
+        <p class="hint">✓ принимает известное значение характеристики у всех поставщиков этой позиции. ✗ исключает предложения с этим значением. Неизвестные и неоднозначные значения рассматриваются отдельно у каждого предложения. Решение по количеству относится к конкретному предложению. Пересчёт единиц показан отдельно.</p>
         <div id="supplier-toggles" class="supplier-toggles"></div><section class="matrix-wrap" aria-label="Сравнительная таблица"><table id="matrix"></table></section>
         <p class="legend"><span class="dot green"></span> Минимум среди допущенных <span class="dot orange"></span> Требует решения <span class="dot gray"></span> Исключено</p>
         <p class="hint">Итоги — по сохранённым закупочным ценам. Доставка в общий минимум не добавляется: её стоимость нужно подтвердить отдельно. Выбор переносится в проверку заявки; отправка выполняется из существующей формы подтверждения.</p>
@@ -522,7 +582,7 @@ def install_supplier_comparison(app):
             if submission:
                 raise HTTPException(409, "Отправка предложения выполняется или требует проверки")
             try:
-                mutate(result, payload)
+                mutate(result, payload, conn)
             except ValueError as exc:
                 raise HTTPException(400, str(exc))
             invoice_number = row["invoice_number"]

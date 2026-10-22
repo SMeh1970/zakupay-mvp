@@ -2278,7 +2278,7 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
                 f"<div class='meta'><b>Поставщики:</b> {html.escape(suppliers_label)}</div>"
                 f"<div class='meta'>Статус: {'счёт выставлен в Закупай' if offer_created else 'поиск цен не запускался' if pending else html.escape(STATUSES.get(row['status'], 'Требуется проверка'))} · счёт: {row['invoice_number'] or '—'}</div></div>"
                 f"<div class='actions'>{primary_action}"
-                + (f"<a class='button secondary' target='_blank' rel='noopener' href='/dashboard/automation/jobs/{row['id']}/comparison'>Сравнить поставщиков</a>" if result.get("items") and not pending else "")
+                + (f"<a class='button secondary' target='_blank' rel='noopener' href='/dashboard/automation/jobs/{row['id']}/comparison'>Сравнить поставщиков</a>" if result.get("items") or row["order_json"] else "")
                 + f"{invoice}{send}</div></section>"
             )
         sync_report = ""

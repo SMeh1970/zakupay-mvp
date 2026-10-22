@@ -254,7 +254,7 @@ def save_products(conn, record, items):
     return dict(parsed_descriptions=parsed, reused_descriptions=reused)
 
 
-def search(query, limit=12):
+def search(query, limit=12, *, include_conflicts=False, conn=None):
     from price_lists import database, execute, tokens, norm
     started = time.perf_counter()
     request = extract(query)
@@ -279,12 +279,14 @@ def search(query, limit=12):
         strict.append((matching, [a["parameter"], value_key(a["value"]), a.get("unit") or ""]))
         where.append("(NOT EXISTS(SELECT 1 FROM price_product_attributes a WHERE a.product_id=c.id AND a.parameter=?) OR EXISTS(SELECT 1 FROM price_product_attributes a WHERE a.product_id=c.id AND a.parameter=? AND a.value_key=?))")
         params.extend([a["parameter"], a["parameter"], value_key(a["value"])])
-    base = "WITH token_hits AS (SELECT product_id,COUNT(*) AS hits FROM price_product_terms WHERE token IN (" + ",".join("?" for _ in retrieval_terms) + """ ) GROUP BY product_id)
+    base_prefix = "WITH token_hits AS (SELECT product_id,COUNT(*) AS hits FROM price_product_terms WHERE token IN (" + ",".join("?" for _ in retrieval_terms) + """ ) GROUP BY product_id)
         SELECT c.id,c.analysis_json,c.overrides_json,o.payload_json FROM token_hits t
         JOIN price_product_cards c ON c.id=t.product_id JOIN price_product_offers o ON o.product_id=c.id
-        JOIN supplier_price_lists p ON p.id=o.list_id WHERE """ + " AND ".join(where)
+        JOIN supplier_price_lists p ON p.id=o.list_id WHERE """
+    base = base_prefix + " AND ".join(where)
     hits = []
-    with database() as conn:
+    from contextlib import nullcontext
+    with (nullcontext(conn) if conn is not None else database()) as conn:
         for confirmed in ((True, False) if strict else (False,)):
             sql, args = base, list(retrieval_terms) + list(params)
             if confirmed and strict:
@@ -294,6 +296,12 @@ def search(query, limit=12):
             # Name overlap ranks within category/attributes, never supplier price.
             sql += " ORDER BY t.hits DESC,c.id,o.list_id DESC LIMIT 150"
             hits.extend(execute(conn, sql, args).fetchall())
+        if include_conflicts and category != "Не определена":
+            # Alternative dimensions stay visible for an explicit comparison
+            # decision, but another product category is never substituted.
+            extra = execute(conn, base_prefix + "p.status='active' AND c.category=? ORDER BY t.hits DESC,c.id,o.list_id DESC LIMIT 150",
+                list(retrieval_terms) + [category]).fetchall()
+            hits.extend(extra)
     candidates, seen = [], set()
     for row in hits:
         offer = json.loads(row["payload_json"])
@@ -303,12 +311,17 @@ def search(query, limit=12):
         seen.add(identity)
         analysis = effective(json.loads(row["analysis_json"]), json.loads(row["overrides_json"]))
         match = compare(request, analysis)
-        if match["status"] == "conflict":
+        if match["status"] == "conflict" and not include_conflicts:
             continue
         required = request["attributes"]
         evidence_matches = sum(any(a["parameter"] == r["parameter"] and a["value"] == r["value"]
             for a in analysis["attributes"]) for r in required)
-        if required and evidence_matches * 2 < len(required):
+        # A broad category (e.g. pipes) also includes unrelated drainage goods.
+        # Alternatives need at least one shared requirement when several are
+        # specified; lexical overlap alone is insufficient evidence to retrieve.
+        if include_conflicts and len(required) >= 2 and not evidence_matches:
+            continue
+        if required and evidence_matches * 2 < len(required) and not include_conflicts:
             continue
         semantic_score = 0
         if category == "Не определена":
@@ -325,7 +338,8 @@ def search(query, limit=12):
         if not overlap:
             continue
         candidates.append({**offer, "product_id": row["id"], "analysis": analysis, "match": match, "overlap": overlap, "semantic_score": semantic_score})
-    candidates.sort(key=lambda c: (c["match"]["status"] != "matched", len(c["match"]["missing"]), -c["overlap"]))
+    candidates.sort(key=lambda c: ({"matched": 0, "review": 1, "conflict": 2}[c["match"]["status"]],
+        len(c["match"]["conflicts"]), len(c["match"]["missing"]), -c["overlap"]))
     return dict(query=query, requirements=request, candidates=candidates[:max(1, min(limit, 80))],
                 seconds=round(time.perf_counter() - started, 4), candidate_window=len(seen))
 
@@ -427,6 +441,7 @@ def install(app):
         result = match_saved_order(job_id)
         body = f"<h1>Подбор по прайсам: {esc(result['title'])}</h1><p>Заявка {result['order_id']}; позиций {len(result['items'])}; время {result['seconds']} с.</p>"
         body += "<p>Этот просмотр не изменяет заявку и счёт. Неизвестные параметры требуют проверки. Цены и остатки не подтверждены.</p>"
+        body += f"<p><a class='button' href='/dashboard/automation/jobs/{job_id}/comparison'>Открыть сравнительную таблицу поставщиков</a></p>"
         for row in result["items"]:
             body += f"<h2>{row['position']}. {esc(row['name'])}</h2>"
             body += "".join(candidate_html(c) for c in row["result"]["candidates"]) or "<p>Кандидатов нет — уточнить через API или Sniper.</p>"

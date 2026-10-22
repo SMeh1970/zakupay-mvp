@@ -34,7 +34,7 @@
       if (!response.ok) throw new Error(next.detail || 'Сохранение не выполнено. Повторите действие.');
       data = {...next, job_id:initial.job_id};
       render();
-      notice(payload.action === 'select' ? 'Выбор сохранён и перенесён в проверку заявки.' : 'Сохранено. Правила применены ко всем предложениям этой позиции.');
+      notice(payload.action === 'select' ? 'Выбор сохранён и перенесён в проверку заявки.' : payload.action === 'load_catalog' ? 'Подбор из подготовленных прайсов завершён. Проверьте условия и расхождения.' : 'Решение сохранено.');
     } catch (error) {
       render();
       notice(error.message, true);
@@ -54,7 +54,7 @@
     const wrap = element('span', 'decision-buttons');
     const state = feature ? feature.state : offer.quantity_state;
     for (const [symbol, decision, label] of [['✓','accepted','Принять'],['✗','rejected','Отклонить']]) {
-      const title = feature ? `${label}: ${feature.field} — ${feature.value}, у всех поставщиков позиции ${row.position}` : `${label} количество только у этого предложения`;
+      const title = feature ? `${label}: ${feature.field} — ${feature.value}, ${feature.offer_specific ? 'только у этого предложения' : 'у всех поставщиков позиции ' + row.position}` : `${label} количество только у этого предложения`;
       const payload = feature ? {action:'feature',position:row.position,feature:feature.id,decision} : {action:'quantity',position:row.position,key:offer.key,decision};
       const b = button(symbol, title, () => save(payload), 'decision ' + decision + (state === decision ? ' active' : ''));
       b.setAttribute('aria-pressed', state === decision ? 'true':'false');
@@ -94,14 +94,15 @@
     const included = element('input'); included.type = 'checkbox'; included.checked = offer.enabled;
     included.disabled = !!data.read_only; included.setAttribute('aria-label','Участвует: ' + offer.supplier + ', позиция ' + row.position);
     included.addEventListener('change',() => save({action:'cell',position:row.position,key:offer.key,enabled:included.checked}));
-    top.append(included,element('strong','amount',money(data.mode === 'price' ? offer.unit_price:offer.total) + ' ₽'));
+    const rubles = offer.currency === 'RUB' && offer.pricing_ready;
+    top.append(included,element('strong','amount',money(data.mode === 'price' ? offer.unit_price:offer.total) + (rubles ? ' ₽' : '')));
     if (row.best?.key === offer.key) top.append(element('span','best-label','МИНИМУМ'));
     card.append(top);
     card.append(element('div','quote-name',offer.name));
-    card.append(element('div','hint',`${money(offer.price)} ₽ / ${offer.unit} × ${qty(offer.quantity)} ${offer.unit}`));
+    card.append(element('div','hint',rubles ? `${money(offer.price)} ₽ / ${offer.unit} × ${qty(offer.quantity)} ${offer.unit}` : `Число в документе: ${money(offer.raw_price)} / ${offer.unit}; условия цены требуют подтверждения`));
     const quantity = element('div','quantity ' + offer.quantity_state);
-    quantity.append(element('span','',`Предложено: ${qty(offer.converted_quantity)} ${offer.requested_unit}`));
-    if (offer.quantity_differs) {
+    quantity.append(element('span','',`${offer.quantity_unconfirmed ? 'Расчёт потребности, без подтверждения поставщика' : 'Предложено'}: ${qty(offer.converted_quantity)} ${offer.requested_unit}`));
+    if (offer.quantity_differs && !offer.quantity_unconfirmed) {
       quantity.append(pair(row,offer));
       quantity.append(element('small','',offer.shortage > 0 ? `Не хватает ${qty(offer.shortage)} ${offer.requested_unit}` : `Больше заявки на ${qty(offer.converted_quantity - Number(row.quantity))} ${offer.requested_unit}`));
     }
@@ -113,6 +114,7 @@
     details.open = open.has(detailKey);
     details.addEventListener('toggle',() => details.open ? open.add(detailKey) : open.delete(detailKey));
     details.append(element('summary','',`Характеристики и пересчёт (${offer.features.filter(f=>f.state==='pending').length} непроверенных)`));
+    if (offer.catalog_prepared) details.append(catalogControls(row,offer));
     const conversion = element('div','conversion');
     conversion.append(element('b','', 'Пересчёт единиц'),element('div','',offer.factor ? `1 ${offer.unit} = ${qty(offer.factor)} ${offer.requested_unit}`:'Коэффициент не задан'),element('small','',offer.factor_source));
     const conversionForm = element('form','factor-form');
@@ -127,10 +129,20 @@
     for (const f of offer.features) {
       const line = element('div','feature ' + f.state);
       line.append(element('span','feature-label',f.field),element('span','feature-value',f.value),pair(row,offer,f));
+      if (f.ambiguous) line.append(element('small','uncertain','Неизвестное или неоднозначное значение — проверяется отдельно'));
+      if (f.evidence) line.append(element('small','evidence',`${f.origin === 'manual' ? 'Ручное исправление' : f.origin === 'parser' ? 'Проверка' : 'Источник'}: «${f.evidence}»`));
       if (f.differs && f.required.length) line.append(element('small','required','В заявке: ' + f.required.join(', ')));
       features.append(line);
     }
     details.append(features);
+    if (offer.catalog_prepared) {
+      details.append(element('p','hint',`${offer.source_filename || ''} · ${offer.source_sheet || ''} · строка ${offer.source_row ?? '—'}`));
+      details.append(element('p','hint',`Остаток в документе: ${qty(offer.document_stock)} ${offer.stock_unit || '(единица неизвестна)'}. ${offer.warehouse || ''} Дата подтверждения остатка неизвестна.`));
+      if (offer.email_received_at) details.append(element('p','hint','Письмо получено: ' + offer.email_received_at + ' (не дата подтверждения остатка)'));
+      for (const [href,title] of [[offer.product_url,'Открыть карточку / исправить распознавание'],[offer.original_url,'Скачать исходный файл']]) {
+        if (href) { const link=element('a','source-link',title);link.href=href;link.target='_blank';link.rel='noopener noreferrer';details.append(link); }
+      }
+    }
     if (offer.url) {
       const link=element('a','source-link','Страница источника ↗');link.href=offer.url;link.target='_blank';link.rel='noopener noreferrer';details.append(link);
     }
@@ -140,10 +152,44 @@
     card.append(select);
     return card;
   }
+  function catalogControls(row,offer) {
+    const wrap=element('div','catalog-controls');
+    wrap.append(element('b','','Подтверждение условий этого предложения'));
+    const input=(form,title,name,type,value,required=true)=>{
+      const label=element('label','',title);const field=element('input');field.name=name;field.type=type;field.required=required;field.value=value??'';
+      if(type==='number'){field.step='any';field.min='0';}
+      field.disabled=!!data.read_only;label.append(field);form.append(label);return field;
+    };
+    const select=(form,title,name,options,value)=>{
+      const label=element('label','',title), field=element('select');field.name=name;field.required=true;field.disabled=!!data.read_only;
+      for(const [v,t] of options){const option=element('option','',t);option.value=v;field.append(option);}
+      field.value=value??'';label.append(field);form.append(label);return field;
+    };
+    const terms=element('form','terms-form');
+    input(terms,'Цена поставщика','price','number',offer.raw_price);
+    input(terms,'Единица цены','unit','text',offer.unit === 'не указана' ? '' : offer.unit);
+    select(terms,'Валюта расчёта','currency',[['','Подтвердите валюту'],['RUB','RUB — российский рубль']],offer.currency);
+    select(terms,'НДС','vat_mode',[['','Выберите'],['included','Включён в указанную цену'],['excluded','Добавить к указанной цене'],['exempt','Поставщик продаёт без НДС']],offer.vat_mode);
+    input(terms,'Ставка НДС, %','vat_rate','number',offer.vat_rate);
+    input(terms,'Дата подтверждённой цены','price_date','date',offer.source_date);
+    input(terms,'Основание подтверждения цены','note','text','');
+    const apply=element('button','','Подтвердить цену и условия');apply.type='submit';apply.disabled=!!data.read_only;terms.append(apply);
+    terms.addEventListener('submit',e=>{e.preventDefault();save({action:'confirm_terms',position:row.position,key:offer.key,...Object.fromEntries(new FormData(terms))});});
+    wrap.append(terms);
+    const proposal=element('form','terms-form');
+    proposal.append(element('b','','Количество, которое предложил поставщик'));
+    input(proposal,`Количество в ${offer.unit}`,'quantity','number',offer.quantity_unconfirmed ? '' : offer.quantity);
+    input(proposal,'Основание подтверждения количества','note','text','');
+    const confirm=element('button','','Сохранить количество предложения');confirm.type='submit';confirm.disabled=!!data.read_only;proposal.append(confirm);
+    proposal.addEventListener('submit',e=>{e.preventDefault();save({action:'confirm_proposal',position:row.position,key:offer.key,...Object.fromEntries(new FormData(proposal))});});
+    wrap.append(proposal,element('p','hint','Эти условия относятся к выбранной версии предложения. Принятие недопоставки выполняется отдельно через ✓ у количества.'));
+    return wrap;
+  }
   function render() {
     const rows = currentRows();
     $('order-title').textContent = `${data.source_label} · ${data.order_name || 'Заявка № ' + data.order_id}`;
     $('mode').value=data.mode;$('mode').disabled=!!data.read_only;
+    $('load-catalog').disabled=!!data.read_only;
     if (data.read_only) notice('Сравнение доступно только для просмотра: заявка обрабатывается или предложение уже отправлено.');
     renderSummary(rows);
     const toggles=$('supplier-toggles');toggles.replaceChildren();
@@ -169,6 +215,8 @@
       const name=element('td','sticky-name');
       name.append(element('span','row-number',String(row.position).padStart(2,'0')),element('b','',row.name));
       name.append(button('Сбросить решения','Сбросить все решения по этой позиции',()=>save({action:'reset',position:row.position}),'reset-row'));
+      name.append(button('Обновить из прайсов','Подобрать подготовленные товары только для этой позиции',()=>save({action:'load_catalog',position:row.position}),'reset-row'));
+      if(row.catalog_search) name.append(element('p','hint',`Подбор по прайсам: ${row.catalog_search.count} кандидатов · ${row.catalog_search.seconds} с`));
       tr.append(name,element('td','sticky-qty',qty(row.quantity)),element('td','sticky-unit',row.unit));
       for (const supplier of visible) {
         const cell=element('td','supplier-cell' + (!supplier.enabled ? ' supplier-off':''));
@@ -197,11 +245,12 @@
     table.append(foot);
   }
   $('mode').addEventListener('change',e=>save({action:'mode',value:e.target.value}));
+  $('load-catalog').addEventListener('click',()=>save({action:'load_catalog'}));
   $('show-excluded').addEventListener('change',render);
   $('show-all').addEventListener('click',()=>{hidden.clear();render();});
   $('export').addEventListener('click',()=>{
-    const csv=[['№','Заявка','Поставщик','Товар','Количество поставщика','Ед. поставщика','Количество в ед. заявки','Ед. заявки','Цена поставщика','Цена за ед. заявки','Сумма','Допущено','Выбрано','Причины исключения']];
-    for(const row of currentRows())for(const o of row.offers)csv.push([row.position,row.name,o.supplier,o.name,o.quantity,o.unit,o.converted_quantity,o.requested_unit,o.price,o.unit_price,o.total,o.eligible?'да':'нет',o.selected?'да':'нет',o.reasons.join('; ')]);
+    const csv=[['№','Заявка','Поставщик','Товар','Количество поставщика','Ед. поставщика','Количество в ед. заявки','Ед. заявки','Цена поставщика','Цена за ед. заявки','Сумма','Допущено','Выбрано','Причины исключения','Число цены в документе','Валюта','НДС','Количество подтверждено','Файл','Лист','Строка','Характеристики и источники']];
+    for(const row of currentRows())for(const o of row.offers)csv.push([row.position,row.name,o.supplier,o.name,o.quantity,o.unit,o.converted_quantity,o.requested_unit,o.price,o.unit_price,o.total,o.eligible?'да':'нет',o.selected?'да':'нет',o.reasons.join('; '),o.raw_price,o.currency,o.vat_mode,o.quantity_unconfirmed?'нет':'да',o.source_filename,o.source_sheet,o.source_row,o.features.map(f=>`${f.field}: ${f.value} [${f.state}] ${f.evidence||''}`).join('; ')]);
     const escape = value => '"'+String(value??'').replace(/^[=+@\-]/,"'$&").replaceAll('"','""')+'"';
     const blob=new Blob(['\uFEFF'+csv.map(row=>row.map(escape).join(';')).join('\r\n')],{type:'text/csv;charset=utf-8'});
     const url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=`comparison-${initial.job_id}.csv`;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);

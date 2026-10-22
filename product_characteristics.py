@@ -5,7 +5,7 @@ No attributes are derived from worksheet formatting or neighbouring products.
 """
 import re
 
-VERSION = "2026-10-22.3"
+VERSION = "2026-10-22.4"
 N = r"\d+(?:[.,]\d+)?"
 CATEGORIES = [
     (r"фанер", "Фанера"), (r"зенков", "Зенковки"),
@@ -52,7 +52,7 @@ def extract(name):
     def size(key, match, group=1, unit_group=2):
         unit = match[unit_group] if unit_group else None
         value = numeric(match[group])
-        add(key, value * (10 if unit and unit.lower() == "см" else 1),
+        add(key, value * ({"см": 10, "м": 1000}.get(unit.lower(), 1) if unit else 1),
             "мм" if unit else None, match, not bool(unit))
 
     for m in re.finditer(r"(?<!\w)(ГОСТ(?:\s+Р)?|ТУ)\s*([\d][\dА-Яа-яA-Za-z./–-]*)", text, re.I):
@@ -80,7 +80,7 @@ def extract(name):
     for key, pattern in [
         ("Толщина стенки" if category == "Трубы" else "Толщина", r"(?:толщин[аойе]*|\bs\s*=|стенка)\s*(" + N + r")\s*(мм|см)?"),
         ("Наружный диаметр" if category == "Трубы" else "Диаметр", r"(?:диаметр(?:ом)?|[фФØ⌀]|\b[dD]\s*=?)\s*(" + N + r")\s*(мм|см)?"),
-        ("Длина", r"(?:длина|\bL\s*=)\s*(" + N + r")\s*(мм|см)?"),
+        ("Длина", r"(?:длина|\bL\s*=)\s*(" + N + r")\s*(мм|см|м\b)?"),
         ("Ширина", r"ширина\s*(" + N + r")\s*(мм|см)?"),
     ]:
         for m in re.finditer(pattern, text, re.I):
