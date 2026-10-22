@@ -8,6 +8,7 @@ behind the existing confirmed offer form.
 from __future__ import annotations
 
 import base64
+import copy
 import hashlib
 import hmac
 import html
@@ -30,6 +31,7 @@ from fastapi import Header, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 
 from supplier_adapters import KrepKompAdapter, VseinstrumentiAdapter, PriceListAdapter, OwnCatalogAdapter
+from search_session import SearchSession
 from vi_order_match import _contains_brand, _identifiers, _label, _measurements, _norm, _requested_brands, _score_details
 from zakupay_email import parse_zakupay_email
 from invoice_generator import build_invoice_xlsx, customer_validation_error, normalize_customer
@@ -358,10 +360,26 @@ def commercial_order_changes(saved: dict | None, fresh: dict | None) -> list[str
     return changes
 
 
-def _save_match_feedback(requested_name: str, candidate: dict, action: str) -> None:
+def _feedback_request_key(order_id, item: dict, position) -> str:
+    """A refusal belongs to one unchanged request line, not every same-name item."""
+    source = item.get("comparison_source") or item
+    name = source.get("requested_name") or source.get("goodName") or ""
+    quantity = source.get("quantity") if "quantity" in source else source.get("count")
+    try:
+        quantity = format(float(quantity), ".12g")
+    except (TypeError, ValueError):
+        quantity = str(quantity or "")
+    line_id = _order_item_id(item)
+    identity = [str(order_id or ""), "id" if line_id is not None else "position",
+                str(line_id if line_id is not None else position),
+                _norm(name), _norm(_unit_name(source)), quantity]
+    return "line-v1:" + hashlib.sha256(json.dumps(identity, ensure_ascii=False).encode()).hexdigest()
+
+
+def _save_match_feedback(requested_name: str, candidate: dict, action: str, request_key: str | None = None) -> None:
     if action not in {"approved", "excluded"} or not candidate:
         return
-    request_key = _norm(requested_name)
+    request_key = request_key or _norm(requested_name)
     candidate_key = _candidate_key(candidate)
     if not request_key or not candidate_key:
         return
@@ -390,14 +408,26 @@ def _save_match_feedback(requested_name: str, candidate: dict, action: str) -> N
             )
 
 
-def _excluded_feedback_keys(requested_name: str) -> set[str]:
+def _excluded_feedback_keys_many(request_keys) -> dict[str, set[str]]:
+    keys = list(dict.fromkeys(request_keys))
+    excluded = {key: set() for key in keys}
+    if not keys:
+        return excluded
     with _connect() as conn:
-        rows = _execute(
-            conn,
-            "SELECT candidate_key FROM match_feedback WHERE request_key=? AND action='excluded'",
-            (_norm(requested_name),),
-        ).fetchall()
-    return {str(row["candidate_key"]) for row in rows}
+        # Chunk only unusually large orders to respect SQLite parameter limits.
+        for start in range(0, len(keys), 400):
+            batch = keys[start:start + 400]
+            rows = _execute(conn,
+                "SELECT request_key,candidate_key FROM match_feedback WHERE action='excluded' AND request_key IN ("
+                + ",".join("?" for _ in batch) + ")", batch).fetchall()
+            for row in rows:
+                excluded[row["request_key"]].add(str(row["candidate_key"]))
+    return excluded
+
+
+def _excluded_feedback_keys(requested_name: str, request_key: str | None = None) -> set[str]:
+    key = request_key or _norm(requested_name)
+    return _excluded_feedback_keys_many([key])[key]
 
 
 def _message_id(raw_email: bytes) -> str:
@@ -438,10 +468,42 @@ def _order_item_id(item: dict | None):
 def _order_with_selected_positions(order: dict, selected_positions: set[int]) -> dict:
     """Return an order snapshot containing only operator-selected 1-based rows."""
     items = list((order or {}).get("orderItems") or [])
-    chosen = [item for index, item in enumerate(items, 1) if index in selected_positions]
+    chosen = [{**item, "_source_position": index} for index, item in enumerate(items, 1)
+              if index in selected_positions]
     selected_order = dict(order or {})
     selected_order["orderItems"] = chosen
     return selected_order
+
+
+def _preserve_unsearched_rows(result: dict, previous: dict, source_order: dict) -> None:
+    """A partial re-search must not erase decisions on other unchanged lines."""
+    if str(result.get("order_id")) != str(previous.get("order_id")):
+        return
+    source_rows = list(source_order.get("orderItems") or [])
+    by_id = {str(_order_item_id(item)): (position, item)
+             for position, item in enumerate(source_rows, 1) if _order_item_id(item) is not None}
+    searched_positions = {item["position"] for item in result.get("items") or []}
+    for old in previous.get("items") or []:
+        line_id = _order_item_id(old)
+        if line_id is not None:
+            current = by_id.get(str(line_id))
+        else:
+            position = int(old.get("position") or 0)
+            current = (position, source_rows[position - 1]) if 1 <= position <= len(source_rows) else None
+            if current and _order_item_id(current[1]) is not None:
+                current = None
+        if current is None:
+            continue
+        position, source = current
+        if position in searched_positions:
+            continue
+        order_id = source_order.get("id")
+        if _feedback_request_key(order_id, old, position) != _feedback_request_key(order_id, source, position):
+            continue
+        retained = copy.deepcopy(old)
+        retained["position"] = position
+        result.setdefault("items", []).append(retained)
+    result["items"].sort(key=lambda item: item["position"])
 
 
 def _merge_line_ids(order: dict, detailed: dict | None) -> dict:
@@ -541,7 +603,8 @@ def _search_variants(requested: str) -> list[str]:
     return list(dict.fromkeys(value for value in variants if value.strip()))
 
 
-def _search_candidates(suppliers, requested: str, time_budget_seconds: float | None = None) -> tuple[list, list[dict], bool]:
+def _search_candidates(suppliers, requested: str, time_budget_seconds: float | None = None,
+                       search_session: SearchSession | None = None) -> tuple[list, list[dict], bool]:
     if not isinstance(suppliers, (list, tuple)):
         suppliers = [suppliers]
     quotes = []
@@ -554,6 +617,7 @@ def _search_candidates(suppliers, requested: str, time_budget_seconds: float | N
     for supplier in suppliers:
         supplier_started = time.monotonic()
         supplier_queries = 0
+        reused_queries = 0
         supplier_errors = []
         # KREP-KOMP ranks a cached full catalogue locally. Repeating VI-style
         # text variants would only duplicate price/stock API calls and consume
@@ -565,7 +629,11 @@ def _search_candidates(suppliers, requested: str, time_budget_seconds: float | N
                 timed_out = True
                 break
             supplier_queries += 1
-            supplier_quotes = supplier.search(query, limit=VI_CANDIDATE_LIMIT)
+            if search_session is None:
+                supplier_quotes = supplier.search(query, limit=VI_CANDIDATE_LIMIT)
+            else:
+                supplier_quotes, reused = search_session.search(supplier, query, VI_CANDIDATE_LIMIT)
+                reused_queries += int(reused)
             for quote in supplier_quotes:
                 if quote.error:
                     supplier_errors.append(quote.error)
@@ -584,6 +652,8 @@ def _search_candidates(suppliers, requested: str, time_budget_seconds: float | N
         diagnostics.append({
             "supplier": getattr(supplier, "name", getattr(supplier, "code", "поставщик")),
             "queries": supplier_queries,
+            "supplier_calls": supplier_queries - reused_queries,
+            "reused_calls": reused_queries,
             "candidates": supplier_found,
             "seconds": elapsed,
             "errors": list(dict.fromkeys(supplier_errors))[:3],
@@ -789,13 +859,14 @@ def _supplier_balanced_candidates(candidates: list[dict], per_supplier: int = 3,
     return selected
 
 
-def _build_match_row(position: int, item: dict, suppliers, excluded_keys: set[str] | None = None) -> dict:
+def _build_match_row(position: int, item: dict, suppliers, excluded_keys: set[str] | None = None,
+                     search_session: SearchSession | None = None) -> dict:
     requested = str(item.get("goodName") or "").strip()
     excluded_keys = set(excluded_keys or ())
     position_started = time.monotonic()
     position_budget = max(6.0, float(os.getenv("AUTO_POSITION_SEARCH_TIMEOUT", "45")))
     quotes, search_diagnostics, search_timed_out = _search_candidates(
-        suppliers, requested, time_budget_seconds=position_budget,
+        suppliers, requested, time_budget_seconds=position_budget, search_session=search_session,
     )
     requested_unit = _unit_name(item)
     requested_brands = _requested_brands(requested, [quote.brand for quote in quotes if not quote.error])
@@ -901,6 +972,7 @@ def _build_match_row(position: int, item: dict, suppliers, excluded_keys: set[st
 
 def build_vi_draft(order: dict, invoice_number: int | None = None, progress_callback=None) -> dict:
     """Build a conservative, reviewable draft from all configured suppliers."""
+    started = time.monotonic()
     suppliers = [OwnCatalogAdapter(), PriceListAdapter(), VseinstrumentiAdapter()]
     krep_komp = KrepKompAdapter()
     deferred_suppliers = []
@@ -911,20 +983,24 @@ def build_vi_draft(order: dict, invoice_number: int | None = None, progress_call
             krep_komp.warm_catalog_async()
             deferred_suppliers.append("КРЕП-КОМП: каталог загружается в фоне")
     items = list(order.get("orderItems") or [])
+    positioned_items = {int(item.get("_source_position") or position): item
+                        for position, item in enumerate(items, 1)}
     rows_by_position = {}
-    feedback_exclusions = {
-        position: _excluded_feedback_keys(str(item.get("goodName") or ""))
-        for position, item in enumerate(items, 1)
-    }
+    feedback_keys = {position: _feedback_request_key(order.get("id"), item, position)
+                     for position, item in positioned_items.items()}
+    feedback_exclusions = _excluded_feedback_keys_many(feedback_keys.values())
+    prepared_at = time.monotonic()
+    session = SearchSession(enabled=os.getenv("AUTO_REUSE_SEARCH", "true").lower() in {"1", "true", "yes", "on"})
+    first_result_seconds = None
 
     def match_item(position, item):
-        return _build_match_row(position, item, suppliers, feedback_exclusions.get(position))
+        return _build_match_row(position, item, suppliers, feedback_exclusions.get(feedback_keys[position]), session)
 
     workers = max(1, min(int(os.getenv("AUTO_VI_WORKERS", "8")), 12, len(items) or 1))
     with ThreadPoolExecutor(max_workers=workers) as pool:
         futures = {
             pool.submit(match_item, position, item): position
-            for position, item in enumerate(items, 1)
+            for position, item in positioned_items.items()
         }
         for future in as_completed(futures):
             position = futures[future]
@@ -937,7 +1013,7 @@ def build_vi_draft(order: dict, invoice_number: int | None = None, progress_call
                     json.dumps(row.get("search_diagnostics") or [], ensure_ascii=False),
                 )
             except Exception as exc:
-                item = items[position - 1]
+                item = positioned_items[position]
                 rows_by_position[position] = {
                     "position": position,
                     "order_item_id": _order_item_id(item),
@@ -951,6 +1027,8 @@ def build_vi_draft(order: dict, invoice_number: int | None = None, progress_call
                     "stock_confirmed": False,
                     "candidates": [{"error": f"{type(exc).__name__}: {exc}"}],
                 }
+            if first_result_seconds is None:
+                first_result_seconds = round(time.monotonic() - started, 3)
             if progress_callback:
                 progress_callback(
                     len(rows_by_position),
@@ -960,6 +1038,11 @@ def build_vi_draft(order: dict, invoice_number: int | None = None, progress_call
     rows = [rows_by_position[position] for position in sorted(rows_by_position)]
     ready = [row for row in rows if row["decision"] == "auto_ready"]
     status = "ready_for_review" if ready else "needs_review"
+    search_metrics = {**session.metrics(), "matching_engine": "deterministic",
+                      "preparation_seconds": round(prepared_at - started, 3),
+                      "first_result_seconds": first_result_seconds,
+                      "total_seconds": round(time.monotonic() - started, 3)}
+    logger.warning("supplier draft completed order=%s metrics=%s", order.get("id"), json.dumps(search_metrics))
     return {
         "order_id": order.get("id"),
         "order_name": order.get("name"),
@@ -980,6 +1063,7 @@ def build_vi_draft(order: dict, invoice_number: int | None = None, progress_call
         "prepayment_percent": DEFAULT_PREPAYMENT_PERCENT,
         "delivery_included": DEFAULT_DELIVERY_INCLUDED,
         "deferred_suppliers": deferred_suppliers,
+        "search_metrics": search_metrics,
         "summary": {
             "positions": len(rows),
             "auto_ready": len(ready),
@@ -1918,6 +2002,7 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
         if not order:
             raise HTTPException(status_code=409, detail="Состав заявки не сохранён")
         full_order_snapshot_hash = commercial_order_hash(order)
+        full_order = order
         form = await request.form()
         selected_positions = {
             int(value) for value in form.getlist("selected_position")
@@ -1978,6 +2063,7 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
                 _preserve_invoice_customer(result, old_result)
                 from supplier_comparison import preserve_comparison
                 preserve_comparison(result, old_result)
+                _preserve_unsearched_rows(result, old_result, full_order)
                 _refresh_summary(result)
                 result["processed_snapshot_hash"] = full_order_snapshot_hash
                 invoice_number = row["invoice_number"]
@@ -2591,7 +2677,8 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
                 excluded.add(_candidate_key(candidate))
         if current.get("selected"):
             excluded.add(_candidate_key(current["selected"]))
-        excluded |= _excluded_feedback_keys(current.get("requested_name") or "")
+        excluded |= _excluded_feedback_keys(current.get("requested_name") or "",
+            _feedback_request_key(result.get("order_id"), current, position))
 
         suppliers = [OwnCatalogAdapter(), PriceListAdapter(), VseinstrumentiAdapter()]
         krep_komp = KrepKompAdapter()
@@ -2651,7 +2738,8 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
                     item["decision"] = "approved" if include else "excluded"
                     item["operator_included"] = include
                     if item.get("selected"):
-                        feedback.append((item.get("requested_name") or "", item["selected"], item["decision"]))
+                        feedback.append((item.get("requested_name") or "", item["selected"], item["decision"],
+                                         _feedback_request_key(result.get("order_id"), item, pos)))
                     continue
                 if raw_idx.isdigit() and int(raw_idx) < len(candidates):
                     if _candidate_key(candidates[int(raw_idx)]) != _candidate_key(item.get("selected") or {}):
@@ -2696,14 +2784,15 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
                         item["decision"] = "excluded"
                         item["operator_included"] = False
                 if item.get("selected"):
-                    feedback.append((item.get("requested_name") or "", item["selected"], item["decision"]))
+                    feedback.append((item.get("requested_name") or "", item["selected"], item["decision"],
+                                     _feedback_request_key(result.get("order_id"), item, pos)))
             _refresh_summary(result)
             _execute(conn,
                 "UPDATE automation_jobs SET status=?, result_json=?, updated_at=? WHERE id=?",
                 (result["status"], json.dumps(result, ensure_ascii=False), datetime.now(timezone.utc).isoformat(), job_id),
             )
-        for requested_name, candidate, action in feedback:
-            _save_match_feedback(requested_name, candidate, action)
+        for requested_name, candidate, action, request_key in feedback:
+            _save_match_feedback(requested_name, candidate, action, request_key)
         return Response(status_code=303, headers={"Location": f"/dashboard/automation/jobs/{job_id}/review"})
 
     @app.get("/dashboard/automation/jobs/{job_id}/invoice.xlsx")

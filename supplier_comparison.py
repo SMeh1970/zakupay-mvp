@@ -364,11 +364,20 @@ def reconcile(result):
 
 def preserve_comparison(new, old):
     """Carry rules across re-search by original line identity, not list ordering."""
+    if new.get("order_id") is not None and old.get("order_id") is not None and str(new["order_id"]) != str(old["order_id"]):
+        return
     if old.get("comparison"):
         new["comparison"] = copy.deepcopy(old["comparison"])
     old_rows = {str(x.get("position")): x for x in old.get("items") or []}
+    old_ids = {str(x["order_item_id"]): x for x in old.get("items") or []
+               if x.get("order_item_id") is not None}
     for item in new.get("items") or []:
-        previous = old_rows.get(str(item.get("position")))
+        if item.get("order_item_id") is not None:
+            previous = old_ids.get(str(item["order_item_id"]))
+        else:
+            previous = old_rows.get(str(item.get("position")))
+            if previous and previous.get("order_item_id") is not None:
+                previous = None
         if not previous or norm(item.get("requested_name")) != norm(previous.get("requested_name")):
             continue
         source = previous.get("comparison_source") or previous
