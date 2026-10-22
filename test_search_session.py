@@ -10,7 +10,7 @@ from unittest.mock import Mock, patch
 import automation_pipeline as pipeline
 import supplier_comparison as comparison
 from search_session import SearchSession
-from supplier_adapters import SupplierQuote
+from supplier_adapters import SupplierQuote, OwnCatalogAdapter, PriceListAdapter
 
 
 def quote(supplier="A", **extra):
@@ -228,6 +228,46 @@ class DraftRetrievalTests(unittest.TestCase):
             draft = pipeline.build_vi_draft({"id": 123, "orderItems": []})
         connect.assert_not_called()
         self.assertEqual(draft["items"], [])
+
+    def test_empty_saved_sources_probe_once_for_fifty_different_products_and_recheck_next_run(self):
+        statements = []
+        real_connect = pipeline._connect
+
+        def traced_connect():
+            conn = real_connect()
+            conn.set_trace_callback(statements.append)
+            return conn
+
+        with patch.object(pipeline, "_connect", side_effect=traced_connect), \
+                patch("own_catalog.search_catalog") as own_search, patch("price_lists.search_prices") as price_search:
+            for source in (OwnCatalogAdapter(), PriceListAdapter()):
+                with ThreadPoolExecutor(max_workers=8) as pool:
+                    result = list(pool.map(source.search, [f"Товар {n}" for n in range(50)]))
+                self.assertEqual(result, [[] for _ in range(50)])
+            own_search.assert_not_called()
+            price_search.assert_not_called()
+            self.assertEqual(len([s for s in statements if s.startswith("SELECT 1 FROM")]), 2)
+            OwnCatalogAdapter().search("Другой товар")
+            PriceListAdapter().search("Другой товар")
+            self.assertEqual(len([s for s in statements if s.startswith("SELECT 1 FROM")]), 4)
+
+    def test_one_product_miss_does_not_disable_populated_source(self):
+        from contextlib import contextmanager
+
+        @contextmanager
+        def populated_database():
+            yield Mock()
+
+        for source, search_path in [(OwnCatalogAdapter(), "own_catalog.search_catalog"),
+                                    (PriceListAdapter(), "price_lists.search_prices")]:
+            with patch("price_lists.database", populated_database), \
+                    patch("price_lists.execute") as execute, patch(search_path) as search:
+                execute.return_value.fetchone.return_value = {"exists": 1}
+                search.side_effect = [[], [quote()]]
+                self.assertEqual(source.search("Не найдено"), [])
+                self.assertEqual(source.search("Труба")[0].sku, "sku-1")
+                self.assertEqual(execute.call_count, 1)
+                self.assertEqual(search.call_count, 2)
 
 
 if __name__ == "__main__":

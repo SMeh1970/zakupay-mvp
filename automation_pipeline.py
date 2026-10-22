@@ -654,6 +654,7 @@ def _search_candidates(suppliers, requested: str, time_budget_seconds: float | N
             "queries": supplier_queries,
             "supplier_calls": supplier_queries - reused_queries,
             "reused_calls": reused_queries,
+            "empty_catalog": getattr(supplier, "_catalog_populated", None) is False,
             "candidates": supplier_found,
             "seconds": elapsed,
             "errors": list(dict.fromkeys(supplier_errors))[:3],

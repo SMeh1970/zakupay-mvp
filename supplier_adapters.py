@@ -617,9 +617,33 @@ class DisabledAdapter(SupplierAdapter):
         return [SupplierQuote(supplier=self.name, name=query, error="Адаптер ещё не подключён")]
 
 
-class PriceListAdapter(SupplierAdapter):
+class SavedCatalogAdapter(SupplierAdapter):
+    """Probe empty saved datasets once per adapter (one interactive draft).
+
+    A miss for one product must never disable a populated catalogue. Only an
+    actual absence of rows may skip further DB searches during this run.
+    """
+    catalog_probe = ""
+
+    def __init__(self):
+        self._catalog_probe_lock = threading.Lock()
+        self._catalog_populated = None
+
+    def _has_catalog_rows(self):
+        from price_lists import database, execute
+        with self._catalog_probe_lock:
+            if self._catalog_populated is None:
+                with database() as conn:
+                    self._catalog_populated = execute(conn, self.catalog_probe).fetchone() is not None
+            return self._catalog_populated
+
+
+class PriceListAdapter(SavedCatalogAdapter):
     code = "price_lists"
     name = "Загруженные прайсы"
+    catalog_probe = """SELECT 1 FROM supplier_price_items i
+                       JOIN supplier_price_lists p ON p.id=i.list_id
+                       WHERE p.status='active' LIMIT 1"""
 
     @property
     def enabled(self):
@@ -628,14 +652,17 @@ class PriceListAdapter(SupplierAdapter):
     def search(self, query, limit=8):
         from price_lists import search_prices
         try:
+            if not self._has_catalog_rows():
+                return []
             return search_prices(query, limit)
         except Exception as exc:
             return [SupplierQuote(supplier=self.name, name=query, error=f"Поиск в прайсах: {type(exc).__name__}")]
 
 
-class OwnCatalogAdapter(SupplierAdapter):
+class OwnCatalogAdapter(SavedCatalogAdapter):
     code = "own_catalog"
     name = "Собственный каталог"
+    catalog_probe = "SELECT 1 FROM own_catalog_observations LIMIT 1"
 
     @property
     def enabled(self):
@@ -644,6 +671,8 @@ class OwnCatalogAdapter(SupplierAdapter):
     def search(self, query, limit=8):
         from own_catalog import search_catalog
         try:
+            if not self._has_catalog_rows():
+                return []
             return search_catalog(query, limit)
         except Exception as exc:
             return [SupplierQuote(supplier=self.name, name=query, error=f"Поиск в каталоге: {type(exc).__name__}")]
