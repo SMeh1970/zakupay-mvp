@@ -52,6 +52,8 @@ class SupplierQuote:
     competitors_count: int | None = None
     found_method: str | None = None
     catalog_product_id: int | None = None
+    category: str | None = None
+    characteristics: list | None = None
 
     def to_dict(self):
         return asdict(self)

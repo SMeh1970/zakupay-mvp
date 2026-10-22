@@ -27,7 +27,7 @@ MAX_ROWS = 100000
 MAX_COLUMNS = 200
 FIELDS = {"name": "Наименование", "price": "Закупочная цена", "article": "Артикул",
           "brand": "Бренд", "unit": "Единица цены", "stock": "Остаток на дату прайса",
-          "pack_size": "Штук в упаковке", "url": "Ссылка на товар"}
+          "pack_size": "Штук в упаковке", "url": "Ссылка на товар", "warehouse": "Склад"}
 ALIASES = {
     "name": {"наименование", "наименование товара", "товар", "название", "номенклатура", "name", "product name"},
     "price": {"цена", "цена руб", "цена с ндс", "цена без ндс", "закупочная цена", "оптовая цена", "price"},
@@ -106,6 +106,8 @@ def initialize_schema(conn, postgres):
     conn.execute("CREATE INDEX IF NOT EXISTS idx_supplier_price_tokens_item ON supplier_price_tokens(item_id)")
     # Concurrent imports of the same catalogue cannot leave two active versions.
     conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_supplier_price_active_version ON supplier_price_lists(catalog_key) WHERE status='active'")
+    from prepared_catalog import initialize_schema as initialize_prepared_schema
+    initialize_prepared_schema(conn, postgres)
 
 
 @contextmanager
@@ -215,8 +217,8 @@ def stage_file(content, filename, supplier, catalog_name, price_date, source_url
     supplier, catalog_name = supplier.strip(), catalog_name.strip() or "Основной"
     if not supplier or len(supplier) > 200 or len(catalog_name) > 200:
         raise ValueError("Укажите поставщика и название прайса длиной до 200 символов")
-    parsed_date = date.fromisoformat(price_date)
-    if parsed_date > date.today():
+    parsed_date = date.fromisoformat(price_date) if price_date else None
+    if parsed_date and parsed_date > date.today():
         raise ValueError("Дата прайса не может быть в будущем")
     if not content or len(content) > MAX_FILE_BYTES:
         raise ValueError("Выберите файл размером до 12 МБ")
@@ -235,6 +237,11 @@ def stage_file(content, filename, supplier, catalog_name, price_date, source_url
 
 
 def parse_items(record, settings):
+    if settings.get("catalog_only"):
+        from prepared_catalog import parse_catalog
+        return parse_catalog(record, settings)
+    if not record["price_date"]:
+        raise ValueError("Для расчёта укажите дату цены; при неизвестной дате используйте подготовленный каталог")
     names, sheet, rows = table_rows(bytes(record["file_bytes"]), record["filename"], settings["sheet"])
     if settings["sheet"] not in names:
         raise ValueError("Выбранный лист отсутствует в файле")
@@ -311,7 +318,8 @@ def parse_items(record, settings):
 
 def activate_list(list_id, settings):
     record = get_list(list_id, include_file=True)
-    settings_json = json.dumps(settings, ensure_ascii=False, sort_keys=True)
+    from product_characteristics import VERSION
+    settings_json = json.dumps({**settings, "characteristic_parser_version": VERSION}, ensure_ascii=False, sort_keys=True)
     items, skipped = parse_items(record, settings)
     from automation_pipeline import DATABASE_URL, _lock
     with _lock, database() as conn:
@@ -327,9 +335,14 @@ def activate_list(list_id, settings):
         if duplicate:
             execute(conn, "UPDATE supplier_price_lists SET status='duplicate' WHERE id=?", (list_id,))
             return {"id": duplicate["id"], "duplicate": True, "imported": len(items), "skipped": skipped}
+        from prepared_catalog import save_products
+        preparation = save_products(conn, record, items)
         index_rows = []
-        for offset in range(0, len(items), 100):
-            batch = items[offset:offset + 100]
+        # Unconfirmed currency/VAT or absent prices are searchable products,
+        # never eligible purchase quotes. Keep the existing pricing contract.
+        priced = [item for item in items if item.get("price") is not None]
+        for offset in range(0, len(priced), 100):
+            batch = priced[offset:offset + 100]
             params = []
             for item in batch:
                 params.extend((list_id, norm(item["name"]), re.sub(r"[^a-zа-я0-9]", "", norm(item["article"])),
@@ -349,7 +362,7 @@ def activate_list(list_id, settings):
         execute(conn, """UPDATE supplier_price_lists SET status='active',settings_json=?,imported_rows=?,
             skipped_rows=?,activated_at=? WHERE id=?""",
             (settings_json, len(items), skipped, datetime.now(timezone.utc).isoformat(), list_id))
-    return {"id": list_id, "duplicate": False, "imported": len(items), "skipped": skipped}
+    return {"id": list_id, "duplicate": False, "imported": len(items), "skipped": skipped, **preparation}
 
 
 def search_prices(query, limit=8):
@@ -376,10 +389,26 @@ def search_prices(query, limit=8):
                 WHERE p.status='active' AND t.token IN ({placeholders})
                 GROUP BY i.id,i.payload_json,i.price ORDER BY hits DESC,i.price ASC LIMIT 400""", terms).fetchall()
             rows.update((row["id"], row) for row in matched)
+    from product_characteristics import extract, compare
+    requirements = extract(query)
     quotes = [SupplierQuote(**json.loads(row["payload_json"])) for row in rows.values()]
+    product_ids = sorted({q.catalog_product_id for q in quotes if q.catalog_product_id})
+    corrected = {}
+    if product_ids:
+        from prepared_catalog import effective
+        with database() as conn:
+            cards = execute(conn, "SELECT id,analysis_json,overrides_json FROM price_product_cards WHERE id IN ("
+                + ",".join("?" for _ in product_ids) + ")", product_ids).fetchall()
+        corrected = {c["id"]: effective(json.loads(c["analysis_json"]), json.loads(c["overrides_json"])) for c in cards}
     brands = _requested_brands(query, [item.brand for item in quotes])
     accepted = []
     for item in quotes:
+        analysis = {"category": item.category, "attributes": item.characteristics} if item.category else extract(item.name)
+        analysis = corrected.get(item.catalog_product_id, analysis)
+        item.category, item.characteristics = analysis["category"], analysis["attributes"]
+        characteristic_match = compare(requirements, analysis)
+        if characteristic_match["conflicts"] or (requirements["category"] != "Не определена" and requirements["attributes"] and characteristic_match["status"] != "matched"):
+            continue
         score, _ = _score_details(query, item)
         if score < 0.48 or _hard_conflicts(query, item.to_dict()) or (brands and not _candidate_matches_brand(item.to_dict(), brands)):
             continue
@@ -425,16 +454,27 @@ def preview_page(list_id, sheet="", header_row=None, error="", settings=None):
     sample = "".join("<tr><td>" + str(index) + "</td>" + "".join(f"<td>{esc(value)}</td>" for value in row[:len(header)]) + "</tr>" for index, row in enumerate(rows[header_row:header_row + 8], header_row + 1))
     settings = settings or {}
     vat_options = "<option value=''>Выберите</option>" + "".join(f"<option value='{value}' {'selected' if settings.get('vat_mode') == value else ''}>{label}</option>" for value, label in [("included", "Цена включает НДС"), ("excluded", "Цена без НДС — добавить указанную ставку"), ("exempt", "Поставщик продаёт без НДС")])
+    from prepared_catalog import PROFILES
+    profile_options = "<option value=''>Выбранные выше столбцы</option>" + "".join(f"<option value='{key}'>{esc(cfg['label'])}</option>" for key, cfg in PROFILES.items())
+    catalog_form = (f"<section><h2>Подготовить каталог без подтверждения цены</h2><p>Для складских списков без цены и документов с неизвестной валютой или НДС. Товары будут доступны для подбора по характеристикам; в расчёт цены не включаются.</p>"
+        f"<form method='post' action='/dashboard/prices/{list_id}/import'><input type='hidden' name='catalog_only' value='1'>"
+        f"<input type='hidden' name='sheet' value='{esc(selected)}'><input type='hidden' name='header_row' value='{header_row}'>"
+        + "<div class='grid'>" + "".join(selects).replace("Закупочная цена *", "Числовая цена (может отсутствовать)") + "</div>"
+        + f"<label>Структура файла <select name='profile'>{profile_options}</select></label>"
+        + "<label>ID письма (если известно) <input name='source_message_id'></label><label>Дата получения письма (не дата остатка) <input name='source_received_at'></label>"
+        + "<button>Подготовить товары и характеристики</button></form></section>")
     return page(f"<h1>Проверка прайса</h1><p>{esc(record['supplier'])} · {esc(record['filename'])} · дата цен: {esc(record['price_date'])}</p>"
         + (f"<p class='error'>{esc(error)}</p>" if error else "") + f"<section>{controls}</section><section><h2>Соответствие столбцов</h2>"
         f"<form method='post' action='/dashboard/prices/{list_id}/import'><input type='hidden' name='sheet' value='{esc(selected)}'><input type='hidden' name='header_row' value='{header_row}'>"
         f"<div class='grid'>{''.join(selects)}</div><label>Единица цены, если в строке не указана <input name='default_unit' value='{esc(settings.get('default_unit'))}' placeholder='Например: шт, м, кг, упак'></label>"
         f"<label>НДС в прайсе * <select name='vat_mode' required>{vat_options}</select></label><label>Ставка НДС, % <input name='vat_rate' type='number' min='0' max='100' step='0.01' value='{esc(settings.get('vat_rate', 22))}' required></label>"
         "<p class='note'>Выберите именно закупочную цену. Импортируется выбранный лист. Этот файл полностью заменит активную версию прайса с тем же поставщиком и названием; старые версии и исходные файлы сохраняются. Остаток из прайса требует подтверждения поставщиком.</p><button>Импортировать и использовать в поиске</button></form></section>"
-        "<section class='scroll'><h2>Пример исходных строк</h2><table><tr><th>Строка</th>" + "".join(f"<th>{esc(value)}</th>" for value in header) + f"</tr>{sample}</table></section>")
+        "<section class='scroll'><h2>Пример исходных строк</h2><table><tr><th>Строка</th>" + "".join(f"<th>{esc(value)}</th>" for value in header) + f"</tr>{sample}</table></section>" + catalog_form)
 
 
 def install_price_lists(app):
+    from prepared_catalog import install as install_prepared_catalog
+    install_prepared_catalog(app)
     @app.get("/dashboard/prices")
     def dashboard_prices(message: str = "", q: str = ""):
         with database() as conn:
@@ -448,16 +488,16 @@ def install_price_lists(app):
             action = f"<a href='/dashboard/prices/{lid}/preview'>Проверить столбцы</a>" if item["status"] == "pending" else ""
             if item["status"] in {"active", "disabled"}:
                 action = f"<form method='post' action='/dashboard/prices/{lid}/toggle'><button>{'Отключить' if item['status'] == 'active' else 'Включить'}</button></form>"
-            result_rows.append(f"<tr><td>{esc(item['supplier'])}<br>{esc(item['catalog_name'])}</td><td><a href='/dashboard/prices/{lid}/file'>{esc(item['filename'])}</a></td><td>{esc(item['price_date'])}</td><td>{item['imported_rows']}<br><small>пропущено: {item['skipped_rows']}</small></td><td>{statuses.get(item['status'],esc(item['status']))}</td><td>{action}</td></tr>")
+            result_rows.append(f"<tr><td>{esc(item['supplier'])}<br>{esc(item['catalog_name'])}</td><td><a href='/dashboard/prices/{lid}/file'>{esc(item['filename'])}</a><br><a href='/dashboard/prices/prepared?list_id={lid}'>Характеристики товаров</a></td><td>{esc(item['price_date']) or 'Неизвестна'}</td><td>{item['imported_rows']}<br><small>пропущено: {item['skipped_rows']}</small></td><td>{statuses.get(item['status'],esc(item['status']))}</td><td>{action}</td></tr>")
         search_html = ""
         if q.strip():
             from automation_pipeline import _purchase_label
             found = search_prices(q.strip(), 8)
             search_html = "<ul>" + "".join(f"<li>{esc(_purchase_label(item.to_dict(), ''))}</li>" for item in found) + "</ul>" if found else "<p>Подходящие товары в активных прайсах не найдены.</p>"
-        return page("<h1>Прайсы поставщиков</h1><p>Импортированные цены участвуют в поиске внутри заявки вместе с API поставщиков.</p>"
+        return page("<h1>Прайсы поставщиков</h1><p><a href='/dashboard/prices/prepared'>Поиск по подготовленным характеристикам</a></p><p>Подтверждённые условия цены участвуют в расчёте. Каталог с неизвестными условиями доступен для проверки.</p>"
             + (f"<p>{esc(message)}</p>" if message else "") + "<section><h2>Загрузить прайс</h2><form method='post' action='/dashboard/prices/upload' enctype='multipart/form-data'>"
             "<div class='grid'><label>Поставщик *<br><input name='supplier' required maxlength='200'></label><label>Название прайса<br><input name='catalog_name' value='Основной' maxlength='200'></label>"
-            f"<label>Дата цен *<br><input name='price_date' type='date' value='{date.today().isoformat()}' required></label><label>Адрес первоисточника<br><input name='source_url' type='url' placeholder='https://...'></label></div>"
+            "<label>Дата цен, если указана в документе<br><input name='price_date' type='date'></label><label>Адрес первоисточника<br><input name='source_url' type='url' placeholder='https://...'></label></div>"
             "<label>Excel XLSX, XLS или CSV, до 12 МБ *<br><input name='file' type='file' accept='.xlsx,.xls,.csv' required></label><p class='note'>Импортируются цены в рублях. Для нескольких листов загрузите их как отдельные прайсы с разными названиями.</p><button>Загрузить и проверить</button></form></section>"
             f"<section><h2>Проверить поиск в прайсах</h2><form method='get'><input name='q' value='{esc(q)}' placeholder='Наименование или артикул' required><button>Найти</button></form>{search_html}</section>"
             "<section class='scroll'><h2>Последние 100 загрузок</h2><table><tr><th>Поставщик / прайс</th><th>Файл</th><th>Дата цен</th><th>Позиций</th><th>Статус</th><th>Действие</th></tr>"
@@ -498,7 +538,10 @@ def install_price_lists(app):
         form = await request.form()
         settings = {"sheet": str(form.get("sheet") or ""), "header_row": str(form.get("header_row") or "1"),
             "mapping": {}, "default_unit": str(form.get("default_unit") or ""),
-            "vat_mode": str(form.get("vat_mode") or ""), "vat_rate": str(form.get("vat_rate") or "")}
+            "vat_mode": str(form.get("vat_mode") or ""), "vat_rate": str(form.get("vat_rate") or ""),
+            "catalog_only": form.get("catalog_only") == "1", "profile": str(form.get("profile") or ""),
+            "source_provenance": {"message_id": str(form.get("source_message_id") or "")[:200],
+                "email_received_at": str(form.get("source_received_at") or "")[:100]}}
         try:
             settings["mapping"] = {field: int(form[f"column_{field}"]) if form.get(f"column_{field}") not in (None, "") else None for field in FIELDS}
             result = await run_in_threadpool(activate_list, list_id, settings)
