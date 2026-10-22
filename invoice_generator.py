@@ -111,7 +111,8 @@ def build_invoice_xlsx(draft: dict) -> bytes:
     if vat_rate not in {0, 0.1, 0.2, 0.22}:
         raise ValueError('Выберите ставку НДС для счёта')
     all_rows = draft.get("items") or []
-    rows = [row for row in all_rows if row.get("decision") in {"auto_ready", "approved"}]
+    from supplier_comparison import selected_allowed
+    rows = [row for row in all_rows if row.get("decision") in {"auto_ready", "approved"} and selected_allowed(row)]
     if not rows:
         raise ValueError("Счёт нельзя сформировать: нет ни одной подтверждённой позиции")
     customer_text = _customer_text(draft.get("customer"))

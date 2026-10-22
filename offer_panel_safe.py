@@ -361,7 +361,8 @@ def install_offer_panel(
         customer_error = customer_validation_error(result.get("customer"))
         if customer_error:
             blockers.append(customer_error)
-        included = [item for item in result.get("items") or [] if item.get("decision") in {"auto_ready", "approved"}]
+        from supplier_comparison import selected_allowed
+        included = [item for item in result.get("items") or [] if item.get("decision") in {"auto_ready", "approved"} and selected_allowed(item)]
         for idx, item in enumerate(included, 1):
             iid = item.get("order_item_id")
             if iid is None or str(iid) not in original_items:
@@ -491,6 +492,16 @@ def install_offer_panel(
         form = await request.form()
         if form.get("confirm_send") != "SEND":
             raise HTTPException(status_code=400, detail="Реальная отправка не подтверждена")
+        from supplier_comparison import selected_allowed, unit as comparison_unit
+        for item in result.get("items") or []:
+            iid = str(item.get("order_item_id"))
+            if not item.get("comparison") or form.get(f"use_{iid}") != "1":
+                continue
+            if not selected_allowed(item) or item.get("decision") not in {"approved", "auto_ready"}:
+                raise HTTPException(409, "Предложение исключено правилами сравнения. Вернитесь к сравнительной таблице.")
+            qty = _num(form.get(f"qty_{iid}"), f"количество позиции {iid}")
+            if qty != float(item.get("quantity") or 0) or comparison_unit(form.get(f"unit_{iid}")) != comparison_unit(item.get("unit")):
+                raise HTTPException(409, "Подтвердите количество и пересчёт единиц в сравнительной таблице.")
         if build_invoice is None:
             raise HTTPException(status_code=500, detail="Формирование счёта не подключено")
         invoice_number = str(form.get("producer_offer_number") or "").strip()

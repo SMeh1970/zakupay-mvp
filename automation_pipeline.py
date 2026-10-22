@@ -1051,7 +1051,8 @@ def _gmail_draft_payload(result: dict, job_id: int) -> dict:
 
 
 def _included(row: dict) -> bool:
-    return row.get("decision") in {"auto_ready", "approved"}
+    from supplier_comparison import selected_allowed
+    return row.get("decision") in {"auto_ready", "approved"} and selected_allowed(row)
 
 
 def _refresh_summary(result: dict) -> None:
@@ -1975,6 +1976,9 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
                     progress_callback=save_progress,
                 )
                 _preserve_invoice_customer(result, old_result)
+                from supplier_comparison import preserve_comparison
+                preserve_comparison(result, old_result)
+                _refresh_summary(result)
                 result["processed_snapshot_hash"] = full_order_snapshot_hash
                 invoice_number = row["invoice_number"]
                 if result["summary"]["auto_ready"] > 0 and invoice_number is None:
@@ -2186,7 +2190,9 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
                 f"{progress_bar}"
                 f"<div class='meta'><b>Поставщики:</b> {html.escape(suppliers_label)}</div>"
                 f"<div class='meta'>Статус: {'счёт выставлен в Закупай' if offer_created else 'поиск цен не запускался' if pending else html.escape(STATUSES.get(row['status'], 'Требуется проверка'))} · счёт: {row['invoice_number'] or '—'}</div></div>"
-                f"<div class='actions'>{primary_action}{invoice}{send}</div></section>"
+                f"<div class='actions'>{primary_action}"
+                + (f"<a class='button secondary' target='_blank' rel='noopener' href='/dashboard/automation/jobs/{row['id']}/comparison'>Сравнить поставщиков</a>" if result.get("items") and not pending else "")
+                + f"{invoice}{send}</div></section>"
             )
         sync_report = ""
         if categories_notice:
@@ -2481,7 +2487,7 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
                 "<title>Проверка заявки</title><style>body{font-family:Arial;margin:24px;background:#f4f6f8}main{background:#fff;padding:20px;border-radius:12px;overflow:auto}"
                 "table{border-collapse:collapse;width:100%}td,th{border:1px solid #ccc;padding:8px}"
                 "th{background:#eee}select{min-width:280px}.qty{width:90px}.price{width:100px}button,.button{display:inline-block;padding:11px 16px;background:#1a73e8;color:white;border:0;border-radius:7px;text-decoration:none;font-weight:bold}.row-search{margin-top:7px;padding:7px 10px;background:#5f6368}.sent-notice{padding:14px;background:#e6f4ea;color:#137333;border-radius:8px;margin:14px 0}</style><body><main>"
-                "<p><a href='/dashboard/automation'>← Все заявки</a></p>"
+                f"<p><a href='/dashboard/automation'>← Все заявки</a> · <a href='/dashboard/automation/jobs/{job_id}/comparison'>Сравнительная таблица поставщиков →</a></p>"
                 f"<h1>{request_heading}</h1>"
                 f"<p>Счёт № {row['invoice_number']} · статус: {'предложение выставлено' if offer_created else html.escape(str(row['status']))}</p>"
                 f"{navigation_notice}{sent_notice}{customer_form}{top_controls}{search_report}"
@@ -2529,6 +2535,9 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
             raise HTTPException(status_code=409, detail="Состав заявки не был сохранён")
         result = build_vi_draft(order, invoice_number=row["invoice_number"])
         _preserve_invoice_customer(result, old_result)
+        from supplier_comparison import preserve_comparison
+        preserve_comparison(result, old_result)
+        _refresh_summary(result)
         result["last_search_at"] = datetime.now(timezone.utc).isoformat()
         result["last_search_source"] = order.get("source") or "zakupay_api"
         result["last_search_found_positions"] = sum(
@@ -2595,6 +2604,9 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
             "previous_selected": current.get("selected"),
         }]
         result["items"][current_index] = refreshed
+        from supplier_comparison import preserve_comparison
+        comparison_snapshot = {"items": [current], "comparison": result.get("comparison") or {}}
+        preserve_comparison({"items": [refreshed], "comparison": result.get("comparison") or {}}, comparison_snapshot)
         result["last_search_at"] = datetime.now(timezone.utc).isoformat()
         result["last_search_position"] = position
         _refresh_summary(result)
@@ -2619,6 +2631,28 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
                 pos = item.get("position")
                 raw_idx = str(form.get(f"candidate_{pos}") or "")
                 candidates = [x for x in (item.get("candidates") or []) if not x.get("error")]
+                if item.get("comparison"):
+                    from supplier_comparison import selected_allowed
+                    if result.get("live_offer_created"):
+                        raise HTTPException(409, "Предложение уже отправлено")
+                    if raw_idx.isdigit() and int(raw_idx) < len(candidates) and _candidate_key(candidates[int(raw_idx)]) != _candidate_key(item.get("selected") or {}):
+                        raise HTTPException(409, "Измените поставщика в сравнительной таблице, чтобы проверить характеристики и количество.")
+                    try:
+                        quantity = float(form.get(f"quantity_{pos}") or item.get("quantity") or 0)
+                        price = float(form.get(f"price_{pos}") or 0)
+                    except (ValueError, TypeError):
+                        raise HTTPException(400, "Некорректное количество или цена")
+                    if not math.isfinite(price) or price <= 0 or not math.isfinite(quantity):
+                        raise HTTPException(400, "Укажите положительную конечную цену")
+                    if quantity != float(item.get("quantity") or 0):
+                        raise HTTPException(409, "Подтвердите изменение количества в сравнительной таблице.")
+                    item["proposed_unit_price"] = price
+                    include = form.get(f"include_{pos}") == "1" and selected_allowed(item)
+                    item["decision"] = "approved" if include else "excluded"
+                    item["operator_included"] = include
+                    if item.get("selected"):
+                        feedback.append((item.get("requested_name") or "", item["selected"], item["decision"]))
+                    continue
                 if raw_idx.isdigit() and int(raw_idx) < len(candidates):
                     if _candidate_key(candidates[int(raw_idx)]) != _candidate_key(item.get("selected") or {}):
                         item["selection_rule"] = "operator_selected"
@@ -2656,6 +2690,11 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
                 include = form.get(f"include_{pos}") == "1"
                 item["decision"] = "approved" if include and item.get("selected") and item.get("proposed_unit_price") is not None else "excluded"
                 item["operator_included"] = include
+                if item.get("comparison"):
+                    from supplier_comparison import selected_allowed
+                    if not selected_allowed(item):
+                        item["decision"] = "excluded"
+                        item["operator_included"] = False
                 if item.get("selected"):
                     feedback.append((item.get("requested_name") or "", item["selected"], item["decision"]))
             _refresh_summary(result)

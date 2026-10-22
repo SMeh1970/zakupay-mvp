@@ -32,6 +32,7 @@ from offer_panel_safe import install_offer_panel
 from invoice_generator import build_invoice_xlsx
 from price_estimator import analyze_order_v2
 from supplier_panel import install_supplier_panel
+from supplier_comparison import install_supplier_comparison
 from price_lists import install_price_lists
 from own_catalog import install_own_catalog
 from sniper_integration import install_sniper
@@ -48,7 +49,7 @@ DEPLOY_MARKER = "prepared-price-characteristics-2026-10-22"
 
 @app.get("/version")
 def version_marker():
-    return {"deploy": DEPLOY_MARKER, "offer_panel": True, "abacus_mcp": True}
+    return {"deploy": DEPLOY_MARKER, "offer_panel": True, "abacus_mcp": True, "supplier_comparison": True}
 
 
 _OPTIONAL_NUMERIC_QUERY_FIELDS = {
@@ -185,6 +186,7 @@ install_api_discovery(
     zakupay_base_url=ZAKUPAY_BASE_URL,
 )
 install_supplier_panel(app, esc=esc)
+install_supplier_comparison(app)
 install_price_lists(app)
 install_own_catalog(app)
 install_sniper(app)
