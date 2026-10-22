@@ -103,5 +103,18 @@ class TileAutopilotTests(unittest.TestCase):
         self.assertEqual(fetch.call_count,1)
         self.assertIn('401',json.loads(auto.saved_reviews()[0]['report_json'])['provider_result'])
 
+    @patch.object(auto.managed,'configured',return_value=False)
+    @patch.object(auto,'fetch_prices',return_value=({},'No price'))
+    def test_diagnostic_prefers_order_with_competing_tile_offer(self,fetch,_):
+        for item in self.order['orderItems']:
+            item.update(bestOfferItem=None,companiesWithOffersCount='0')
+        pipeline.save_api_order_for_manual_start(self.order)
+        other=copy.deepcopy(self.order);other['id']=int(other['id'])+1
+        other['orderItems'][0].update(bestOfferItem='Керамогранит конкурента',companiesWithOffersCount=1)
+        pipeline.save_api_order_for_manual_start(other)
+        auto.check_queue(self.fetch,self.headers,'https://prodavay.sel-be.ru',Mock())
+        auto.probe_provider_once(self.headers,'https://prodavay.sel-be.ru')
+        self.assertEqual(fetch.call_args.args[0]['id'],other['id'])
+
 
 if __name__=='__main__':unittest.main()

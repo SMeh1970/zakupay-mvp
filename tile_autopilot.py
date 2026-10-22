@@ -21,7 +21,7 @@ import browser_prices
 import porcelain as tiles
 from price_lists import database, execute
 from porcelain_panel import page, esc
-from tile_offer_policy import POLICY_VERSION, competitor_prices, due_at, evaluate, relevant_items
+from tile_offer_policy import POLICY_VERSION, competitor_prices, due_at, evaluate, relevant_items, number
 
 URL = '/dashboard/tiles/automatic'
 _lock = threading.Lock()
@@ -114,24 +114,33 @@ def probe_provider_once(headers, base):
     """
     rows = saved_reviews()
     if not rows: return
-    row = rows[0]
-    report = json.loads(row['report_json'])
     from tile_offer_policy import timestamp
     clock = datetime.now(timezone.utc)
     revision = browser_prices.session_revision()
     for entry in rows:
         saved_report = json.loads(entry['report_json'])
         previous = timestamp(saved_report.get('provider_checked_at'))
-        if (saved_report.get('provider_probe_version') == 6
+        if (saved_report.get('provider_probe_version') == 7
                 and saved_report.get('provider_session_revision') == revision
                 and previous and 0 <= (clock - previous).total_seconds() < 86400): return
+    # An order without competitors cannot verify that numeric prices are read.
+    # Prefer a saved tile order with an actual competing offer; read at most ten.
     with database() as conn:
-        saved = execute(conn, 'SELECT order_json FROM automation_jobs WHERE id=?', (row['job_id'],)).fetchone()
-    if not saved: return
-    prices, error = fetch_prices(json.loads(saved['order_json']), base, headers)
+        candidates = execute(conn, '''SELECT r.order_id,r.job_id,r.report_json,j.order_json
+            FROM tile_auto_reviews r JOIN automation_jobs j ON j.id=r.job_id
+            ORDER BY r.checked_at DESC LIMIT 10''').fetchall()
+    if not candidates: return
+    def score(candidate):
+        order = json.loads(candidate['order_json'])
+        offers = sum(bool(item.get('bestOfferItem')) or (number(item.get('companiesWithOffersCount')) or 0) > 0
+                     for _, item in relevant_items(order))
+        return offers, str(order.get('finishDate') or ''), int(candidate['order_id'])
+    row = max(candidates, key=score)
+    report = json.loads(row['report_json'])
+    prices, error = fetch_prices(json.loads(row['order_json']), base, headers)
     count = sum(1 for price in prices.values() if price.get('price') is not None)
     report['provider_checked_at'] = clock.isoformat()
-    report['provider_probe_version'] = 6
+    report['provider_probe_version'] = 7
     report['provider_session_revision'] = revision
     report['provider_result'] = error or ('Числовых цен получено: ' + str(count)
         + '. Единицы, НДС и доставка проверяются отдельно.')
