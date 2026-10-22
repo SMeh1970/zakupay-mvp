@@ -47,7 +47,31 @@ class ZakupayOrderLookupTests(unittest.TestCase):
         self.assertEqual(order["id"], 37217190)
         self.assertEqual(len(order["orderItems"]), 1)
         self.assertEqual(get.call_args.kwargs["params"]["ids"], 37217190)
+        self.assertEqual(get.call_args.kwargs["params"]["ignoreKeywordFilter"], "true")
         post.assert_not_called()
+
+    @patch("main.fetch_all_orders")
+    @patch("main.requests.get")
+    def test_explicit_order_lookup_is_not_hidden_by_keyword_preferences(self, get, all_orders):
+        order = {"id": 37463885, "orderItems": [{"id": 1, "isPassKeywordFilter": False}]}
+
+        def lookup(*args, **kwargs):
+            orders = [order] if kwargs["params"].get("ignoreKeywordFilter") == "true" else []
+            return Mock(status_code=200, ok=True, json=lambda: {"result": True, "orders": orders})
+
+        get.side_effect = lookup
+        self.assertEqual(main.fetch_order_by_id(37463885), order)
+        all_orders.assert_not_called()
+
+    @patch("main.fetch_all_orders")
+    @patch("main.requests.get")
+    def test_api_failure_in_http_200_is_not_reported_as_missing_order(self, get, all_orders):
+        get.return_value = Mock(status_code=200, ok=True, json=lambda: {"result": False, "orders": []})
+        with self.assertRaises(main.HTTPException) as caught:
+            main.fetch_order_by_id(37463885)
+        self.assertEqual(caught.exception.status_code, 502)
+        self.assertIn("сообщил об ошибке", caught.exception.detail)
+        all_orders.assert_not_called()
 
     @patch("main.request_orders_page")
     def test_empty_official_collection_stays_empty(self, page):

@@ -173,6 +173,47 @@ class OfferSubmissionTests(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
         post.assert_not_called()
 
+    @patch("offer_panel_safe.requests.post")
+    def test_missing_live_order_has_recovery_page_and_never_uploads(self, post):
+        self.fetch.return_value = None
+        response = self.client.post(self.url, data=self.form)
+        self.assertEqual(response.status_code, 409)
+        self.assertIn("не подтверждает её удаление", response.text)
+        self.assertIn("/dashboard/automation/jobs/456/invoice.xlsx", response.text)
+        self.invoice.assert_not_called()
+        self.claim.assert_not_called()
+        post.assert_not_called()
+
+    @patch("offer_panel_safe.requests.post")
+    def test_verification_is_read_only_even_when_order_is_available(self, post):
+        response = self.client.get("/dashboard/order/37463885/offer/verify")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("Заявка доступна в Закупай", response.text)
+        self.fetch.assert_called_once_with(37463885, force=True)
+        self.invoice.assert_not_called()
+        self.claim.assert_not_called()
+        post.assert_not_called()
+
+    @patch("offer_panel_safe.requests.post")
+    def test_verification_does_not_substitute_saved_order_when_live_order_is_absent(self, post):
+        self.fetch.return_value = None
+        response = self.client.get("/dashboard/order/37463885/offer/verify")
+        self.assertEqual(response.status_code, 409)
+        self.assertIn("В ответе Закупай нет заявки", response.text)
+        self.invoice.assert_not_called()
+        self.claim.assert_not_called()
+        post.assert_not_called()
+
+    @patch("offer_panel_safe.requests.post")
+    def test_verification_detects_changed_order(self, post):
+        self.fetch.return_value = {**self.order, "orderItems": [{"id": 10, "goodName": "Товар", "count": 3}]}
+        response = self.client.get("/dashboard/order/37463885/offer/verify")
+        self.assertEqual(response.status_code, 409)
+        self.assertIn("изменились", response.text)
+        self.invoice.assert_not_called()
+        self.claim.assert_not_called()
+        post.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

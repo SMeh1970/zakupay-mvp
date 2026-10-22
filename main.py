@@ -160,6 +160,9 @@ def fetch_order_by_id(order_id, force=False):
     list_url = f"{ZAKUPAY_BASE_URL}/api/v1/orders"
     common = {
         "format": "json", "isoDate": "true",
+        # Keyword preferences belong to the discovery feed, not an explicit ID
+        # lookup for an application the operator has already selected.
+        "ignoreKeywordFilter": "true",
     }
 
     # Zakupay support confirmed on 2026-09-15 that a concrete application is
@@ -180,6 +183,9 @@ def fetch_order_by_id(order_id, force=False):
             raise HTTPException(status_code=403, detail="Недостаточно прав для получения заявки")
         if response.ok:
             data = response.json()
+            if isinstance(data, dict) and str(data.get("result")).lower() in {"false", "0"}:
+                logger.warning("order lookup id=%s status=%s api_result=false", order_id, response.status_code)
+                raise HTTPException(status_code=502, detail="Закупай сообщил об ошибке получения заявки")
             candidates = _orders_from_payload(data)
             order = next((o for o in candidates if int(o.get("id") or 0) == order_id), None)
             logger.info(
@@ -189,6 +195,11 @@ def fetch_order_by_id(order_id, force=False):
             )
             if order:
                 return order
+            logger.warning(
+                "order lookup id=%s status=%s candidates=%s found=false response_keys=%s keyword_filter_ignored=true",
+                order_id, response.status_code, len(candidates),
+                sorted(data.keys()) if isinstance(data, dict) else type(data).__name__,
+            )
     except HTTPException:
         raise
     except requests.RequestException as exc:

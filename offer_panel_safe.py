@@ -259,14 +259,18 @@ def install_offer_panel(
             headers={"Cache-Control": "no-store, max-age=0"},
         )
 
-    def _not_sent_page(order_id, message):
+    def _not_sent_page(order_id, message, *, status_code=503, job_id=None):
+        download = (
+            f"<p><a href='/dashboard/automation/jobs/{int(job_id)}/invoice.xlsx'>Скачать сохранённый счёт без отправки</a></p>"
+            if job_id is not None else ""
+        )
         return HTMLResponse(
             "<!doctype html><html lang='ru'><meta charset='utf-8'>"
             "<title>Счёт не отправлен</title><body style='font-family:Arial;margin:32px'>"
             f"<h1>Счёт не отправлен</h1><p>{esc(message)}</p>"
             "<p>Сохранённая заявка и подбор товаров не изменены.</p>"
             f"<p><a href='/dashboard/order/{order_id}/offer'>Вернуться к предложению</a></p>"
-            "</body></html>", status_code=503,
+            f"{download}</body></html>", status_code=status_code,
             headers={"Cache-Control": "no-store, max-age=0"},
         )
 
@@ -464,8 +468,40 @@ def install_offer_panel(
         disabled = "disabled" if blockers else ""
         customer = normalize_customer(result.get("customer"))
         invoice_number = result.get("invoice_number") or context.get("invoice_number") or ""
-        html = f"""<!doctype html><html lang='ru'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>Предложение {order_id}</title><style>body{{font-family:Arial;margin:24px;background:#f4f6f8;color:#202124}}.card{{background:#fff;padding:18px;border-radius:12px;margin-bottom:18px}}.grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:12px}}label{{display:block;font-size:12px;margin:6px 0 4px}}input,select,textarea{{width:100%;box-sizing:border-box;padding:8px}}table{{width:100%;border-collapse:collapse;font-size:13px}}th,td{{padding:8px;border-bottom:1px solid #ddd;vertical-align:top}}th{{text-align:left;background:#eee}}button{{padding:12px 18px;background:#c62828;color:white;border:0;border-radius:8px;font-weight:bold}}button:disabled{{background:#999}}input[type=checkbox]{{width:auto}}.ok{{background:#edf8ef;padding:10px;border-radius:8px}}.warn{{background:#fff0e8;padding:10px;border-radius:8px;margin:10px 0}}</style></head><body><p><a href='/dashboard/automation/jobs/{job_id}/review'>← К проверке заявки</a></p><h1>Подтверждение предложения в Закупай</h1><div class='card'><div class='ok'>Используется сохранённая заявка и последний проверенный подбор. Повторного получения заявки из Закупай нет. Счёт сформируется автоматически.</div>{warning}<p><b>Заявка:</b> {esc(order.get('id'))} — {esc(order.get('name'))}<br><b>Позиций к отправке:</b> {len(included)}</p><form method='post' action='/dashboard/order/{order_id}/offer/submit'><div class='grid'><div><label>Банковский счёт ООО «АВИОР»</label>{account_field}</div><div><label>Номер счёта</label><input name='producer_offer_number' value='{esc(invoice_number)}' required></div><div><label>Дата</label><input type='date' name='producer_offer_date' value='{date.today().isoformat()}' required></div><div><label>Валюта ID</label><input name='currency_id' value='{esc(DEFAULT_CURRENCY_ID)}' required></div><div><label>НДС</label><select name='vat_rate'><option value='0.22' selected>22%</option><option value='0.2'>20%</option><option value='0.1'>10%</option><option value='0'>Без НДС</option></select></div><div><label>Предоплата, %</label><input type='number' name='prepayment_percent' min='0' max='100' value='100'></div><div><label>Отсрочка, дней</label><input type='number' name='delay_days' min='0' value='0'></div><div><label>Доставка включена</label><select name='delivery_included'><option value='1' selected>Да</option><option value='0'>Нет</option></select></div></div><p><label>Комментарий покупателю</label><textarea name='comment'>Частичное или полное предложение по подтверждённым позициям. Доставка включена в стоимость.</textarea></p><h3>Плательщик</h3><p>{esc(customer['name'])} · ИНН {esc(customer['inn'])} · КПП {esc(customer['kpp'] or 'не применяется')}</p><p><a href='/dashboard/automation/jobs/{job_id}/review'>Проверить или исправить реквизиты плательщика</a></p><h3>Позиции</h3><table><thead><tr><th>Включить</th><th>№</th><th>Заявка / предложение</th><th>Кол-во</th><th>Ед.</th><th>Цена за ед.</th><th>Наличие и срок</th></tr></thead><tbody>{rows}</tbody></table><div class='warn'>После нажатия кнопки счёт будет загружен, а предложение реально создано в Закупай. Повторная отправка этой обработки будет заблокирована.</div><p><label><input type='checkbox' name='confirm_send' value='SEND' required> Я проверил реквизиты плательщика, счёт, позиции, количества, цены и подтверждаю отправку.</label></p><button type='submit' {disabled}>Выставить счёт и отправить предложение</button></form></div></body></html>"""
+        html = f"""<!doctype html><html lang='ru'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>Предложение {order_id}</title><style>body{{font-family:Arial;margin:24px;background:#f4f6f8;color:#202124}}.card{{background:#fff;padding:18px;border-radius:12px;margin-bottom:18px}}.grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:12px}}label{{display:block;font-size:12px;margin:6px 0 4px}}input,select,textarea{{width:100%;box-sizing:border-box;padding:8px}}table{{width:100%;border-collapse:collapse;font-size:13px}}th,td{{padding:8px;border-bottom:1px solid #ddd;vertical-align:top}}th{{text-align:left;background:#eee}}button{{padding:12px 18px;background:#c62828;color:white;border:0;border-radius:8px;font-weight:bold}}button:disabled{{background:#999}}input[type=checkbox]{{width:auto}}.ok{{background:#edf8ef;padding:10px;border-radius:8px}}.warn{{background:#fff0e8;padding:10px;border-radius:8px;margin:10px 0}}</style></head><body><p><a href='/dashboard/automation/jobs/{job_id}/review'>← К проверке заявки</a></p><h1>Подтверждение предложения в Закупай</h1><div class='card'><div class='ok'>Используется сохранённая заявка и последний проверенный подбор. Перед отправкой выполняется контрольная сверка с Закупай. Счёт сформируется автоматически.</div><p><a href='/dashboard/order/{order_id}/offer/verify'>Проверить доступность заявки без отправки счёта</a></p>{warning}<p><b>Заявка:</b> {esc(order.get('id'))} — {esc(order.get('name'))}<br><b>Позиций к отправке:</b> {len(included)}</p><form method='post' action='/dashboard/order/{order_id}/offer/submit'><div class='grid'><div><label>Банковский счёт ООО «АВИОР»</label>{account_field}</div><div><label>Номер счёта</label><input name='producer_offer_number' value='{esc(invoice_number)}' required></div><div><label>Дата</label><input type='date' name='producer_offer_date' value='{date.today().isoformat()}' required></div><div><label>Валюта ID</label><input name='currency_id' value='{esc(DEFAULT_CURRENCY_ID)}' required></div><div><label>НДС</label><select name='vat_rate'><option value='0.22' selected>22%</option><option value='0.2'>20%</option><option value='0.1'>10%</option><option value='0'>Без НДС</option></select></div><div><label>Предоплата, %</label><input type='number' name='prepayment_percent' min='0' max='100' value='100'></div><div><label>Отсрочка, дней</label><input type='number' name='delay_days' min='0' value='0'></div><div><label>Доставка включена</label><select name='delivery_included'><option value='1' selected>Да</option><option value='0'>Нет</option></select></div></div><p><label>Комментарий покупателю</label><textarea name='comment'>Частичное или полное предложение по подтверждённым позициям. Доставка включена в стоимость.</textarea></p><h3>Плательщик</h3><p>{esc(customer['name'])} · ИНН {esc(customer['inn'])} · КПП {esc(customer['kpp'] or 'не применяется')}</p><p><a href='/dashboard/automation/jobs/{job_id}/review'>Проверить или исправить реквизиты плательщика</a></p><h3>Позиции</h3><table><thead><tr><th>Включить</th><th>№</th><th>Заявка / предложение</th><th>Кол-во</th><th>Ед.</th><th>Цена за ед.</th><th>Наличие и срок</th></tr></thead><tbody>{rows}</tbody></table><div class='warn'>После нажатия кнопки счёт будет загружен, а предложение реально создано в Закупай. Повторная отправка этой обработки будет заблокирована.</div><p><label><input type='checkbox' name='confirm_send' value='SEND' required> Я проверил реквизиты плательщика, счёт, позиции, количества, цены и подтверждаю отправку.</label></p><button type='submit' {disabled}>Выставить счёт и отправить предложение</button></form></div></body></html>"""
         return HTMLResponse(html)
+
+    @app.get("/dashboard/order/{order_id}/offer/verify", response_class=HTMLResponse)
+    async def verify_offer_order(order_id: int):
+        """Read-only preflight; never generate, upload or submit an offer."""
+        context = await run_in_threadpool(_get_context, order_id)
+        if fetch_order_by_id is None or order_hash is None:
+            raise HTTPException(status_code=503, detail="Контроль актуальности заявки не подключён")
+        try:
+            fresh_order = await _bounded_call(
+                fetch_order_by_id, order_id, force=True,
+                deadline=ORDER_CHECK_DEADLINE_SECONDS,
+            )
+        except Exception as exc:
+            logger.warning("order verification failed order=%s error=%s", order_id, type(exc).__name__)
+            return _not_sent_page(order_id, "Не удалось проверить заявку в Закупай. Отправка не запускалась.", job_id=context["job_id"])
+        if not fresh_order:
+            return _not_sent_page(
+                order_id,
+                f"В ответе Закупай нет заявки № {order_id}. Это не подтверждает её удаление или закрытие. "
+                "Проверка сохранённых данных остановлена; отправка не запускалась.",
+                status_code=409, job_id=context["job_id"],
+            )
+        if order_hash(fresh_order) != order_hash(context["order"]):
+            return _not_sent_page(order_id, "Состав или условия заявки в Закупай изменились. Требуется сверка с сохранённым подбором.", status_code=409, job_id=context["job_id"])
+        return HTMLResponse(
+            "<!doctype html><html lang='ru'><meta charset='utf-8'><title>Заявка проверена</title>"
+            "<body style='font-family:Arial;margin:32px'><h1>Заявка доступна в Закупай</h1>"
+            f"<p>№ {order_id}. Позиций: {len(fresh_order.get('orderItems') or [])}.</p>"
+            "<p>Состав и условия совпадают с сохранённой заявкой. Эта проверка не отправляет счёт или предложение.</p>"
+            f"<p><a href='/dashboard/order/{order_id}/offer'>Вернуться к подтверждению предложения</a></p></body></html>",
+            headers={"Cache-Control": "no-store, max-age=0"},
+        )
 
     @app.post("/dashboard/order/{order_id}/offer/enrich-ids")
     def enrich_offer_line_ids(order_id: int):
@@ -556,7 +592,12 @@ def install_offer_panel(
                 "Проверка остановлена; загрузка счёта и отправка предложения не запускались.",
             )
         if not fresh_order:
-            raise HTTPException(status_code=409, detail="Закупай не вернул заявку. Счёт не отправлен.")
+            return _not_sent_page(
+                order_id,
+                f"Закупай не вернул заявку № {order_id} для контрольной сверки. "
+                "Это не подтверждает её удаление или закрытие. Загрузка счёта и создание предложения не запускались.",
+                status_code=409, job_id=context["job_id"],
+            )
         fresh_customer = normalize_customer(fresh_order.get("customer"))
         invoice_customer = normalize_customer(result.get("customer"))
         if (
