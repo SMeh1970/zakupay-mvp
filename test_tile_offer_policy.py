@@ -139,6 +139,16 @@ class AutomaticPolicyTests(unittest.TestCase):
         self.assertIsNone(result['101']['delivery_included'])
         self.assertIsNone(result['101']['unit'])
 
+    def test_converted_price_never_inherits_original_currency(self):
+        row={'orderItemId':101,'bestPrice':{'priceInDefaultCurrency':1803,'currencyCode':'USD'}}
+        result=competitor_prices([row],CLOCK.isoformat())
+        self.assertEqual(result['101']['price'],1803)
+        self.assertIsNone(result['101']['currency'])
+        row['bestPrice'].update(price=25)
+        result=competitor_prices([row],CLOCK.isoformat())
+        self.assertEqual(result['101']['price'],25)
+        self.assertEqual(result['101']['currency'],'USD')
+
     @patch('tile_autopilot.requests.get')
     @patch('tile_autopilot.requests.post')
     def test_best_price_probe_is_read_only_exact_endpoint_no_redirects(self, post, get):

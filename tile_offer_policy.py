@@ -102,9 +102,16 @@ def competitor_prices(body, checked_at):
         best = row.get('bestPrice')
         if not isinstance(best, dict):
             continue
+        value = number(best.get('price'))
+        currency = best.get('currencyCode')
+        if value is None:
+            # Already used by the cabinet-price reader. The original currency
+            # must not be assigned to a value converted into default currency.
+            value = number(best.get('priceInDefaultCurrency'))
+            currency = best.get('defaultCurrencyCode')
         result[key] = {
-            'price': number(best.get('price')), 'unit': best.get('unitName'),
-            'currency': best.get('currencyCode'), 'vat_rate': best.get('vatRate'),
+            'price': value, 'unit': best.get('unitName'),
+            'currency': currency, 'vat_rate': best.get('vatRate'),
             'delivery_included': best.get('deliveryIncluded'), 'checked_at': checked_at,
             'source': 'zakupay:getoffersdeviationpercent',
         }
