@@ -199,8 +199,12 @@ def fetch_order_by_id(order_id, force=False):
     except (ValueError, TypeError) as exc:
         logger.warning("order lookup id=%s method=ids invalid-response=%s", order_id, type(exc).__name__)
 
-    orders = fetch_all_orders(force=force)
-    return next((o for o in orders if int(o.get("id") or 0) == order_id), None)
+    # A lookup for one application must never crawl the entire order registry.
+    # In particular, invoice preflight must stop if this exact request is absent
+    # or invalid instead of spending minutes downloading unrelated applications.
+    if not response.ok:
+        raise HTTPException(status_code=502, detail=f"Закупай не вернул заявку {order_id}: HTTP {response.status_code}")
+    return None
 
 
 def fetch_all_orders(force=False, api_filters=None):

@@ -69,6 +69,30 @@ class ZakupayOrderLookupTests(unittest.TestCase):
         self.assertEqual(context.exception.status_code, 503)
         self.assertIn("Официальный API Закупай", context.exception.detail)
 
+    @patch("main.fetch_all_orders")
+    @patch("main.requests.get")
+    def test_missing_single_order_does_not_crawl_registry(self, get, all_orders):
+        get.return_value = Mock(status_code=200, ok=True, json=lambda: {"orders": []})
+        self.assertIsNone(main.fetch_order_by_id(37463885, force=True))
+        self.assertEqual(get.call_count, 1)
+        all_orders.assert_not_called()
+
+    @patch("main.fetch_all_orders")
+    @patch("main.requests.get")
+    def test_invalid_single_order_response_does_not_crawl_registry(self, get, all_orders):
+        get.return_value = Mock(status_code=200, ok=True)
+        get.return_value.json.side_effect = ValueError("invalid JSON")
+        self.assertIsNone(main.fetch_order_by_id(37463885, force=True))
+        all_orders.assert_not_called()
+
+    @patch("main.fetch_all_orders")
+    @patch("main.requests.get")
+    def test_single_order_http_error_does_not_crawl_registry(self, get, all_orders):
+        get.return_value = Mock(status_code=400, ok=False)
+        with self.assertRaises(main.HTTPException):
+            main.fetch_order_by_id(37463885, force=True)
+        all_orders.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

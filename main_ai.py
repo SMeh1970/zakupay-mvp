@@ -44,7 +44,7 @@ from abacus_mcp import install_abacus_mcp
 
 ai_panel.analyze_order = analyze_order_v2
 
-DEPLOY_MARKER = "prepared-price-characteristics-2026-10-22"
+DEPLOY_MARKER = "invoice-submit-deadlines-2026-10-22"
 
 
 @app.get("/version")

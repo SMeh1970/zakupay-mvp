@@ -1,3 +1,4 @@
+import asyncio
 import json
 import hashlib
 import logging
@@ -12,6 +13,7 @@ from urllib.parse import urlparse
 import requests
 from fastapi import HTTPException, Request
 from fastapi.responses import HTMLResponse
+from starlette.concurrency import run_in_threadpool
 from invoice_generator import customer_validation_error, normalize_customer
 
 TOKEN_CHECK_PATH = os.getenv("ZAKUPAY_TOKEN_CHECK_PATH", "/api/v1/util/check/token?format=xml")
@@ -20,6 +22,18 @@ OFFER_CREATE_PATH = os.getenv("ZAKUPAY_OFFER_CREATE_PATH", "/core/offers/new/fro
 MODULE_VERSION = os.getenv("ZAKUPAY_MODULE_VERSION", "zakupay-mvp-0.2")
 DEFAULT_CURRENCY_ID = os.getenv("ZAKUPAY_CURRENCY_ID", "643")
 logger = logging.getLogger(__name__)
+
+# Wall-clock limits also cover DNS, redirects and a server trickling bytes.
+# requests' socket timeout alone does not bound the duration of an operation.
+ORDER_CHECK_DEADLINE_SECONDS = 15
+UPLOAD_DEADLINE_SECONDS = 35
+OFFER_POST_DEADLINE_SECONDS = 35
+
+
+async def _bounded_call(call, *args, deadline, **kwargs):
+    return await asyncio.wait_for(
+        run_in_threadpool(call, *args, **kwargs), timeout=deadline,
+    )
 
 
 def install_offer_panel(
@@ -245,6 +259,17 @@ def install_offer_panel(
             headers={"Cache-Control": "no-store, max-age=0"},
         )
 
+    def _not_sent_page(order_id, message):
+        return HTMLResponse(
+            "<!doctype html><html lang='ru'><meta charset='utf-8'>"
+            "<title>Счёт не отправлен</title><body style='font-family:Arial;margin:32px'>"
+            f"<h1>Счёт не отправлен</h1><p>{esc(message)}</p>"
+            "<p>Сохранённая заявка и подбор товаров не изменены.</p>"
+            f"<p><a href='/dashboard/order/{order_id}/offer'>Вернуться к предложению</a></p>"
+            "</body></html>", status_code=503,
+            headers={"Cache-Control": "no-store, max-age=0"},
+        )
+
     def _build_payload(order, form, file_id):
         offer_items = []
         additional_items = []
@@ -317,7 +342,10 @@ def install_offer_panel(
         headers = _headers()
         headers.pop("Content-Type", None)
         try:
-            r = requests.post(url, headers=headers, files={"file": (filename, body, ctype)}, timeout=30)
+            r = requests.post(
+                url, headers=headers, files={"file": (filename, body, ctype)},
+                timeout=(5, 20), allow_redirects=False,
+            )
         except requests.RequestException as exc:
             raise HTTPException(status_code=502, detail=f"Ошибка загрузки файла в Закупай: {exc}")
         data = _decode_response(r)
@@ -467,7 +495,7 @@ def install_offer_panel(
 
     @app.post("/dashboard/order/{order_id}/offer/submit", response_class=HTMLResponse)
     async def submit_offer(order_id: int, request: Request):
-        context = _get_context(order_id)
+        context = await run_in_threadpool(_get_context, order_id)
         order = context["order"]
         result = context["result"]
         if result.get("live_offer_created"):
@@ -486,7 +514,7 @@ def install_offer_panel(
                 "</body></html>",
                 status_code=409,
             )
-        existing_submission = latest_submission(context["job_id"]) if latest_submission else None
+        existing_submission = await run_in_threadpool(latest_submission, context["job_id"]) if latest_submission else None
         if existing_submission and existing_submission.get("status") in {"sending", "unknown"}:
             return _submission_block_page(order_id, context["job_id"], existing_submission)
         form = await request.form()
@@ -514,13 +542,18 @@ def install_offer_panel(
 
         if fetch_order_by_id is None or order_hash is None:
             raise HTTPException(status_code=503, detail="Контроль актуальности заявки не подключён")
+        logger.warning("invoice submission order=%s stage=order_check started", order_id)
         try:
-            fresh_order = fetch_order_by_id(order_id, force=True)
+            fresh_order = await _bounded_call(
+                fetch_order_by_id, order_id, force=True,
+                deadline=ORDER_CHECK_DEADLINE_SECONDS,
+            )
         except Exception as exc:
             logger.warning("live order check failed order=%s error=%s", order_id, type(exc).__name__)
-            raise HTTPException(
-                status_code=503,
-                detail="Закупай не ответил на контрольный запрос. Счёт не отправлен; сохранённая заявка не изменена.",
+            return _not_sent_page(
+                order_id,
+                "Закупай не ответил на контрольный запрос за отведённое время. "
+                "Проверка остановлена; загрузка счёта и отправка предложения не запускались.",
             )
         if not fresh_order:
             raise HTTPException(status_code=409, detail="Закупай не вернул заявку. Счёт не отправлен.")
@@ -543,11 +576,27 @@ def install_offer_panel(
                 detail=f"Счёт устарел и не отправлен: {details}. Запустите новый подбор по обновлённой заявке.",
             )
         try:
-            invoice_body = build_invoice(result)
+            invoice_body = await run_in_threadpool(build_invoice, result)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
         filename = f"AVIOR_invoice_{invoice_number}_order_{order_id}.xlsx"
-        file_id, upload_response = _upload_invoice(filename, invoice_body)
+        # Validate the form before making any external write.
+        _build_payload(order, form, "pending")
+        if begin_submission is None or finish_submission is None:
+            raise HTTPException(status_code=503, detail="Защита отправки не подключена")
+        logger.warning("invoice submission order=%s stage=file_upload started", order_id)
+        try:
+            file_id, upload_response = await _bounded_call(
+                _upload_invoice, filename, invoice_body,
+                deadline=UPLOAD_DEADLINE_SECONDS,
+            )
+        except (asyncio.TimeoutError, HTTPException):
+            logger.warning("invoice submission order=%s stage=file_upload failed", order_id)
+            return _not_sent_page(
+                order_id,
+                "Не удалось завершить загрузку файла счёта в Закупай. "
+                "Создание предложения не запускалось.",
+            )
         payload = _build_payload(order, form, file_id)
         commercial_payload = dict(payload)
         commercial_payload.pop("files", None)
@@ -557,9 +606,8 @@ def install_offer_panel(
         attempt_key = hashlib.sha256(
             f"{context['job_id']}|{saved_hash}|{payload_hash}".encode("utf-8")
         ).hexdigest()
-        if begin_submission is None or finish_submission is None:
-            raise HTTPException(status_code=503, detail="Защита отправки не подключена")
-        claim = begin_submission(
+        claim = await run_in_threadpool(
+            begin_submission,
             context["job_id"], order_id, attempt_key, external_guid, saved_hash,
             payload_hash, invoice_number, file_id, payload,
         )
@@ -567,18 +615,28 @@ def install_offer_panel(
             return _submission_block_page(order_id, context["job_id"], claim)
         submission_id = int(claim["id"])
         url = zakupay_base_url.rstrip("/") + OFFER_CREATE_PATH
+        logger.warning("invoice submission order=%s attempt=%s stage=offer_post started", order_id, submission_id)
         try:
-            r = requests.post(url, headers=_headers("application/json"), json=payload, timeout=30)
-        except requests.RequestException as exc:
-            finish_submission(submission_id, "unknown", error=f"{type(exc).__name__}: {exc}")
+            r = await _bounded_call(
+                requests.post, url, headers=_headers("application/json"), json=payload,
+                timeout=(5, 20), allow_redirects=False,
+                deadline=OFFER_POST_DEADLINE_SECONDS,
+            )
+        except (asyncio.TimeoutError, requests.RequestException) as exc:
+            await run_in_threadpool(finish_submission, submission_id, "unknown", error=f"{type(exc).__name__}: {exc}")
+            logger.warning("invoice submission order=%s attempt=%s stage=offer_post unknown", order_id, submission_id)
             return _submission_block_page(
                 order_id,
                 context["job_id"],
                 {"id": submission_id, "status": "unknown"},
             )
         data = _decode_response(r)
-        if not r.ok:
-            finish_submission(
+        if r.status_code >= 500 or r.status_code in {408, 429}:
+            await run_in_threadpool(finish_submission, submission_id, "unknown", response=data, error=f"HTTP {r.status_code}")
+            return _submission_block_page(order_id, context["job_id"], {"id": submission_id, "status": "unknown"})
+        if not 200 <= r.status_code < 300:
+            await run_in_threadpool(
+                finish_submission,
                 submission_id,
                 "rejected",
                 response=data,
@@ -586,7 +644,11 @@ def install_offer_panel(
             )
             return HTMLResponse(f"<h1>Закупай отклонил предложение</h1><p>HTTP {r.status_code}</p><pre>{esc(json.dumps(data, ensure_ascii=False, indent=2))}</pre><h3>JSON</h3><pre>{esc(json.dumps(payload, ensure_ascii=False, indent=2))}</pre><p><a href='/dashboard/order/{order_id}/offer'>← Исправить</a></p>", status_code=r.status_code)
         offer_id = _find_first_key(data, "id")
-        finish_submission(submission_id, "confirmed", offer_id=offer_id, response=data)
+        if not offer_id or str(_find_first_key(data, "result")).lower() in {"false", "0"}:
+            await run_in_threadpool(finish_submission, submission_id, "unknown", response=data, error="Ответ Закупай не подтверждает создание предложения")
+            return _submission_block_page(order_id, context["job_id"], {"id": submission_id, "status": "unknown"})
+        await run_in_threadpool(finish_submission, submission_id, "confirmed", offer_id=offer_id, response=data)
+        logger.warning("invoice submission order=%s attempt=%s stage=completed confirmed", order_id, submission_id)
         return HTMLResponse(
             "<!doctype html><html lang='ru'><meta charset='utf-8'>"
             "<title>Предложение создано</title>"
