@@ -1,4 +1,5 @@
 import os
+import hashlib
 import time
 from threading import Lock
 
@@ -22,6 +23,11 @@ def _session_cookie():
 
 def browser_price_source_enabled():
     return bool(_session_cookie())
+
+
+def session_revision():
+    """Opaque cache key: a session replacement must invalidate old diagnostics."""
+    return hashlib.sha256(_session_cookie().encode('utf-8')).hexdigest()
 
 
 def _cached(item_id):

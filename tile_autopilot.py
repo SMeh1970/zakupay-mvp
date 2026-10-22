@@ -113,17 +113,21 @@ def probe_provider_once(headers, base):
     report = json.loads(row['report_json'])
     from tile_offer_policy import timestamp
     clock = datetime.now(timezone.utc)
+    revision = browser_prices.session_revision()
     for entry in rows:
         saved_report = json.loads(entry['report_json'])
         previous = timestamp(saved_report.get('provider_checked_at'))
-        if saved_report.get('provider_probe_version') == 4 and previous and (clock - previous).total_seconds() < 86400: return
+        if (saved_report.get('provider_probe_version') == 5
+                and saved_report.get('provider_session_revision') == revision
+                and previous and 0 <= (clock - previous).total_seconds() < 86400): return
     with database() as conn:
         saved = execute(conn, 'SELECT order_json FROM automation_jobs WHERE id=?', (row['job_id'],)).fetchone()
     if not saved: return
     prices, error = fetch_prices(json.loads(saved['order_json']), base, headers)
     count = sum(1 for price in prices.values() if price.get('price') is not None)
     report['provider_checked_at'] = clock.isoformat()
-    report['provider_probe_version'] = 4
+    report['provider_probe_version'] = 5
+    report['provider_session_revision'] = revision
     report['provider_result'] = error or ('Числовых цен получено: ' + str(count)
         + '. Единицы, НДС и доставка проверяются отдельно.')
     persist(row['job_id'], report)
@@ -149,7 +153,7 @@ def check_queue(fetch_order, headers, base, has_offer, *, limit=5):
             original = json.loads(row['order_json'])
             if original.get('source') == 'manual_entry' or not list(relevant_items(original)): continue
             with database() as conn:
-                prior = execute(conn, 'SELECT checked_at FROM tile_auto_reviews WHERE order_id=?', (row['order_id'],)).fetchone()
+                prior = execute(conn, 'SELECT checked_at,report_json FROM tile_auto_reviews WHERE order_id=?', (row['order_id'],)).fetchone()
             if prior:
                 from tile_offer_policy import timestamp
                 previous = timestamp(prior['checked_at'])
@@ -171,6 +175,11 @@ def check_queue(fetch_order, headers, base, has_offer, *, limit=5):
                     source_error = 'Не удалось проверить актуальную заявку Закупай'
                     order = original
             report = evaluate(order, catalog, prices, clock=clock, seller=seller)
+            if prior:
+                # Queue refreshes must not erase the provider's daily cooldown.
+                previous_report = json.loads(prior['report_json'])
+                report.update({key: value for key, value in previous_report.items()
+                               if key.startswith('provider_')})
             if source_error: report['blockers'].insert(0, source_error)
             # These providers have not been configured/validated in this project.
             # Surface that fact even when all product lines happen to match.

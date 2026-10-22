@@ -75,5 +75,33 @@ class TileAutopilotTests(unittest.TestCase):
         auto.probe_provider_once(self.headers,'https://prodavay.sel-be.ru')
         self.assertEqual(fetch.call_count,1)
 
+    @patch.object(auto.managed,'configured',return_value=False)
+    @patch.object(auto,'fetch_prices',return_value=({},'HTTP 401'))
+    def test_replaced_session_invalidates_diagnostic_without_saving_cookie(self,fetch,_):
+        auto.check_queue(self.fetch,self.headers,'https://prodavay.sel-be.ru',Mock())
+        with patch.dict(os.environ,{'ZAKUPAY_PLAY_SESSION':'first-test-session'}):
+            auto.probe_provider_once(self.headers,'https://prodavay.sel-be.ru')
+            auto.probe_provider_once(self.headers,'https://prodavay.sel-be.ru')
+        self.assertEqual(fetch.call_count,1)
+        with patch.dict(os.environ,{'ZAKUPAY_PLAY_SESSION':'replaced-test-session'}):
+            auto.probe_provider_once(self.headers,'https://prodavay.sel-be.ru')
+        self.assertEqual(fetch.call_count,2)
+        saved=auto.saved_reviews()[0]['report_json']
+        self.assertNotIn('first-test-session',saved)
+        self.assertNotIn('replaced-test-session',saved)
+
+    @patch.object(auto.managed,'configured',return_value=False)
+    @patch.object(auto,'fetch_prices',return_value=({},'HTTP 401'))
+    def test_queue_refresh_preserves_provider_diagnostic_cooldown(self,fetch,_):
+        auto.check_queue(self.fetch,self.headers,'https://prodavay.sel-be.ru',Mock())
+        auto.probe_provider_once(self.headers,'https://prodavay.sel-be.ru')
+        report=json.loads(auto.saved_reviews()[0]['report_json'])
+        report['checked_at']='2026-01-01T00:00:00+00:00'
+        auto.persist(self.job,report)
+        auto.check_queue(self.fetch,self.headers,'https://prodavay.sel-be.ru',Mock())
+        auto.probe_provider_once(self.headers,'https://prodavay.sel-be.ru')
+        self.assertEqual(fetch.call_count,1)
+        self.assertIn('401',json.loads(auto.saved_reviews()[0]['report_json'])['provider_result'])
+
 
 if __name__=='__main__':unittest.main()
