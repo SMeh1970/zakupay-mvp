@@ -90,7 +90,7 @@ def fetch_best_prices(item_ids, force=False):
     for start in range(0, len(missing), max(1, BATCH_SIZE)):
         batch = missing[start:start + max(1, BATCH_SIZE)]
         try:
-            r = session.post(PRICE_ENDPOINT, headers=headers, json=batch, timeout=30)
+            r = session.post(PRICE_ENDPOINT, headers=headers, json=batch, timeout=30, allow_redirects=False)
             if not r.ok:
                 try:
                     body = r.json()

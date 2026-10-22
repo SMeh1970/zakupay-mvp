@@ -5,6 +5,7 @@ from unittest.mock import Mock, patch
 
 from tile_offer_policy import competitor_prices, due_at, evaluate, urgent
 from tile_autopilot import fetch_prices
+import tile_autopilot as auto
 from test_porcelain import PRODUCT, CUSTOMER
 
 
@@ -13,6 +14,8 @@ CLOCK = datetime(2026, 10, 22, 8, tzinfo=timezone.utc)
 
 class AutomaticPolicyTests(unittest.TestCase):
     def setUp(self):
+        browser = patch.object(auto.browser_prices, 'browser_price_source_enabled', return_value=False)
+        browser.start(); self.addCleanup(browser.stop)
         self.product = {**PRODUCT, 'stock_m2':500, 'price_rub_m2':1000,
                         'stock_as_of':(CLOCK-timedelta(hours=12)).isoformat()}
         self.catalog = {'id':42, 'data':{'products':[self.product]}}
@@ -149,6 +152,33 @@ class AutomaticPolicyTests(unittest.TestCase):
         self.assertEqual(post.call_args.args[0],'https://prodavay.sel-be.ru/core/supplier/getoffersdeviationpercent')
         self.assertEqual(post.call_args.kwargs['json'],[101])
         self.assertIs(post.call_args.kwargs['allow_redirects'],False)
+
+    @patch.object(auto.browser_prices, 'fetch_best_prices')
+    @patch.object(auto.requests, 'post')
+    def test_cabinet_source_is_fresh_and_keeps_unknown_basis_unknown(self, post, fetch):
+        auto.browser_prices.browser_price_source_enabled.return_value = True
+        fetch.return_value = {'ok':True,'prices':{
+            101:{'orderItemId':101,'bestPrice':{'price':1803}},
+            999:{'orderItemId':999,'bestPrice':{'price':1}}}}
+        prices,error=fetch_prices(self.order,'https://prodavay.sel-be.ru',Mock())
+        self.assertEqual(error,'');self.assertEqual(set(prices),{'101'})
+        self.assertEqual(prices['101']['price'],1803)
+        self.assertIsNone(prices['101']['vat_rate'])
+        self.assertIsNone(prices['101']['delivery_included'])
+        fetch.assert_called_once_with([101],force=True)
+        post.assert_not_called()
+
+    @patch.object(auto.requests, 'get')
+    @patch.object(auto.requests, 'post')
+    @patch.object(auto.browser_prices, 'fetch_best_prices')
+    def test_expired_cabinet_session_reports_status_without_raw_secret(self, fetch, post, get):
+        auto.browser_prices.browser_price_source_enabled.return_value = True
+        fetch.return_value={'ok':False,'prices':{},'errors':[{'status':401,'body':'secret-value'}]}
+        post.return_value=Mock(status_code=401);get.return_value=Mock(status_code=200)
+        prices,error=fetch_prices(self.order,'https://prodavay.sel-be.ru',lambda:{'ZakupayToken':'test'})
+        self.assertEqual(prices,{})
+        self.assertIn('сессия кабинета: HTTP 401',error)
+        self.assertNotIn('secret-value',error)
 
 
 if __name__=='__main__':unittest.main()

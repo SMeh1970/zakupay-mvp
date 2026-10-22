@@ -17,6 +17,7 @@ from fastapi.responses import RedirectResponse
 from starlette.concurrency import run_in_threadpool
 
 import keramahall_catalog as managed
+import browser_prices
 import porcelain as tiles
 from price_lists import database, execute
 from porcelain_panel import page, esc
@@ -37,6 +38,26 @@ def fetch_prices(order, base, headers):
     ids = [item['id'] for _, item in relevant_items(order) if item.get('id') is not None]
     if not ids:
         return {}, 'Нет ID подходящих позиций'
+    # The cabinet uses a browser session rather than the integration token.
+    # Reuse the existing server-side provider without exporting its cookie.
+    browser_status = 'сессия кабинета на сервере не настроена'
+    if browser_prices.browser_price_source_enabled():
+        browser_status = 'сессия кабинета не вернула подтверждённых числовых цен'
+        try:
+            result = browser_prices.fetch_best_prices(ids, force=True)
+            if result.get('ok'):
+                rows = [row for key, row in result.get('prices', {}).items()
+                        if str(key) in {str(value) for value in ids}]
+                prices = competitor_prices(rows, datetime.now(timezone.utc).isoformat())
+                if any(price.get('price') is not None for price in prices.values()):
+                    return prices, ''
+            # Never persist raw upstream bodies, exceptions, or session values.
+            statuses = sorted({str(error['status']) for error in result.get('errors', [])
+                               if isinstance(error, dict) and isinstance(error.get('status'), int)})
+            if statuses:
+                browser_status = 'сессия кабинета: HTTP ' + ', '.join(statuses)
+        except (requests.RequestException, ValueError, TypeError, AttributeError):
+            browser_status = 'не удалось проверить сессию кабинета'
     url = base.rstrip('/') + '/core/supplier/getoffersdeviationpercent'
     try:
         response = requests.post(url, headers={**headers(), 'X-Requested-With': 'XMLHttpRequest',
@@ -57,11 +78,11 @@ def fetch_prices(order, base, headers):
                     error += '; официальный отчёт сравнения: HTTP ' + str(comparison.status_code)
                 except requests.RequestException:
                     error += '; официальный отчёт сравнения: нет ответа'
-            return {}, error
+            return {}, error + '; ' + browser_status
         prices = competitor_prices(response.json(), datetime.now(timezone.utc).isoformat())
-        return prices, '' if prices else 'Источник Закупай не вернул числовые лучшие цены'
+        return prices, '' if prices else 'Источник Закупай не вернул числовые лучшие цены; ' + browser_status
     except (requests.RequestException, ValueError, TypeError):
-        return {}, 'Не удалось проверить числовые лучшие цены Закупай'
+        return {}, 'Не удалось проверить числовые лучшие цены Закупай; ' + browser_status
 
 
 def saved_reviews():
@@ -95,14 +116,14 @@ def probe_provider_once(headers, base):
     for entry in rows:
         saved_report = json.loads(entry['report_json'])
         previous = timestamp(saved_report.get('provider_checked_at'))
-        if saved_report.get('provider_probe_version') == 3 and previous and (clock - previous).total_seconds() < 86400: return
+        if saved_report.get('provider_probe_version') == 4 and previous and (clock - previous).total_seconds() < 86400: return
     with database() as conn:
         saved = execute(conn, 'SELECT order_json FROM automation_jobs WHERE id=?', (row['job_id'],)).fetchone()
     if not saved: return
     prices, error = fetch_prices(json.loads(saved['order_json']), base, headers)
     count = sum(1 for price in prices.values() if price.get('price') is not None)
     report['provider_checked_at'] = clock.isoformat()
-    report['provider_probe_version'] = 3
+    report['provider_probe_version'] = 4
     report['provider_result'] = error or ('Числовых цен получено: ' + str(count)
         + '. Единицы, НДС и доставка проверяются отдельно.')
     persist(row['job_id'], report)
