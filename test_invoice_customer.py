@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 from openpyxl import load_workbook
 
 import automation_pipeline as pipeline
-from invoice_generator import build_invoice_xlsx, customer_validation_error
+from invoice_generator import SELLER, build_invoice_xlsx, customer_validation_error
 from offer_panel_safe import install_offer_panel
 
 
@@ -66,7 +66,8 @@ class CustomerWorkflowTests(unittest.TestCase):
         pipeline.install_automation_pipeline(self.app, self.fetch)
         install_offer_panel(self.app, Mock(), lambda: {}, "https://example.invalid", lambda x: html.escape(str(x or ""), quote=True),
                             fetch_order_by_id=self.fetch, load_offer_context=pipeline.load_automation_offer_context,
-                            build_invoice=build_invoice_xlsx, order_hash=pipeline.commercial_order_hash)
+                            build_invoice=build_invoice_xlsx, order_hash=pipeline.commercial_order_hash,
+                            load_sellers=lambda: {'avior': SELLER}, save_invoice_settings=pipeline.save_invoice_settings)
         self.client = TestClient(self.app)
         self.customer_url = f"/dashboard/automation/jobs/{self.job_id}/customer"
         self.invoice_url = f"/dashboard/automation/jobs/{self.job_id}/invoice.xlsx"
@@ -114,11 +115,16 @@ class CustomerWorkflowTests(unittest.TestCase):
         self.assertNotIn("Получить ID позиций", response.text)
         get.assert_not_called()
 
+    @patch("offer_panel_safe.requests.get")
     @patch("offer_panel_safe.requests.post")
-    def test_submit_blocks_different_payer_returned_by_live_order(self, post):
+    def test_submit_blocks_different_payer_returned_by_live_order(self, post, get):
         self.client.post(self.customer_url, data=self.customer_form, follow_redirects=False)
         self.fetch.return_value = {**self.order, "customer": {**PAYER, "inn": "1234567890"}}
-        response = self.client.post(f"/dashboard/order/{self.order['id']}/offer/submit", data={"confirm_send": "SEND", "producer_offer_number": "262"})
+        get.return_value = Mock(ok=True, headers={'content-type': 'application/json'},
+                                json=lambda: {'accounts': [{'id': 'bank', 'accountNumber': SELLER['account'], 'company': {'inn': SELLER['inn']}}]})
+        response = self.client.post(f"/dashboard/order/{self.order['id']}/offer/submit", data={
+            "confirm_send": "SEND", "producer_offer_number": "262", 'destination_account_id': 'bank',
+            'seller_id': 'avior', 'vat_rate': '0.22', 'use_10': '1', 'qty_10': '2', 'price_10': '100', 'unit_10': 'шт'})
         self.assertEqual(response.status_code, 409)
         self.assertIn("отличаются", response.json()["detail"])
         post.assert_not_called()

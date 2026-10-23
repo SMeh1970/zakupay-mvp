@@ -230,6 +230,16 @@ class OfferSubmissionTests(unittest.TestCase):
         self.assertEqual(self.context['result']['items'][0]['quantity'], 2)
 
     @patch('offer_panel_safe.requests.post')
+    def test_selected_company_is_retained_when_order_is_unavailable(self, post):
+        self.fetch.return_value = None
+        response = self.client.post(self.url, data={**self.form, 'seller_id': 'sv', 'destination_account_id': 'sv-bank'})
+        self.assertEqual(response.status_code, 409)
+        self.save_settings.assert_called_once_with(456, self.sv, 'sv-bank', 0.22)
+        self.assertIn('/dashboard/automation/jobs/456/invoice.xlsx', response.text)
+        self.invoice.assert_not_called()
+        post.assert_not_called()
+
+    @patch('offer_panel_safe.requests.post')
     def test_mismatched_company_or_bank_is_rejected_before_upload(self, post):
         for changes in ({'seller_id': 'sv'}, {'seller_id': 'avior', 'destination_account_id': 'sv-bank'}):
             with self.subTest(changes=changes):

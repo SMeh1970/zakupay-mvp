@@ -672,6 +672,21 @@ def install_offer_panel(
         if customer_error:
             raise HTTPException(status_code=409, detail=customer_error)
 
+        # Keep the operator's selected company even if the subsequent order
+        # check cannot complete. The saved invoice must not revert to AVIOR.
+        payload = _build_payload(order, form, 'pending')
+        try:
+            seller, account_id, vat = await _bounded_call(_resolve_settings, form, result, deadline=ORDER_CHECK_DEADLINE_SECONDS)
+            if save_invoice_settings is None:
+                raise ValueError('Сохранение реквизитов не подключено')
+            await run_in_threadpool(save_invoice_settings, context['job_id'], seller, account_id, vat)
+            result.update(seller=seller, destination_account_id=account_id, vat_rate=vat)
+        except (ValueError, LookupError) as exc:
+            raise HTTPException(409, str(exc))
+        except asyncio.TimeoutError:
+            return _not_sent_page(order_id, 'Закупай не ответил при проверке банковского счёта. Счёт не загружен и предложение не отправлено.')
+        invoice_draft = _invoice_draft(result, order, payload, form)
+
         if fetch_order_by_id is None or order_hash is None:
             raise HTTPException(status_code=503, detail="Контроль актуальности заявки не подключён")
         logger.warning("invoice submission order=%s stage=order_check started", order_id)
@@ -712,21 +727,7 @@ def install_offer_panel(
                 status_code=409,
                 detail=f"Счёт устарел и не отправлен: {details}. Запустите новый подбор по обновлённой заявке.",
             )
-        # Apply exactly the selected seller and tax rate to the attachment.
-        # An account selection alone must never silently retain AVIOR.
-        payload = _build_payload(order, form, 'pending')
         try:
-            seller, account_id, vat = await _bounded_call(_resolve_settings, form, result, deadline=ORDER_CHECK_DEADLINE_SECONDS)
-            if save_invoice_settings is None:
-                raise ValueError('Сохранение реквизитов не подключено')
-            await run_in_threadpool(save_invoice_settings, context['job_id'], seller, account_id, vat)
-            result.update(seller=seller, destination_account_id=account_id, vat_rate=vat)
-        except (ValueError, LookupError) as exc:
-            raise HTTPException(409, str(exc))
-        except asyncio.TimeoutError:
-            return _not_sent_page(order_id, 'Закупай не ответил при проверке банковского счёта. Счёт не загружен и предложение не отправлено.')
-        try:
-            invoice_draft = _invoice_draft(result, order, payload, form)
             invoice_body = await run_in_threadpool(build_invoice, invoice_draft)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
