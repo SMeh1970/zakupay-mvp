@@ -295,6 +295,7 @@ def offer_view(item, candidate):
     total = round(price * quantity, 2) if price is not None and quantity is not None else None
     return dict(key=key, supplier=str(candidate.get("supplier") or "ВсеИнструменты.ру"), name=candidate.get("name"),
                 price=price, unit=supplier_unit, requested_unit=requested_unit, quantity=quantity,
+                sku=str(candidate.get("sku") or candidate.get("catalog_product_id") or ""),
                 converted_quantity=converted, shortage=max(0, need - converted) if converted is not None and need is not None else None,
                 quantity_differs=differs_qty, quantity_id=qty_id, quantity_state=qty_decision,
                 unit_differs=unit_differs, unit_id=unit_id, unit_state=unit_decision,

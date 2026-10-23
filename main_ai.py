@@ -45,7 +45,7 @@ from abacus_mcp import install_abacus_mcp
 
 ai_panel.analyze_order = analyze_order_v2
 
-DEPLOY_MARKER = "compact-shared-comparison-2026-10-23"
+DEPLOY_MARKER = "comparison-density-2026-10-23"
 
 
 @app.on_event("startup")
