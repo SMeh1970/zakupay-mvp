@@ -34,6 +34,43 @@ def accept_name(result, key):
 
 
 class ComparisonLogicTests(unittest.TestCase):
+    def test_shared_quantity_decision_applies_only_to_same_amount_unit_and_row(self):
+        a, b, c = quote("А", offered_quantity=56), quote("Б", offered_quantity=56), quote("В", offered_quantity=55)
+        result = result_with(a, b, c)
+        result["items"].append({**copy.deepcopy(result["items"][0]), "position": 2})
+        comparison.mutate(result, dict(action="quantity", position=1, key=comparison.quote_key(a), decision="accepted", scope="row_value"))
+        row1, row2 = comparison.model(result)["rows"]
+        self.assertEqual([o["quantity_state"] for o in row1["offers"]], ["accepted", "accepted", "pending"])
+        self.assertTrue(all(o["quantity_state"] == "pending" for o in row2["offers"]))
+        self.assertEqual(row1["quantity"], 60)
+        self.assertEqual(row1["offers"][1]["shortage"], 4)
+        comparison.mutate(result, dict(action="quantity", position=1, key=comparison.quote_key(b), decision="rejected", scope="row_value"))
+        self.assertTrue(all(not o["eligible"] for o in comparison.model(result)["rows"][0]["offers"]))
+
+    def test_shared_unit_acknowledgement_never_invents_a_conversion(self):
+        a, b = {**quote("А"), "unit": "т", "offered_quantity": 2}, {**quote("Б"), "unit": "т", "offered_quantity": 2}
+        result = result_with(a, b)
+        comparison.mutate(result, dict(action="unit", position=1, key=comparison.quote_key(a), decision="accepted"))
+        views = comparison.model(result)["rows"][0]["offers"]
+        self.assertTrue(all(o["unit_state"] == "accepted" for o in views))
+        self.assertTrue(all(o["factor"] is None and not o["eligible"] for o in views))
+        comparison.mutate(result, dict(action="unit", position=1, key=comparison.quote_key(b), decision="rejected"))
+        self.assertTrue(all("Единица предложения отклонена" in o["reasons"] for o in comparison.model(result)["rows"][0]["offers"]))
+
+    def test_row_characteristic_decision_does_not_accept_short_quantity_or_other_rows(self):
+        a = quote("А", "Труба 89х2 мм", offered_quantity=56)
+        b = quote("Б", "Труба 89х2 мм", offered_quantity=60)
+        result = result_with(a, b)
+        result["items"].append({**copy.deepcopy(result["items"][0]), "position": 2})
+        comparison.mutate(result, dict(action="row_features", position=1, decision="accepted"))
+        row1, row2 = comparison.model(result)["rows"]
+        self.assertFalse(row1["offers"][0]["eligible"])
+        self.assertEqual(row1["offers"][0]["quantity_state"], "pending")
+        self.assertTrue(row1["offers"][1]["eligible"])
+        self.assertFalse(row2["offers"][1]["eligible"])
+        comparison.mutate(result, dict(action="row_features", position=1, decision="rejected"))
+        self.assertFalse(any(o["eligible"] for o in comparison.model(result)["rows"][0]["offers"]))
+
     def test_reject_parameter_propagates_across_suppliers_but_not_other_parameters_or_positions(self):
         a, b, c = quote("А", "Труба профильная 40х40х2 мм"), quote("Б", "Труба профильная 40x40x2,0 мм"), quote("В", "Труба профильная 40х40х3 мм")
         result = result_with(a,b,c,name="Труба профильная 40х40х3 мм")

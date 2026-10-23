@@ -230,6 +230,9 @@ def offer_view(item, candidate):
     price, need = number(candidate.get("price")), number(source.get("quantity"))
     supplier_unit = str(candidate.get("unit") or "не указана")
     requested_unit = str(source.get("unit") or "ед.")
+    unit_differs = unit(supplier_unit) != unit(requested_unit)
+    unit_id = feature_id("Единица предложения", unit(supplier_unit) + "->" + unit(requested_unit))
+    unit_decision = (state.get("units") or {}).get(unit_id, "pending") if unit_differs else "matched"
     explicit_qty = number(candidate.get("offered_quantity"))
     if explicit_qty is None:
         explicit_qty = number(candidate.get("qty"))
@@ -270,6 +273,8 @@ def offer_view(item, candidate):
     reasons = []
     if rejected:
         reasons.append("Отклонена характеристика")
+    if unit_decision == "rejected":
+        reasons.append("Единица предложения отклонена")
     if pending:
         reasons.append("Проверьте отличия в наименовании")
     if differs_qty and qty_decision != "accepted":
@@ -292,6 +297,7 @@ def offer_view(item, candidate):
                 price=price, unit=supplier_unit, requested_unit=requested_unit, quantity=quantity,
                 converted_quantity=converted, shortage=max(0, need - converted) if converted is not None and need is not None else None,
                 quantity_differs=differs_qty, quantity_id=qty_id, quantity_state=qty_decision,
+                unit_differs=unit_differs, unit_id=unit_id, unit_state=unit_decision,
                 factor=factor, factor_source=factor_source, unit_price=round(price / factor, 6) if price is not None and factor else None,
                 total=total, features=features, eligible=admissible, reasons=reasons,
                 enabled=state.get("cells", {}).get(key) is not False,
@@ -467,6 +473,14 @@ def mutate(result, payload, conn=None):
             if decision not in {"accepted", "rejected", "pending"} or not any(f["id"] == identifier for v in views for f in v["features"]):
                 raise ValueError("Характеристика не найдена")
             state.setdefault("features", {})[identifier] = decision
+        elif action == "row_features":
+            decision = payload.get("decision")
+            if decision not in {"accepted", "rejected"}:
+                raise ValueError("Неверное решение")
+            for view in views:
+                for feature in view["features"]:
+                    if feature["differs"] or feature["state"] in {"pending", "rejected"}:
+                        state.setdefault("features", {})[feature["id"]] = decision
         elif action == "reset":
             # Reset decisions, retain the immutable original request.
             item["comparison"] = {"request_signature": signature(item)}
@@ -486,7 +500,20 @@ def mutate(result, payload, conn=None):
                 decision = payload.get("decision")
                 if decision not in {"accepted", "rejected", "pending"} or not view["quantity_differs"]:
                     raise ValueError("Количество не отличается")
-                state.setdefault("quantities", {})[view["key"]] = {"id": view["quantity_id"], "decision": decision}
+                targets = [view]
+                if payload.get("scope") == "row_value":
+                    targets = [v for v in views if v["quantity_differs"]
+                               and unit(v["unit"]) == unit(view["unit"])
+                               and v["quantity"] == view["quantity"]
+                               and v["converted_quantity"] == view["converted_quantity"]
+                               and not v.get("quantity_unconfirmed")]
+                for target in targets:
+                    state.setdefault("quantities", {})[target["key"]] = {"id": target["quantity_id"], "decision": decision}
+            elif action == "unit":
+                decision = payload.get("decision")
+                if decision not in {"accepted", "rejected", "pending"} or not view["unit_differs"]:
+                    raise ValueError("Единица не отличается")
+                state.setdefault("units", {})[view["unit_id"]] = decision
             elif action == "cell":
                 if not isinstance(payload.get("enabled"), bool):
                     raise ValueError("Некорректный переключатель")
@@ -544,14 +571,13 @@ def install_supplier_comparison(app):
         nonce = security.secrets.token_urlsafe(18)
         content = f"""<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Сравнение поставщиков · Закупай</title><link rel="stylesheet" href="/dashboard/comparison/assets/comparison.css"></head><body>
         <nav><a href="/dashboard/automation">Закупай <span>MVP</span></a><a href="/dashboard/automation/jobs/{job_id}/review">← К проверке заявки</a><a href="/dashboard/prices">Прайсы</a></nav>
-        <main><div class="eyebrow">ЗАКУПКИ / СРАВНЕНИЕ ПРЕДЛОЖЕНИЙ</div><h1>Выбрать поставщиков</h1><p id="order-title" class="subtitle"></p>
-        <div id="message" role="status" aria-live="polite"></div><section id="summary" class="summary"></section>
-        <section class="toolbar"><button id="load-catalog">Подобрать из прайсов</button><label>Показывать и выбирать минимум по <select id="mode"><option value="sum">сумме предложения</option><option value="price">цене за единицу заявки</option></select></label><label><input type="checkbox" id="show-excluded" checked> Показывать исключённые</label><button id="show-all">Показать все столбцы</button><button id="export">Скачать CSV</button></section>
-        <p class="hint">«Подобрать из прайсов» использует подготовленную базу без запросов к API и интернету. Характеристики показываются с источниками. Исправление распознавания открывается в карточке товара; принятие отклонения относится к этой позиции заявки.</p>
-        <p class="hint">✓ принимает известное значение характеристики у всех поставщиков этой позиции. ✗ исключает предложения с этим значением. Неизвестные и неоднозначные значения рассматриваются отдельно у каждого предложения. Решение по количеству относится к конкретному предложению. Пересчёт единиц показан отдельно.</p>
-        <div id="supplier-toggles" class="supplier-toggles"></div><section class="matrix-wrap" aria-label="Сравнительная таблица"><table id="matrix"></table></section>
-        <p class="legend"><span class="dot green"></span> Минимум среди допущенных <span class="dot orange"></span> Требует решения <span class="dot gray"></span> Исключено</p>
-        <p class="hint">Итоги — по сохранённым закупочным ценам. Доставка в общий минимум не добавляется: её стоимость нужно подтвердить отдельно. Выбор переносится в проверку заявки; отправка выполняется из существующей формы подтверждения.</p>
+        <main><h1>Сравнение поставщиков — интерактивная таблица</h1><div id="order-title" class="sub"></div>
+        <div id="message" role="status" aria-live="polite"></div><section id="summary" class="summary-bar"></section>
+        <section class="toolbar"><button id="show-all">Показать все скрытые столбцы</button><button id="load-catalog">Подобрать из прайсов</button><button id="export">Скачать CSV</button><label><input type="checkbox" id="show-excluded" checked> Показывать исключённые</label></section>
+        <section class="mode-switch" id="mode"><span class="mode-label">Показывать:</span><label><input type="radio" name="compareMode" value="sum"> суммы (₽ всего по количеству поставщика)</label><label><input type="radio" name="compareMode" value="price"> цены за единицу заявки (₽/ед.)</label></section>
+        <section class="matrix-wrap table-wrap" aria-label="Сравнительная таблица"><table id="matrix"></table></section>
+        <div class="legend"><span><i class="swatch min-swatch"></i> минимальная сумма среди допущенных</span><span><i class="diff-badge">!</i> требуется проверка</span><span>◉ выбран для закупки</span><span>○ выбрать поставщика</span></div>
+        <p class="note-foot">Галочка в шапке исключает поставщика, галочка у цены — отдельное предложение. Клик по цене раскрывает под заявкой наименование, количество и единицу поставщика. ✓/✗ у характеристики или единицы действует у всех поставщиков этой позиции; решение по количеству — у предложений с таким же количеством и единицей. Пересчёт единиц открывается отдельно. Скрытый столбец участвует в расчёте.</p>
         <noscript>Для интерактивного сравнения включите JavaScript. Обычная проверка заявки доступна по ссылке выше.</noscript></main>
         <script nonce="{nonce}" type="application/json" id="comparison-data">{serialized}</script><script nonce="{nonce}" src="/dashboard/comparison/assets/comparison.js"></script></body></html>"""
         return HTMLResponse(content, headers={"Cache-Control": "no-store", "Content-Security-Policy": f"default-src 'none'; script-src 'nonce-{nonce}'; style-src 'self'; connect-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"})
