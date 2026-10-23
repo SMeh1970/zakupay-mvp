@@ -412,3 +412,5 @@ nav{display:flex;gap:20px;margin-bottom:20px;font-size:calc(12px * var(--table-f
 #cmpTable .diff-btn.tiny{width:1.75em;height:1.75em}
 #cmpTable .diff-badge{width:1.4em;height:1.4em}
 #cmpTable input[type=checkbox]{width:calc(13px * var(--table-font-scale));height:calc(13px * var(--table-font-scale))}
+
+#cmpTable th.item-col,#cmpTable td.item-col{width:calc(300px * var(--table-font-scale));min-width:calc(300px * var(--table-font-scale));max-width:calc(300px * var(--table-font-scale))}
