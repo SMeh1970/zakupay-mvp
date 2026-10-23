@@ -150,8 +150,9 @@ def build_invoice_xlsx(draft: dict) -> bytes:
     ws["D3"] = f"р/с {seller['account']}"
 
     number = draft.get("invoice_number")
+    invoice_date = date.fromisoformat(str(draft["invoice_date"])) if draft.get("invoice_date") else date.today()
     ws.merge_cells("A5:F5")
-    ws["A5"] = f"Счёт на оплату № {number} от {date.today().strftime('%d.%m.%Y')}"
+    ws["A5"] = f"Счёт на оплату № {number} от {invoice_date.strftime('%d.%m.%Y')}"
     ws["A5"].font = title
 
     ws.merge_cells("A7:F7")

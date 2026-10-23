@@ -1,4 +1,5 @@
 import asyncio
+import copy
 import json
 import hashlib
 import logging
@@ -403,6 +404,28 @@ def install_offer_panel(
             raise HTTPException(status_code=502, detail={"stage": "file_upload", "error": "Закупай не вернул id файла", "response": data})
         return file_id, data
 
+    def _invoice_draft(result, order, payload, form):
+        """The attachment must represent the same rows the operator submits."""
+        from supplier_comparison import selected_allowed
+        approved = {
+            str(item.get("order_item_id")): item for item in result.get("items") or []
+            if item.get("decision") in {"approved", "auto_ready"} and selected_allowed(item)
+        }
+        draft = copy.deepcopy(result)
+        draft.update(order_id=order["id"], invoice_number=payload["producerOfferNumber"],
+                     invoice_date=payload["producerOfferDate"], items=[])
+        for position, submitted in enumerate(payload["offerItems"], 1):
+            iid = str(submitted["item"]["orderItem"]["id"])
+            if iid not in approved:
+                raise HTTPException(409, "В счёт включена неподтверждённая позиция. Вернитесь к проверке заявки.")
+            item = copy.deepcopy(approved[iid])
+            item.update(position=position, quantity=float(submitted["count"]),
+                        unit=submitted["unitName"],
+                        proposed_unit_price=_num(form.get(f"price_{iid}"), f"цена позиции {iid}"))
+            item["selected"] = {**(item.get("selected") or {}), "name": submitted["providerGoodName"]}
+            draft["items"].append(item)
+        return draft
+
     @app.get("/dashboard/order/{order_id}/offer/accounts", response_class=HTMLResponse)
     def offer_accounts(order_id: int):
         _get_context(order_id)
@@ -691,7 +714,7 @@ def install_offer_panel(
             )
         # Apply exactly the selected seller and tax rate to the attachment.
         # An account selection alone must never silently retain AVIOR.
-        _build_payload(order, form, 'pending')
+        payload = _build_payload(order, form, 'pending')
         try:
             seller, account_id, vat = await _bounded_call(_resolve_settings, form, result, deadline=ORDER_CHECK_DEADLINE_SECONDS)
             if save_invoice_settings is None:
@@ -703,10 +726,11 @@ def install_offer_panel(
         except asyncio.TimeoutError:
             return _not_sent_page(order_id, 'Закупай не ответил при проверке банковского счёта. Счёт не загружен и предложение не отправлено.')
         try:
-            invoice_body = await run_in_threadpool(build_invoice, result)
+            invoice_draft = _invoice_draft(result, order, payload, form)
+            invoice_body = await run_in_threadpool(build_invoice, invoice_draft)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
-        filename = invoice_filename({**result, 'order_id': order_id})
+        filename = invoice_filename(invoice_draft)
         if begin_submission is None or finish_submission is None:
             raise HTTPException(status_code=503, detail="Защита отправки не подключена")
         logger.warning("invoice submission order=%s stage=file_upload started", order_id)
@@ -722,7 +746,7 @@ def install_offer_panel(
                 "Не удалось завершить загрузку файла счёта в Закупай. "
                 "Создание предложения не запускалось.",
             )
-        payload = _build_payload(order, form, file_id)
+        payload["files"] = [{"id": str(file_id)}]
         commercial_payload = dict(payload)
         commercial_payload.pop("files", None)
         stable_payload = json.dumps(commercial_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))

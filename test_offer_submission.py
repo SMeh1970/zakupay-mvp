@@ -203,6 +203,33 @@ class OfferSubmissionTests(unittest.TestCase):
         self.assertEqual(self.invoice.call_args.args[0]['vat_rate'], 0.2)
 
     @patch('offer_panel_safe.requests.post')
+    def test_attachment_matches_selected_rows_edits_date_and_submitted_totals(self, post):
+        self.context['result']['items'][0].update(selected={'name': 'Старое название'}, proposed_unit_price=100)
+        self.order['orderItems'].append({'id': 11, 'goodName': 'Исключённый товар', 'count': 5})
+        self.context['result']['items'].append({'order_item_id': 11, 'decision': 'approved', 'quantity': 5,
+                                              'unit': 'шт', 'selected': {'name': 'Исключённый товар'}, 'proposed_unit_price': 400})
+        self.fetch.return_value = copy.deepcopy(self.order)
+        self.invoice.side_effect = build_invoice_xlsx
+        post.side_effect = [self.upload(), self.response({'id': 'offer-edited'})]
+        response = self.client.post(self.url, data={**self.form, 'qty_10': '3', 'price_10': '125,50',
+                                                   'provider_name_10': 'Исправленный товар', 'unit_10': 'упак'})
+        self.assertEqual(response.status_code, 200, response.text)
+        workbook = load_workbook(BytesIO(post.call_args_list[0].kwargs['files']['file'][1]))
+        sheet = workbook.active
+        self.assertEqual(sheet['A5'].value, 'Счёт на оплату № 278 от 22.10.2026')
+        invoice_row = next(row for row in sheet if len(row) >= 6 and row[1].value == 'Исправленный товар')
+        self.assertEqual([cell.value for cell in invoice_row[1:6]],
+                         ['Исправленный товар', 3, 'упак', 125.5, 376.5])
+        text = ' '.join(str(c.value or '') for row in sheet for c in row)
+        self.assertNotIn('Исключённый товар', text)
+        payload = post.call_args_list[1].kwargs['json']
+        self.assertEqual(len(payload['offerItems']), 1)
+        self.assertEqual(float(payload['offerItems'][0]['amount']), invoice_row[5].value)
+        self.assertEqual(payload['producerOfferDate'], '2026-10-22')
+        # The saved comparison remains the source for later review.
+        self.assertEqual(self.context['result']['items'][0]['quantity'], 2)
+
+    @patch('offer_panel_safe.requests.post')
     def test_mismatched_company_or_bank_is_rejected_before_upload(self, post):
         for changes in ({'seller_id': 'sv'}, {'seller_id': 'avior', 'destination_account_id': 'sv-bank'}):
             with self.subTest(changes=changes):
