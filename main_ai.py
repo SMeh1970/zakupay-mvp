@@ -44,7 +44,13 @@ from abacus_mcp import install_abacus_mcp
 
 ai_panel.analyze_order = analyze_order_v2
 
-DEPLOY_MARKER = "invoice-explicit-order-lookup-2026-10-22"
+DEPLOY_MARKER = "order-read-diagnostic-2026-10-23"
+
+
+@app.on_event("startup")
+def start_order_diagnostic():
+    from order_diagnostics import start_configured_diagnostic
+    start_configured_diagnostic(ZAKUPAY_BASE_URL, zakupay_headers)
 
 
 @app.get("/version")
