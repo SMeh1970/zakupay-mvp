@@ -78,13 +78,12 @@ def diagnose_order_lookup(order_id, base_url, headers, *, get=None):
 
     common = {"ids": order_id, "format": "json", "isoDate": "true", "ignoreKeywordFilter": "true"}
     cases = [("current", common)]
-    cases.append(("explicit_page", {**common, "count": 1, "page": 1}))
-    # These flags are in the integration's previously reviewed specification.
-    # The public Swagger URL can return an index instead of the supplier spec.
-    scope = {key: "true" for key in sorted((PROFILE_FLAGS & documented) or PROFILE_FLAGS)}
-    cases.append(("profile_scope", {**common, "count": 1, "page": 1, **scope}))
-    cases.append(("support_exact", {"ids": order_id}))
-    cases.append(("visible_feed_control", {"format": "json", "isoDate": "true", "pageSize": 1, "page": 1, "ignoreKeywordFilter": "true", **scope}))
+    with_offers = {**common, "showWithMyOffers": "true"}
+    cases.append(("include_existing_offers", with_offers))
+    for status in ("actual", "not-actual", "closed"):
+        cases.append(("status_" + status, {**with_offers, "status": status}))
+    cases.append(("canonical_visibility", {**with_offers, "fromAllCompanies": "true", "allRegions": "true", "allCategories": "true"}))
+    cases.append(("visible_feed_control", {"format": "json", "isoDate": "true", "pageSize": 1, "page": 1}))
     for label, params in cases:
         if time.monotonic() >= deadline:
             logger.warning("order diagnostic order=%s stopped=deadline", order_id)
@@ -104,6 +103,10 @@ def diagnose_order_lookup(order_id, base_url, headers, *, get=None):
                 "returned": len(orders), "found": bool(matches),
                 "items": len(matches[0].get("orderItems") or []) if matches else 0,
             }
+            if matches:
+                from main import has_my_offer
+                result["has_my_offer"] = has_my_offer(matches[0])
+                result["actuality"] = matches[0].get("actualityStatus") if matches[0].get("actualityStatus") in {"ACTUAL", "NOT_ACTUAL", "CLOSED"} else None
             if isinstance(data, dict):
                 result["pagination"] = {key: data[key] for key in ("count", "page", "pageSize") if isinstance(data.get(key), (int, float))}
             logger.warning("order diagnostic result=%s", json.dumps(result, ensure_ascii=False))
