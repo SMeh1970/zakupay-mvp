@@ -12,9 +12,9 @@ from urllib.parse import urlparse
 
 import requests
 from fastapi import HTTPException, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 from starlette.concurrency import run_in_threadpool
-from invoice_generator import customer_validation_error, normalize_customer
+from invoice_generator import customer_validation_error, normalize_customer, validate_seller, invoice_filename
 
 TOKEN_CHECK_PATH = os.getenv("ZAKUPAY_TOKEN_CHECK_PATH", "/api/v1/util/check/token?format=xml")
 FILE_UPLOAD_PATH = os.getenv("ZAKUPAY_FILE_UPLOAD_PATH", "/core/files/upload?format=xml")
@@ -52,7 +52,20 @@ def install_offer_panel(
     order_hash=None,
     order_changes=None,
     build_invoice=None,
+    load_sellers=None,
+    save_invoice_settings=None,
 ):
+    def _seller_profiles(result):
+        if load_sellers is None:
+            from porcelain import sellers
+            profiles = sellers()
+        else:
+            profiles = dict(load_sellers())
+        # Preserve the exact requisites already approved for this job.
+        if result.get('seller'):
+            profiles['saved'] = result['seller']
+        return profiles
+
     def _get_context(order_id: int):
         context = load_offer_context(order_id) if load_offer_context else None
         if not context:
@@ -202,7 +215,8 @@ def install_offer_panel(
                 ),
                 "accountNumber": _find_first_named_value(
                     node, {"accountNumber", "settlementAccount", "checkingAccount", "currentAccount", "rs"}
-                ),
+                ) or node.get('number'),
+                "company_inn": str(company_data.get('inn') or node.get('companyInn') or '').strip(),
                 "company_name": company_data.get("name"),
                 "company_shortName": company_data.get("shortName"),
                 "currency_id": currency_data.get("id"),
@@ -217,6 +231,35 @@ def install_offer_panel(
         if not accounts:
             return [], "Ответ check/token получен, но банковские счета в нём не найдены"
         return accounts, ""
+
+    def _resolve_settings(form, result):
+        accounts, error = _portal_accounts()
+        if error:
+            raise ValueError('Не удалось проверить принадлежность банковского счёта: ' + error)
+        account = next((a for a in accounts if str(a['id']) == str(form.get('destination_account_id') or '')), None)
+        if not account:
+            raise ValueError('Выберите банковский счёт из списка Закупай')
+        profiles = _seller_profiles(result)
+        seller = profiles.get(str(form.get('seller_id') or ''))
+        if form.get('seller_id') and not seller:
+            raise ValueError('Выбранная фирма больше не найдена. Обновите форму и выберите её реквизиты.')
+        if not seller:
+            # Older open forms only submitted a bank account. Resolve it by
+            # its actual requisites, never by a global default or display name.
+            matches = [p for p in profiles.values() if str(p.get('account')) == str(account.get('accountNumber'))
+                       and (not account.get('company_inn') or str(p.get('inn')) == account['company_inn'])]
+            unique = {(p.get('inn'), p.get('account')): p for p in matches}
+            if len(unique) == 1:
+                seller = next(iter(unique.values()))
+        seller = validate_seller(seller)
+        if str(account.get('accountNumber') or '') != seller['account']:
+            raise ValueError('Банковский счёт Закупай не совпадает со счётом выбранной фирмы. Счёт не отправлен.')
+        if account.get('company_inn') and account['company_inn'] != seller['inn']:
+            raise ValueError('ИНН банковского счёта Закупай не совпадает с выбранной фирмой. Счёт не отправлен.')
+        vat = _num(form.get('vat_rate'), 'НДС')
+        if vat not in (0, 0.1, 0.2, 0.22):
+            raise ValueError('Выберите ставку НДС')
+        return seller, str(account['id']), vat
 
     def _num(value, field_name):
         try:
@@ -426,10 +469,25 @@ def install_offer_panel(
             blockers.append("не выбрано ни одной позиции для счёта")
 
         accounts, account_error = _portal_accounts() if not customer_error else ([], "")
-        configured_account = os.getenv("ZAKUPAY_DESTINATION_ACCOUNT_ID", "").strip()
+        profiles = _seller_profiles(result)
+        seller_options = "".join(
+            f"<option value='{esc(key)}' {'selected' if key == 'saved' else ''}>{esc(p['name'])} · ИНН {esc(p['inn'])} · р/с {esc(p['account'])}</option>"
+            for key, p in profiles.items() if key == 'saved' or p != result.get('seller')
+        )
+        seller_field = f"<select name='seller_id' required><option value=''>Выберите нашу фирму</option>{seller_options}</select>"
+        vat_field = '<select name="vat_rate" required>' + ''.join(
+            f"<option value='{value}' {'selected' if value == result.get('vat_rate', 0.22) else ''}>{label}</option>"
+            for value, label in ((0.22, '22%'), (0.2, '20%'), (0.1, '10%'), (0, 'Без НДС'))
+        ) + '</select>'
+        configured_account = str(result.get('destination_account_id') or '')
+        if not configured_account and result.get('seller'):
+            matches = [a for a in accounts if str(a.get('accountNumber')) == result['seller'].get('account')
+                       and (not a.get('company_inn') or a['company_inn'] == result['seller'].get('inn'))]
+            if len(matches) == 1:
+                configured_account = str(matches[0]['id'])
         if accounts:
             account_options = "".join(
-                f"<option value='{esc(a.get('id'))}' {'selected' if str(a.get('id')) == configured_account or (not configured_account and len(accounts) == 1) else ''}>{esc(a.get('label'))}</option>"
+                f"<option value='{esc(a.get('id'))}' {'selected' if str(a.get('id')) == configured_account else ''}>{esc(a.get('label'))}</option>"
                 for a in accounts
             )
             account_field = f"<select name='destination_account_id' required><option value=''>Выберите счёт</option>{account_options}</select>"
@@ -468,8 +526,23 @@ def install_offer_panel(
         disabled = "disabled" if blockers else ""
         customer = normalize_customer(result.get("customer"))
         invoice_number = result.get("invoice_number") or context.get("invoice_number") or ""
-        html = f"""<!doctype html><html lang='ru'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>Предложение {order_id}</title><style>body{{font-family:Arial;margin:24px;background:#f4f6f8;color:#202124}}.card{{background:#fff;padding:18px;border-radius:12px;margin-bottom:18px}}.grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:12px}}label{{display:block;font-size:12px;margin:6px 0 4px}}input,select,textarea{{width:100%;box-sizing:border-box;padding:8px}}table{{width:100%;border-collapse:collapse;font-size:13px}}th,td{{padding:8px;border-bottom:1px solid #ddd;vertical-align:top}}th{{text-align:left;background:#eee}}button{{padding:12px 18px;background:#c62828;color:white;border:0;border-radius:8px;font-weight:bold}}button:disabled{{background:#999}}input[type=checkbox]{{width:auto}}.ok{{background:#edf8ef;padding:10px;border-radius:8px}}.warn{{background:#fff0e8;padding:10px;border-radius:8px;margin:10px 0}}</style></head><body><p><a href='/dashboard/automation/jobs/{job_id}/review'>← К проверке заявки</a></p><h1>Подтверждение предложения в Закупай</h1><div class='card'><div class='ok'>Используется сохранённая заявка и последний проверенный подбор. Перед отправкой выполняется контрольная сверка с Закупай. Счёт сформируется автоматически.</div><p><a href='/dashboard/order/{order_id}/offer/verify'>Проверить доступность заявки без отправки счёта</a></p>{warning}<p><b>Заявка:</b> {esc(order.get('id'))} — {esc(order.get('name'))}<br><b>Позиций к отправке:</b> {len(included)}</p><form method='post' action='/dashboard/order/{order_id}/offer/submit'><div class='grid'><div><label>Банковский счёт ООО «АВИОР»</label>{account_field}</div><div><label>Номер счёта</label><input name='producer_offer_number' value='{esc(invoice_number)}' required></div><div><label>Дата</label><input type='date' name='producer_offer_date' value='{date.today().isoformat()}' required></div><div><label>Валюта ID</label><input name='currency_id' value='{esc(DEFAULT_CURRENCY_ID)}' required></div><div><label>НДС</label><select name='vat_rate'><option value='0.22' selected>22%</option><option value='0.2'>20%</option><option value='0.1'>10%</option><option value='0'>Без НДС</option></select></div><div><label>Предоплата, %</label><input type='number' name='prepayment_percent' min='0' max='100' value='100'></div><div><label>Отсрочка, дней</label><input type='number' name='delay_days' min='0' value='0'></div><div><label>Доставка включена</label><select name='delivery_included'><option value='1' selected>Да</option><option value='0'>Нет</option></select></div></div><p><label>Комментарий покупателю</label><textarea name='comment'>Частичное или полное предложение по подтверждённым позициям. Доставка включена в стоимость.</textarea></p><h3>Плательщик</h3><p>{esc(customer['name'])} · ИНН {esc(customer['inn'])} · КПП {esc(customer['kpp'] or 'не применяется')}</p><p><a href='/dashboard/automation/jobs/{job_id}/review'>Проверить или исправить реквизиты плательщика</a></p><h3>Позиции</h3><table><thead><tr><th>Включить</th><th>№</th><th>Заявка / предложение</th><th>Кол-во</th><th>Ед.</th><th>Цена за ед.</th><th>Наличие и срок</th></tr></thead><tbody>{rows}</tbody></table><div class='warn'>После нажатия кнопки счёт будет загружен, а предложение реально создано в Закупай. Повторная отправка этой обработки будет заблокирована.</div><p><label><input type='checkbox' name='confirm_send' value='SEND' required> Я проверил реквизиты плательщика, счёт, позиции, количества, цены и подтверждаю отправку.</label></p><button type='submit' {disabled}>Выставить счёт и отправить предложение</button></form></div></body></html>"""
+        html = f"""<!doctype html><html lang='ru'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>Предложение {order_id}</title><style>body{{font-family:Arial;margin:24px;background:#f4f6f8;color:#202124}}.card{{background:#fff;padding:18px;border-radius:12px;margin-bottom:18px}}.grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:12px}}label{{display:block;font-size:12px;margin:6px 0 4px}}input,select,textarea{{width:100%;box-sizing:border-box;padding:8px}}table{{width:100%;border-collapse:collapse;font-size:13px}}th,td{{padding:8px;border-bottom:1px solid #ddd;vertical-align:top}}th{{text-align:left;background:#eee}}button{{padding:12px 18px;background:#c62828;color:white;border:0;border-radius:8px;font-weight:bold}}button:disabled{{background:#999}}input[type=checkbox]{{width:auto}}.ok{{background:#edf8ef;padding:10px;border-radius:8px}}.warn{{background:#fff0e8;padding:10px;border-radius:8px;margin:10px 0}}</style></head><body><p><a href='/dashboard/automation/jobs/{job_id}/review'>← К проверке заявки</a></p><h1>Подтверждение предложения в Закупай</h1><div class='card'><div class='ok'>Используется сохранённая заявка и последний проверенный подбор. Перед отправкой выполняется контрольная сверка с Закупай. Счёт сформируется автоматически.</div><p><a href='/dashboard/order/{order_id}/offer/verify'>Проверить доступность заявки без отправки счёта</a></p>{warning}<p><b>Заявка:</b> {esc(order.get('id'))} — {esc(order.get('name'))}<br><b>Позиций к отправке:</b> {len(included)}</p><form method='post' action='/dashboard/order/{order_id}/offer/submit'><div class='grid'><div><label>Наша фирма — продавец в счёте</label>{seller_field}</div><div><label>Банковский счёт выбранной фирмы в Закупай</label>{account_field}</div><div><label>Номер счёта</label><input name='producer_offer_number' value='{esc(invoice_number)}' required></div><div><label>Дата</label><input type='date' name='producer_offer_date' value='{date.today().isoformat()}' required></div><div><label>Валюта ID</label><input name='currency_id' value='{esc(DEFAULT_CURRENCY_ID)}' required></div><div><label>НДС</label>{vat_field}</div><div><label>Предоплата, %</label><input type='number' name='prepayment_percent' min='0' max='100' value='100'></div><div><label>Отсрочка, дней</label><input type='number' name='delay_days' min='0' value='0'></div><div><label>Доставка включена</label><select name='delivery_included'><option value='1' selected>Да</option><option value='0'>Нет</option></select></div></div><p><label>Комментарий покупателю</label><textarea name='comment'>Частичное или полное предложение по подтверждённым позициям. Доставка включена в стоимость.</textarea></p><p><button type='submit' formaction='/dashboard/order/{order_id}/offer/settings' formnovalidate>Сохранить фирму и реквизиты без отправки</button></p><p><a href='/dashboard/automation/jobs/{job_id}/invoice.xlsx'>Скачать счёт с сохранёнными реквизитами</a> · <a href='/dashboard/tiles/sellers'>Реквизиты наших фирм</a></p><h3>Плательщик</h3><p>{esc(customer['name'])} · ИНН {esc(customer['inn'])} · КПП {esc(customer['kpp'] or 'не применяется')}</p><p><a href='/dashboard/automation/jobs/{job_id}/review'>Проверить или исправить реквизиты плательщика</a></p><h3>Позиции</h3><table><thead><tr><th>Включить</th><th>№</th><th>Заявка / предложение</th><th>Кол-во</th><th>Ед.</th><th>Цена за ед.</th><th>Наличие и срок</th></tr></thead><tbody>{rows}</tbody></table><div class='warn'>После нажатия кнопки счёт будет загружен, а предложение реально создано в Закупай. Повторная отправка этой обработки будет заблокирована.</div><p><label><input type='checkbox' name='confirm_send' value='SEND' required> Я проверил реквизиты плательщика, счёт, позиции, количества, цены и подтверждаю отправку.</label></p><button type='submit' {disabled}>Выставить счёт и отправить предложение</button></form></div></body></html>"""
         return HTMLResponse(html)
+
+    @app.post('/dashboard/order/{order_id}/offer/settings')
+    async def save_offer_settings(order_id: int, request: Request):
+        context = await run_in_threadpool(_get_context, order_id)
+        form = await request.form()
+        try:
+            seller, account_id, vat = await _bounded_call(_resolve_settings, form, context['result'], deadline=ORDER_CHECK_DEADLINE_SECONDS)
+            if save_invoice_settings is None:
+                raise ValueError('Сохранение реквизитов не подключено')
+            await run_in_threadpool(save_invoice_settings, context['job_id'], seller, account_id, vat)
+        except (ValueError, LookupError) as exc:
+            raise HTTPException(409, str(exc))
+        except asyncio.TimeoutError:
+            raise HTTPException(503, 'Закупай не ответил при проверке банковского счёта. Реквизиты не изменены.')
+        return RedirectResponse(f'/dashboard/order/{order_id}/offer', 303)
 
     @app.get("/dashboard/order/{order_id}/offer/verify", response_class=HTMLResponse)
     async def verify_offer_order(order_id: int):
@@ -616,13 +689,24 @@ def install_offer_panel(
                 status_code=409,
                 detail=f"Счёт устарел и не отправлен: {details}. Запустите новый подбор по обновлённой заявке.",
             )
+        # Apply exactly the selected seller and tax rate to the attachment.
+        # An account selection alone must never silently retain AVIOR.
+        _build_payload(order, form, 'pending')
+        try:
+            seller, account_id, vat = await _bounded_call(_resolve_settings, form, result, deadline=ORDER_CHECK_DEADLINE_SECONDS)
+            if save_invoice_settings is None:
+                raise ValueError('Сохранение реквизитов не подключено')
+            await run_in_threadpool(save_invoice_settings, context['job_id'], seller, account_id, vat)
+            result.update(seller=seller, destination_account_id=account_id, vat_rate=vat)
+        except (ValueError, LookupError) as exc:
+            raise HTTPException(409, str(exc))
+        except asyncio.TimeoutError:
+            return _not_sent_page(order_id, 'Закупай не ответил при проверке банковского счёта. Счёт не загружен и предложение не отправлено.')
         try:
             invoice_body = await run_in_threadpool(build_invoice, result)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
-        filename = f"AVIOR_invoice_{invoice_number}_order_{order_id}.xlsx"
-        # Validate the form before making any external write.
-        _build_payload(order, form, "pending")
+        filename = invoice_filename({**result, 'order_id': order_id})
         if begin_submission is None or finish_submission is None:
             raise HTTPException(status_code=503, detail="Защита отправки не подключена")
         logger.warning("invoice submission order=%s stage=file_upload started", order_id)

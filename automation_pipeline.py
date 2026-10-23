@@ -34,7 +34,7 @@ from supplier_adapters import KrepKompAdapter, VseinstrumentiAdapter, PriceListA
 from search_session import SearchSession
 from vi_order_match import _contains_brand, _identifiers, _label, _measurements, _norm, _requested_brands, _score_details
 from zakupay_email import parse_zakupay_email
-from invoice_generator import build_invoice_xlsx, customer_validation_error, normalize_customer
+from invoice_generator import build_invoice_xlsx, customer_validation_error, normalize_customer, validate_seller, invoice_filename
 from saved_dashboard import STATUSES, CATEGORY_PICKER_CSS, category_picker_script, filter_highlight_script, filter_form, listing_query, pagination, select_page
 from zakupay_categories import SCHEMA as CATEGORY_SCHEMA, load_categories, save_categories
 
@@ -1082,7 +1082,7 @@ def _gmail_draft_payload(result: dict, job_id: int) -> dict:
     summary = result.get("summary") or {}
     lines = [
         f"Заявка Закупай № {result.get('order_id')}",
-        f"Счёт ООО «АВИОР» № {result.get('invoice_number')}",
+        f"Счёт {(result.get('seller') or {}).get('name') or 'нашей фирмы'} № {result.get('invoice_number')}",
         "",
         f"Позиций: {summary.get('positions', 0)}",
         f"Готово автоматически: {summary.get('auto_ready', 0)}",
@@ -1128,9 +1128,7 @@ def _gmail_draft_payload(result: dict, job_id: int) -> dict:
             payload["subject"] = f"Проверка заявки Закупай № {result.get('order_id')} / счёт не сформирован"
             payload["body"] += "\n\n" + str(exc)
             return payload
-        payload["attachment_name"] = (
-            f"AVIOR_invoice_{result.get('invoice_number')}_order_{result.get('order_id')}.xlsx"
-        )
+        payload["attachment_name"] = invoice_filename(result)
         payload["attachment_base64"] = base64.b64encode(invoice).decode("ascii")
     return payload
 
@@ -1211,6 +1209,22 @@ def _order_list_details(row, result: dict) -> tuple[str, str]:
     return display_date, customer["name"] or "не указан"
 
 
+def invoice_result_for_job(result, job_id):
+    """Recover a seller selected in this job's saved tile quote, never another job."""
+    if result.get('seller'):
+        return result
+    with _connect() as conn:
+        quote = _execute(conn, 'SELECT snapshot_json FROM tile_quotes WHERE job_id=? ORDER BY id DESC LIMIT 1', (int(job_id),)).fetchone()
+    if quote:
+        snapshot = json.loads(quote['snapshot_json'])
+        if snapshot.get('seller'):
+            result = dict(result)
+            result['seller'] = validate_seller(snapshot['seller'])
+            if snapshot.get('vat_rate') in (0, 0.1, 0.2, 0.22):
+                result['vat_rate'] = snapshot['vat_rate']
+    return result
+
+
 def load_automation_offer_context(order_id: int) -> dict | None:
     """Return the latest locally persisted, reviewable application snapshot."""
     with _connect() as conn:
@@ -1224,7 +1238,7 @@ def load_automation_offer_context(order_id: int) -> dict | None:
         ).fetchone()
     if not row:
         return None
-    result = json.loads(row["result_json"])
+    result = invoice_result_for_job(json.loads(row["result_json"]), row['id'])
     order = _saved_order_snapshot(row, result)
     if not order:
         return None
@@ -1249,6 +1263,27 @@ def _preserve_invoice_customer(result: dict, previous: dict) -> None:
         for key in ("customer", "invoice_customer_confirmed_at", "invoice_customer_history"):
             if key in previous:
                 result[key] = previous[key]
+    for key in ('seller', 'destination_account_id', 'vat_rate', 'invoice_seller_confirmed_at'):
+        if key in previous:
+            result[key] = previous[key]
+
+
+def save_invoice_settings(job_id, seller, destination_account_id, vat_rate):
+    seller = validate_seller(seller)
+    if vat_rate not in (0, 0.1, 0.2, 0.22):
+        raise ValueError('Выберите ставку НДС')
+    with _lock, _connect() as conn:
+        row = _execute(conn, 'SELECT * FROM automation_jobs WHERE id=?', (int(job_id),)).fetchone()
+        if not row or not row['result_json']:
+            raise LookupError('Обработка заявки не найдена')
+        result = json.loads(row['result_json'])
+        submission = _execute(conn, 'SELECT status FROM offer_submissions WHERE job_id=? ORDER BY id DESC LIMIT 1', (int(job_id),)).fetchone()
+        if row['status'] == 'processing' or result.get('live_offer_created') or (submission and submission['status'] in {'sending', 'unknown'}):
+            raise ValueError('Изменение фирмы заблокировано: выполняется подбор или счёт уже отправлен / ожидает проверки отправки')
+        now = datetime.now(timezone.utc).isoformat()
+        result.update(seller=seller, destination_account_id=str(destination_account_id or ''), vat_rate=vat_rate, invoice_seller_confirmed_at=now)
+        _execute(conn, 'UPDATE automation_jobs SET result_json=?, updated_at=? WHERE id=?', (json.dumps(result, ensure_ascii=False), now, int(job_id)))
+    return result
 
 
 def save_invoice_customer(job_id: int, customer: dict) -> None:
@@ -2803,10 +2838,11 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
         if not row or not row["result_json"]:
             raise HTTPException(status_code=404, detail="Готовый счёт не найден")
         try:
-            content = build_invoice_xlsx(json.loads(row["result_json"]))
+            result = invoice_result_for_job(json.loads(row["result_json"]), job_id)
+            content = build_invoice_xlsx(result)
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc))
-        filename = f"AVIOR_invoice_{row['invoice_number']}_order_{row['order_id']}.xlsx"
+        filename = invoice_filename(result)
         return Response(content=content, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", headers={"Content-Disposition": f'attachment; filename="{filename}"'})
 
     @app.get("/automation/jobs/{job_id}/invoice.xlsx")
@@ -2817,12 +2853,12 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
             raise HTTPException(status_code=404, detail="Задание не найдено")
         if not row["result_json"]:
             raise HTTPException(status_code=409, detail=row["error"] or "Расчёт ещё не готов")
-        result = json.loads(row["result_json"])
+        result = invoice_result_for_job(json.loads(row["result_json"]), job_id)
         try:
             content = build_invoice_xlsx(result)
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc))
-        filename = f"AVIOR_invoice_{row['invoice_number']}_order_{row['order_id']}.xlsx"
+        filename = invoice_filename(result)
         return Response(
             content=content,
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",

@@ -13,10 +13,20 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from offer_panel_safe import install_offer_panel
+from invoice_generator import SELLER, build_invoice_xlsx
+from io import BytesIO
+from openpyxl import load_workbook
 
 
 class OfferSubmissionTests(unittest.TestCase):
     def setUp(self):
+        self.sv = {**SELLER, 'name': 'ООО «СВ»', 'inn': '5638073633', 'kpp': '561101001', 'account': '4' * 20}
+        self.accounts = [{'id': 'bank', 'accountNumber': SELLER['account'], 'company': {'inn': SELLER['inn'], 'name': SELLER['name']}},
+                         {'id': 'sv-bank', 'accountNumber': self.sv['account'], 'company': {'inn': self.sv['inn'], 'name': self.sv['name']}}]
+        get = patch('offer_panel_safe.requests.get', side_effect=lambda *a, **kw: self.response({'accounts': self.accounts}))
+        get.start()
+        self.addCleanup(get.stop)
+        self.save_settings = Mock()
         self.order = {"id": 37463885, "orderItems": [{"id": 10, "goodName": "Товар", "count": 2}]}
         self.context = {
             "job_id": 456, "order": self.order,
@@ -47,6 +57,7 @@ class OfferSubmissionTests(unittest.TestCase):
             begin_submission=self.claim, finish_submission=self.finish,
             latest_submission=lambda job_id: self.submission,
             order_hash=lambda order: str(order["orderItems"]), build_invoice=self.invoice,
+            load_sellers=lambda: {'avior': SELLER, 'sv': self.sv}, save_invoice_settings=self.save_settings,
         )
         self.url = "/dashboard/order/37463885/offer/submit"
         self.client = TestClient(self.app)
@@ -172,6 +183,59 @@ class OfferSubmissionTests(unittest.TestCase):
         response = self.client.post(self.url, data={**self.form, "destination_account_id": ""})
         self.assertEqual(response.status_code, 400)
         post.assert_not_called()
+
+    @patch('offer_panel_safe.requests.post')
+    def test_selected_sv_is_in_uploaded_workbook_and_saved_with_vat(self, post):
+        self.context['result']['items'][0].update(requested_name='Товар', selected={'name': 'Товар'}, proposed_unit_price=100)
+        self.invoice.side_effect = build_invoice_xlsx
+        post.side_effect = [self.upload(), self.response({'id': 'offer-sv'})]
+        response = self.client.post(self.url, data={**self.form, 'seller_id': 'sv', 'destination_account_id': 'sv-bank', 'vat_rate': '0.2'})
+        self.assertEqual(response.status_code, 200, response.text)
+        upload = post.call_args_list[0].kwargs['files']['file']
+        workbook = load_workbook(BytesIO(upload[1]))
+        text = ' '.join(str(cell.value or '') for row in workbook.active for cell in row)
+        self.assertIn(self.sv['name'], text)
+        self.assertIn(self.sv['inn'], text)
+        self.assertNotIn(SELLER['inn'], text)
+        self.assertNotIn('АВИОР', text)
+        self.assertNotIn('AVIOR', upload[0])
+        self.save_settings.assert_called_once_with(456, self.sv, 'sv-bank', 0.2)
+        self.assertEqual(self.invoice.call_args.args[0]['vat_rate'], 0.2)
+
+    @patch('offer_panel_safe.requests.post')
+    def test_mismatched_company_or_bank_is_rejected_before_upload(self, post):
+        for changes in ({'seller_id': 'sv'}, {'seller_id': 'avior', 'destination_account_id': 'sv-bank'}):
+            with self.subTest(changes=changes):
+                response = self.client.post(self.url, data={**self.form, **changes})
+                self.assertEqual(response.status_code, 409)
+        post.assert_not_called()
+        self.invoice.assert_not_called()
+        self.save_settings.assert_not_called()
+
+    @patch('offer_panel_safe.requests.post')
+    def test_old_form_bank_selection_resolves_sv_without_defaulting_to_avior(self, post):
+        post.side_effect = [self.upload(), self.response({'id': 'offer-sv'})]
+        response = self.client.post(self.url, data={**self.form, 'destination_account_id': 'sv-bank'})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.invoice.call_args.args[0]['seller']['inn'], self.sv['inn'])
+
+    @patch('offer_panel_safe.requests.post')
+    def test_save_firm_is_local_and_never_uploads_or_sends_offer(self, post):
+        response = self.client.post('/dashboard/order/37463885/offer/settings', data={
+            'seller_id': 'sv', 'destination_account_id': 'sv-bank', 'vat_rate': '0.2'}, follow_redirects=False)
+        self.assertEqual(response.status_code, 303)
+        self.save_settings.assert_called_once_with(456, self.sv, 'sv-bank', 0.2)
+        post.assert_not_called()
+        self.fetch.assert_not_called()
+
+    def test_form_keeps_saved_sv_and_does_not_use_global_avior_account(self):
+        self.context['result'].update(seller=self.sv, destination_account_id='sv-bank', vat_rate=0.2)
+        with patch.dict('os.environ', {'ZAKUPAY_DESTINATION_ACCOUNT_ID': 'bank'}):
+            response = self.client.get('/dashboard/order/37463885/offer')
+        self.assertIn("value='saved' selected", response.text)
+        self.assertIn("value='sv-bank' selected", response.text)
+        self.assertIn("value='0.2' selected", response.text)
+        self.assertNotIn('Банковский счёт ООО «АВИОР»', response.text)
 
     @patch("offer_panel_safe.requests.post")
     def test_missing_live_order_has_recovery_page_and_never_uploads(self, post):

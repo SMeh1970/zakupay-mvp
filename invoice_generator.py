@@ -1,4 +1,4 @@
-"""Generate a reviewable ООО «АВИОР» invoice as XLSX."""
+"""Generate a reviewable invoice using the selected seller's requisites."""
 
 from __future__ import annotations
 
@@ -58,6 +58,13 @@ def validate_seller(profile):
     if len(result['inn']) == 10 and (not result['kpp'].isascii() or not result['kpp'].isdigit() or len(result['kpp']) != 9):
         raise ValueError('Укажите КПП нашей организации')
     return result
+
+
+def invoice_filename(draft):
+    seller = validate_seller(draft['seller']) if 'seller' in draft else SELLER
+    number = re.sub(r'[^A-Za-z0-9_-]', '_', str(draft.get('invoice_number') or 'draft'))[:60]
+    order = re.sub(r'[^A-Za-z0-9_-]', '_', str(draft.get('order_id') or ''))[:60]
+    return f"invoice_{seller['inn']}_{number}_order_{order}.xlsx"
 
 
 def normalize_customer(customer: dict | None) -> dict:

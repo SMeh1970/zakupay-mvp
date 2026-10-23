@@ -23,6 +23,7 @@ from automation_pipeline import (
     load_automation_offer_context,
     mark_automation_offer_created,
     saved_job_id,
+    save_invoice_settings,
 )
 import ai_panel
 from ai_panel_v2 import install_ai_panel_v2
@@ -55,7 +56,7 @@ def start_order_diagnostic():
 
 @app.get("/version")
 def version_marker():
-    return {"deploy": DEPLOY_MARKER, "offer_panel": True, "abacus_mcp": True, "supplier_comparison": True, "catalog_comparison": True}
+    return {"deploy": DEPLOY_MARKER, "offer_panel": True, "abacus_mcp": True, "supplier_comparison": True, "catalog_comparison": True, "invoice_seller_selection": True}
 
 
 _OPTIONAL_NUMERIC_QUERY_FIELDS = {
@@ -212,6 +213,7 @@ install_offer_panel(
     order_hash=commercial_order_hash,
     order_changes=commercial_order_changes,
     build_invoice=build_invoice_xlsx,
+    save_invoice_settings=save_invoice_settings,
 )
 install_automation_pipeline(
     app,
