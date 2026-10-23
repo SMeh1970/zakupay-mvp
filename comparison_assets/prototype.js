@@ -667,9 +667,9 @@ if(initial.read_only){document.body.classList.add('readonly');document.getElemen
 const zoomSteps=[75,100,125,150,175,200];
 const zoomField=document.getElementById('table-zoom'), zoomTable=document.getElementById('cmpTable'), zoomWrap=zoomTable.parentElement;
 let tableZoom=100;
-try{const stored=Number(localStorage.getItem('zakupayComparisonZoom'));if(zoomSteps.includes(stored))tableZoom=stored;}catch{}
-function sizeTable(){const minimum=460+suppliers.length*140;zoomTable.style.minWidth=minimum+'px';zoomTable.style.width=Math.max(zoomWrap.clientWidth-2,minimum)+'px';zoomTable.style.zoom=String(tableZoom/100);}
-function setTableZoom(value){tableZoom=zoomSteps.includes(value)?value:100;zoomField.value=String(tableZoom);document.getElementById('zoom-out').disabled=tableZoom===75;document.getElementById('zoom-in').disabled=tableZoom===200;sizeTable();try{localStorage.setItem('zakupayComparisonZoom',String(tableZoom));}catch{}}
+try{const stored=Number(localStorage.getItem('zakupayComparisonFontSize'));if(zoomSteps.includes(stored))tableZoom=stored;}catch{}
+function sizeTable(){const minimum=(460+suppliers.length*140)*tableZoom/100;zoomTable.style.minWidth=minimum+'px';zoomTable.style.width=Math.max(zoomWrap.clientWidth-2,minimum)+'px';zoomTable.style.setProperty('--table-font-scale',String(tableZoom/100));}
+function setTableZoom(value){tableZoom=zoomSteps.includes(value)?value:100;zoomField.value=String(tableZoom);document.getElementById('zoom-out').disabled=tableZoom===75;document.getElementById('zoom-in').disabled=tableZoom===200;sizeTable();try{localStorage.setItem('zakupayComparisonFontSize',String(tableZoom));}catch{}}
 zoomField.addEventListener('change',()=>setTableZoom(Number(zoomField.value)));
 document.getElementById('zoom-out').addEventListener('click',()=>setTableZoom(zoomSteps[Math.max(0,zoomSteps.indexOf(tableZoom)-1)]));
 document.getElementById('zoom-in').addEventListener('click',()=>setTableZoom(zoomSteps[Math.min(zoomSteps.length-1,zoomSteps.indexOf(tableZoom)+1)]));
