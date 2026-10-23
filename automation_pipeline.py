@@ -1133,6 +1133,42 @@ def _gmail_draft_payload(result: dict, job_id: int) -> dict:
     return payload
 
 
+_REVIEW_SELECTION_SCRIPT = """
+(() => {
+    const all = document.getElementById('include-all-priced');
+    const boxes = Array.from(document.querySelectorAll('input[form="review-form"][name^="include_"]'));
+    const hasPrice = box => {
+        const row = box.closest('tr');
+        const price = Number(row.querySelector('.price').value);
+        const option = row.querySelector('.candidate-select').selectedOptions[0];
+        return !box.disabled && box.dataset.bulkAllowed !== '0'
+            && Number.isFinite(price) && price > 0 && option?.hasAttribute('data-price');
+    };
+    const update = () => {
+        const priced = boxes.filter(hasPrice);
+        const selected = priced.filter(box => box.checked).length;
+        all.disabled = priced.length === 0;
+        all.checked = priced.length > 0 && selected === priced.length;
+        all.indeterminate = selected > 0 && selected < priced.length;
+    };
+    all.addEventListener('change', () => {
+        const checked = all.checked;
+        boxes.forEach(box => {
+            if (!box.disabled) box.checked = checked && hasPrice(box);
+        });
+        update();
+    });
+    boxes.forEach(box => box.addEventListener('change', update));
+    document.querySelectorAll('.price').forEach(input => input.addEventListener('input', update));
+    document.querySelectorAll('.candidate-select').forEach(input => input.addEventListener('change', () => {
+        document.getElementById('price-' + input.dataset.position).value = input.options[input.selectedIndex].dataset.price || '';
+        update();
+    }));
+    update();
+})();
+"""
+
+
 def _included(row: dict) -> bool:
     from supplier_comparison import selected_allowed
     return row.get("decision") in {"auto_ready", "approved"} and selected_allowed(row)
@@ -2494,6 +2530,7 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
         table_rows = []
         row_search_forms = []
         review_script_nonce = base64.b64encode(os.urandom(18)).decode("ascii")
+        from supplier_comparison import selected_allowed
         for item in result.get("items") or []:
             selected = item.get("selected") or {}
             candidates = item.get("candidates") or []
@@ -2528,7 +2565,7 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
             rejected_count = len(item.get("rejected_candidates") or [])
             table_rows.append(
                 "<tr>"
-                f"<td><input form='review-form' type='checkbox' name='include_{pos}' value='1' {checked} {disabled}></td>"
+                f"<td><input form='review-form' type='checkbox' name='include_{pos}' value='1' data-bulk-allowed='{'1' if selected_allowed(item) else '0'}' {checked} {disabled}></td>"
                 f"<td>{pos}</td>"
                 f"<td>{html.escape(str(item.get('requested_name') or ''))}</td>"
                 f"<td><select form='review-form' class='candidate-select' data-position='{pos}' name='candidate_{pos}' {disabled}>{''.join(candidate_options) or '<option>Не найден</option>'}</select>"
@@ -2608,16 +2645,16 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
                 "<!doctype html><html lang='ru'><meta charset='utf-8'>"
                 "<title>Проверка заявки</title><style>body{font-family:Arial;margin:24px;background:#f4f6f8}main{background:#fff;padding:20px;border-radius:12px;overflow:auto}"
                 "table{border-collapse:collapse;width:100%}td,th{border:1px solid #ccc;padding:8px}"
-                "th{background:#eee}select{min-width:280px}.qty{width:90px}.price{width:100px}button,.button{display:inline-block;padding:11px 16px;background:#1a73e8;color:white;border:0;border-radius:7px;text-decoration:none;font-weight:bold}.row-search{margin-top:7px;padding:7px 10px;background:#5f6368}.sent-notice{padding:14px;background:#e6f4ea;color:#137333;border-radius:8px;margin:14px 0}</style><body><main>"
+                "th{background:#eee}.include-priced{display:block;min-width:145px;max-width:180px;text-align:left;font-size:12px}select{min-width:280px}.qty{width:90px}.price{width:100px}button,.button{display:inline-block;padding:11px 16px;background:#1a73e8;color:white;border:0;border-radius:7px;text-decoration:none;font-weight:bold}.row-search{margin-top:7px;padding:7px 10px;background:#5f6368}.sent-notice{padding:14px;background:#e6f4ea;color:#137333;border-radius:8px;margin:14px 0}</style><body><main>"
                 f"<p><a href='/dashboard/automation'>← Все заявки</a> · <a href='/dashboard/automation/jobs/{job_id}/comparison'>Сравнительная таблица поставщиков →</a></p>"
                 f"<h1>{request_heading}</h1>"
                 f"<p>Счёт № {row['invoice_number']} · статус: {'предложение выставлено' if offer_created else html.escape(str(row['status']))}</p>"
                 f"{navigation_notice}{sent_notice}{customer_form}{top_controls}{search_report}"
-                f"<form id='review-form' method='post' action='/dashboard/automation/jobs/{job_id}/review'></form>{''.join(row_search_forms)}<table><tr><th>Включить</th><th>№</th><th>Заявка</th><th>Подбор поставщика<br><small>(закупочная цена)</small></th><th>Количество</th><th>Наша цена<br><small>за единицу заявки (+5%)</small></th>"
+                f"<form id='review-form' method='post' action='/dashboard/automation/jobs/{job_id}/review'></form>{''.join(row_search_forms)}<table><tr><th><label class='include-priced'><input id='include-all-priced' type='checkbox' {'disabled' if offer_created else ''}> Включить все позиции с ценами</label></th><th>№</th><th>Заявка</th><th>Подбор поставщика<br><small>(закупочная цена)</small></th><th>Количество</th><th>Наша цена<br><small>за единицу заявки (+5%)</small></th>"
                 "<th>Статус подбора</th><th>Замена</th><th>Наличие</th><th>Срок</th><th>Решение</th></tr>"
                 + "".join(table_rows) + "</table>" + save_control + invoice_link + offer_link
                 + f"<p><a href='/dashboard/prices/match-order/{job_id}'>Подобрать по характеристикам из прайсов</a> · <a href='/dashboard/automation/jobs/{job_id}/catalog-sale'>Сохранить успешную продажу в наш каталог</a> · <a href='/dashboard/prices'>Прайсы</a> · <a href='/dashboard/catalog'>Наш каталог</a> · <a href='/dashboard/automation/jobs/{job_id}/tiles'>Подобрать керамогранит с доставкой</a> · <a href='/dashboard/sniper?job_id={job_id}'>Найти поставщиков через Sniper</a></p>"
-                + f"<script nonce='{review_script_nonce}'>document.querySelectorAll('.candidate-select').forEach(input=>input.addEventListener('change',()=>{{document.getElementById('price-'+input.dataset.position).value=input.options[input.selectedIndex].dataset.price||''}}));</script>"
+                + f"<script nonce='{review_script_nonce}'>{_REVIEW_SELECTION_SCRIPT}</script>"
                 + "</main></body></html>"
             ),
             media_type="text/html",
