@@ -24,12 +24,14 @@ class OrderDiagnosticsTests(unittest.TestCase):
             diagnose_order_lookup(37463885, "https://example.invalid", {"ZakupayToken": "PRIVATE TOKEN"}, get=get)
         output = "\n".join(captured.output)
         self.assertNotIn("PRIVATE", output)
-        self.assertLessEqual(len(get.call_args_list), 8)
+        self.assertLessEqual(len(get.call_args_list), 13)
         self.assertEqual(get.call_args_list[1].kwargs["params"]["ids"], 37463885)
         self.assertEqual(get.call_args_list[2].kwargs["params"]["pageSize"], 1)
-        self.assertEqual(get.call_args_list[3].kwargs["params"]["ids"], 99)
-        self.assertEqual(get.call_args_list[4].kwargs["params"]["ids"], 99)
-        self.assertNotIn("ignoreKeywordFilter", get.call_args_list[4].kwargs["params"])
+        for call in get.call_args_list[3:-2]:
+            self.assertEqual(call.kwargs["params"]["ids"], 37463885)
+        self.assertEqual(get.call_args_list[-2].kwargs["params"]["ids"], 99)
+        self.assertEqual(get.call_args_list[-1].kwargs["params"]["ids"], 99)
+        self.assertNotIn("ignoreKeywordFilter", get.call_args_list[-1].kwargs["params"])
         self.assertNotIn("headers", get.call_args_list[0].kwargs)
         self.assertIn('"found": true', output)
 

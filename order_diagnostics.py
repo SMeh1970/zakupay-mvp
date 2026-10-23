@@ -80,6 +80,15 @@ def diagnose_order_lookup(order_id, base_url, headers, *, get=None, cookie_facto
     common = {"ids": order_id, "format": "json", "isoDate": "true", "ignoreKeywordFilter": "true"}
     cases = [("current", common, headers, None),
              ("visible_feed_control", {"format": "json", "isoDate": "true", "pageSize": 1, "page": 1}, headers, None)]
+    visibility = {"showWithMyOffers": "true", "withOffers": "true", "tookInWork": "true", "showNotInteresting": "true"}
+    for label, flags in (
+        ("taken_into_work", {"tookInWork": "true"}),
+        ("marked_uninteresting", {"showNotInteresting": "true"}),
+        ("all_personal_states", visibility),
+        ("all_personal_states_not_actual", {**visibility, "status": "not-actual"}),
+        ("all_personal_states_closed", {**visibility, "status": "closed"}),
+    ):
+        cases.append((label, {**common, **flags}, headers, None))
     # Reuse only the already configured cabinet session, on its exact origin.
     # Redirects are disabled below, so the cookie cannot leave that origin.
     parsed = urlparse(base_url)
