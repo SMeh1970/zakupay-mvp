@@ -33,7 +33,7 @@ def _order_parameters(schema):
         return []
     path = (schema.get("paths") or {}).get("/api/v1/orders") or (schema.get("paths") or {}).get("/orders") or {}
     path = _resolved(path, schema)
-    operation = path.get("get") or {}
+    operation = _resolved(path.get("get") or {}, schema)
     parameters = []
     for value in list(path.get("parameters") or []) + list(operation.get("parameters") or []):
         value = _resolved(value, schema)
@@ -53,13 +53,16 @@ def diagnose_order_lookup(order_id, base_url, headers, *, get=None):
     try:
         response = get(SCHEMA_URL, timeout=(3, 8), allow_redirects=False)
         if response.status_code == 200:
-            parameters = _order_parameters(yaml.safe_load(response.text))
+            # Parse bytes: Requests can guess Latin-1 for UTF-8 YAML without a
+            # charset, producing C1 control characters in Russian descriptions.
+            parameters = _order_parameters(yaml.safe_load(response.content))
             documented = {p.get("name") for p in parameters if isinstance(p.get("name"), str)}
+            logger.warning("order diagnostic parameter_names=%s", json.dumps(sorted(documented), ensure_ascii=False))
             # The descriptions are from a public specification, not API data.
             relevant = [
                 {"name": p["name"], "schema": p.get("schema") or {"type": p.get("type")},
                  "description": str(p.get("description") or "")[:400]}
-                for p in parameters if p.get("name") in PROFILE_FLAGS | {"ids", "ignoreKeywordFilter", "actualityStatus", "status"}
+                for p in parameters if p.get("name") in PROFILE_FLAGS | {"ids", "ignoreKeywordFilter", "actualityStatus", "status", "count", "page", "pageSize"}
             ]
             logger.warning("order diagnostic schema=%s", json.dumps(relevant, ensure_ascii=False))
     except Exception as exc:
@@ -67,9 +70,10 @@ def diagnose_order_lookup(order_id, base_url, headers, *, get=None):
 
     common = {"ids": order_id, "format": "json", "isoDate": "true", "ignoreKeywordFilter": "true"}
     cases = [("current", common)]
+    cases.append(("explicit_page", {**common, "count": 1, "page": 1}))
     scope = {key: "true" for key in sorted(PROFILE_FLAGS & documented)}
     if scope:
-        cases.append(("documented_profile_scope", {**common, **scope}))
+        cases.append(("documented_profile_scope", {**common, "count": 1, "page": 1, **scope}))
     cases.append(("support_exact", {"ids": order_id}))
     for label, params in cases:
         if time.monotonic() >= deadline:
@@ -90,6 +94,8 @@ def diagnose_order_lookup(order_id, base_url, headers, *, get=None):
                 "returned": len(orders), "found": bool(matches),
                 "items": len(matches[0].get("orderItems") or []) if matches else 0,
             }
+            if isinstance(data, dict):
+                result["pagination"] = {key: data[key] for key in ("count", "page", "pageSize") if isinstance(data.get(key), (int, float))}
             logger.warning("order diagnostic result=%s", json.dumps(result, ensure_ascii=False))
         except Exception as exc:
             logger.warning("order diagnostic order=%s probe=%s error=%s", order_id, label, type(exc).__name__)
