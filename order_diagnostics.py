@@ -31,7 +31,9 @@ def _resolved(value, schema):
 def _order_parameters(schema):
     if not isinstance(schema, dict):
         return []
-    path = (schema.get("paths") or {}).get("/api/v1/orders") or (schema.get("paths") or {}).get("/orders") or {}
+    paths = schema.get("paths") or {}
+    # Cynteka labels buyer/supplier variants directly in its Swagger path keys.
+    path = paths.get("/api/v1/orders (поставщик)") or paths.get("/api/v1/orders") or paths.get("/orders") or {}
     path = _resolved(path, schema)
     operation = _resolved(path.get("get") or {}, schema)
     parameters = []
@@ -68,7 +70,7 @@ def diagnose_order_lookup(order_id, base_url, headers, *, get=None):
             relevant = [
                 {"name": p["name"], "schema": p.get("schema") or {"type": p.get("type")},
                  "description": str(p.get("description") or "")[:400]}
-                for p in parameters if p.get("name") in PROFILE_FLAGS | {"ids", "ignoreKeywordFilter", "actualityStatus", "status", "count", "page", "pageSize"}
+                for p in parameters
             ]
             logger.warning("order diagnostic schema=%s", json.dumps(relevant, ensure_ascii=False))
     except Exception as exc:
@@ -82,6 +84,7 @@ def diagnose_order_lookup(order_id, base_url, headers, *, get=None):
     scope = {key: "true" for key in sorted((PROFILE_FLAGS & documented) or PROFILE_FLAGS)}
     cases.append(("profile_scope", {**common, "count": 1, "page": 1, **scope}))
     cases.append(("support_exact", {"ids": order_id}))
+    cases.append(("visible_feed_control", {"format": "json", "isoDate": "true", "pageSize": 1, "page": 1, "ignoreKeywordFilter": "true", **scope}))
     for label, params in cases:
         if time.monotonic() >= deadline:
             logger.warning("order diagnostic order=%s stopped=deadline", order_id)
