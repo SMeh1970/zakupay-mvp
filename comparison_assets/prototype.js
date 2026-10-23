@@ -664,4 +664,4 @@ lastSaved=JSON.stringify(stateSnapshot());ready=true;
 document.getElementById('comparison-title').textContent='Сравнение поставщиков — '+(initial.order_name||initial.order_id);
 document.querySelectorAll('input[name="compareMode"]').forEach(r=>r.checked=r.value===compareMode);
 if(initial.read_only){document.body.classList.add('readonly');document.getElementById('save-status').textContent='Предложение уже отправлено: решения доступны только для просмотра.';}
-document.getElementById('cmpTable').style.width=(460+suppliers.length*140)+'px';
+document.getElementById('cmpTable').style.minWidth=(460+suppliers.length*140)+'px';
