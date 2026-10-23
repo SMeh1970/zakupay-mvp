@@ -120,13 +120,11 @@ def _zakupay_request(call, url, **kwargs):
 
 def request_orders_page(page=1, page_size=25, api_filters=None):
     url = f"{ZAKUPAY_BASE_URL}/api/v1/orders"
-    # The supplier API exposes active orders by default.  `status=actual` is not
-    # an orders API parameter and made valid orders disappear for some accounts.
-    # Keep the request deliberately small.  Sending both pageSize and count,
-    # together with totalCount=true, makes the production API calculate the
-    # same collection several times and has repeatedly timed out server-side.
+    # In the supplier API, count is a minimum number of positions, not a page
+    # limit. Using count=page_size silently hid short procurement requests.
+    # Avoid totalCount=true; rendering a page does not need an extra count.
     params = {
-        "format": "json", "isoDate": "true", "count": page_size, "page": page,
+        "format": "json", "isoDate": "true", "pageSize": page_size, "page": page,
     }
     if api_filters:
         params.update(clean_params(api_filters))
@@ -385,7 +383,7 @@ def zakupay_health():
     checks = {}
     probes = (
         ("token", "/api/v1/util/check/token", {}),
-        ("orders", "/api/v1/orders", {"format": "json", "isoDate": "true", "count": 25, "page": 1}),
+        ("orders", "/api/v1/orders", {"format": "json", "isoDate": "true", "pageSize": 1, "page": 1}),
     )
     for name, path, params in probes:
         started = time.monotonic()

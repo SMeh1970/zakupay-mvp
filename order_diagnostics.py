@@ -6,6 +6,7 @@ import os
 import threading
 import time
 from datetime import datetime, timezone
+from urllib.parse import urlparse
 
 import requests
 import yaml
@@ -44,7 +45,7 @@ def _order_parameters(schema):
     return parameters
 
 
-def diagnose_order_lookup(order_id, base_url, headers, *, get=None):
+def diagnose_order_lookup(order_id, base_url, headers, *, get=None, cookie_factory=None):
     """GET only. Never log credentials, raw payloads, customer data or prices."""
     get = get or requests.get
     order_id = int(order_id)
@@ -77,27 +78,36 @@ def diagnose_order_lookup(order_id, base_url, headers, *, get=None):
         logger.warning("order diagnostic schema_error=%s", type(exc).__name__)
 
     common = {"ids": order_id, "format": "json", "isoDate": "true", "ignoreKeywordFilter": "true"}
-    cases = [("current", common)]
-    with_offers = {**common, "showWithMyOffers": "true"}
-    cases.append(("include_existing_offers", with_offers))
-    for status in ("actual", "not-actual", "closed"):
-        cases.append(("status_" + status, {**with_offers, "status": status}))
-    cases.append(("canonical_visibility", {**with_offers, "fromAllCompanies": "true", "allRegions": "true", "allCategories": "true"}))
-    cases.append(("visible_feed_control", {"format": "json", "isoDate": "true", "pageSize": 1, "page": 1}))
-    for label, params in cases:
+    cases = [("current", common, headers, None),
+             ("visible_feed_control", {"format": "json", "isoDate": "true", "pageSize": 1, "page": 1}, headers, None)]
+    # Reuse only the already configured cabinet session, on its exact origin.
+    # Redirects are disabled below, so the cookie cannot leave that origin.
+    parsed = urlparse(base_url)
+    if cookie_factory and parsed.scheme == "https" and parsed.netloc == "prodavay.sel-be.ru":
+        cookie = cookie_factory()
+        if cookie:
+            cookies = {"PLAY_SESSION": cookie}
+            cases.extend([
+                ("cabinet_session_only", common, {"Accept": "application/json"}, cookies),
+                ("token_and_cabinet_session", common, headers, cookies),
+            ])
+    for label, params, request_headers, cookies in cases:
         if time.monotonic() >= deadline:
             logger.warning("order diagnostic order=%s stopped=deadline", order_id)
             break
         started = time.monotonic()
         try:
-            response = get(base_url.rstrip("/") + "/api/v1/orders", headers=headers,
-                           params=params, timeout=(3, 8), allow_redirects=False)
+            kwargs = dict(headers=request_headers, params=params, timeout=(3, 8), allow_redirects=False)
+            if cookies:
+                kwargs["cookies"] = cookies
+            response = get(base_url.rstrip("/") + "/api/v1/orders", **kwargs)
             data = response.json()
             from main import _orders_from_payload
             orders = _orders_from_payload(data)
-            matches = [row for row in orders if str(row.get("id")) == str(order_id)]
+            lookup_id = params.get("ids", order_id)
+            matches = [row for row in orders if str(row.get("id")) == str(lookup_id)]
             result = {
-                "order_id": order_id, "probe": label, "params": params,
+                "order_id": order_id, "queried_order_id": lookup_id, "probe": label, "params": params,
                 "status": response.status_code, "seconds": round(time.monotonic() - started, 2),
                 "api_result": data.get("result") if isinstance(data, dict) and isinstance(data.get("result"), bool) else None,
                 "returned": len(orders), "found": bool(matches),
@@ -110,6 +120,15 @@ def diagnose_order_lookup(order_id, base_url, headers, *, get=None):
             if isinstance(data, dict):
                 result["pagination"] = {key: data[key] for key in ("count", "page", "pageSize") if isinstance(data.get(key), (int, float))}
             logger.warning("order diagnostic result=%s", json.dumps(result, ensure_ascii=False))
+            if label == "visible_feed_control" and orders:
+                # The control order is already visible to this same token.
+                # Verify the filter independently of the inaccessible target.
+                control_id = int(orders[0].get("id") or 0)
+                if control_id > 0:
+                    cases.extend([
+                        ("visible_id_control", {**common, "ids": control_id}, headers, None),
+                        ("visible_id_control_without_keyword_flag", {"ids": control_id, "format": "json", "isoDate": "true"}, headers, None),
+                    ])
         except Exception as exc:
             logger.warning("order diagnostic order=%s probe=%s error=%s", order_id, label, type(exc).__name__)
 
@@ -131,7 +150,8 @@ def start_configured_diagnostic(base_url, headers_factory):
 
     def run():
         try:
-            diagnose_order_lookup(order_id, base_url, headers_factory())
+            from browser_prices import _session_cookie
+            diagnose_order_lookup(order_id, base_url, headers_factory(), cookie_factory=_session_cookie)
         except Exception as exc:
             logger.warning("order diagnostic failed=%s", type(exc).__name__)
 

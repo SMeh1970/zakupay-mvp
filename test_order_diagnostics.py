@@ -16,7 +16,7 @@ class OrderDiagnosticsTests(unittest.TestCase):
             if url.endswith(".yaml"):
                 return Mock(status_code=200, content=json.dumps(schema, ensure_ascii=False).encode("utf-8"))
             params = kwargs["params"]
-            rows = [{"id": 37463885, "customer": "PRIVATE CUSTOMER", "orderItems": [{"price": "PRIVATE PRICE"}]}] if "ids" in params else [{"id": 99}]
+            rows = [{"id": params.get("ids", 99), "customer": "PRIVATE CUSTOMER", "orderItems": [{"price": "PRIVATE PRICE"}]}]
             return Mock(status_code=200, json=lambda: {"result": True, "orders": rows})
 
         get = Mock(side_effect=reply)
@@ -25,11 +25,30 @@ class OrderDiagnosticsTests(unittest.TestCase):
         output = "\n".join(captured.output)
         self.assertNotIn("PRIVATE", output)
         self.assertLessEqual(len(get.call_args_list), 8)
-        for call in get.call_args_list[1:-1]:
-            self.assertEqual(call.kwargs["params"]["ids"], 37463885)
-        self.assertEqual(get.call_args_list[-1].kwargs["params"]["pageSize"], 1)
+        self.assertEqual(get.call_args_list[1].kwargs["params"]["ids"], 37463885)
+        self.assertEqual(get.call_args_list[2].kwargs["params"]["pageSize"], 1)
+        self.assertEqual(get.call_args_list[3].kwargs["params"]["ids"], 99)
+        self.assertEqual(get.call_args_list[4].kwargs["params"]["ids"], 99)
+        self.assertNotIn("ignoreKeywordFilter", get.call_args_list[4].kwargs["params"])
         self.assertNotIn("headers", get.call_args_list[0].kwargs)
         self.assertIn('"found": true', output)
+
+    def test_cabinet_credentials_are_never_sent_to_another_origin(self):
+        get = Mock(return_value=Mock(status_code=200, content=b"{}", json=lambda: {"orders": []}))
+        cookie_factory = Mock(return_value="PRIVATE COOKIE")
+        with self.assertLogs("order_diagnostics", level="WARNING"):
+            diagnose_order_lookup(1, "https://example.invalid", {}, get=get, cookie_factory=cookie_factory)
+        cookie_factory.assert_not_called()
+        self.assertTrue(all("cookies" not in call.kwargs for call in get.call_args_list))
+
+    def test_cabinet_checks_are_get_only_and_do_not_log_session(self):
+        get = Mock(return_value=Mock(status_code=200, content=b"{}", json=lambda: {"orders": []}))
+        with self.assertLogs("order_diagnostics", level="WARNING") as captured:
+            diagnose_order_lookup(1, "https://prodavay.sel-be.ru", {"ZakupayToken": "PRIVATE TOKEN"},
+                                  get=get, cookie_factory=lambda: "PRIVATE COOKIE")
+        self.assertNotIn("PRIVATE", "\n".join(captured.output))
+        self.assertEqual(sum("cookies" in call.kwargs for call in get.call_args_list), 2)
+        self.assertTrue(all(call.kwargs["allow_redirects"] is False for call in get.call_args_list))
 
     def test_supplier_parameter_variant_is_preferred_to_buyer_schema(self):
         def operation(name):

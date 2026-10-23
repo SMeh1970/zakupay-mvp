@@ -26,6 +26,21 @@ class ZakupayOrderLookupTests(unittest.TestCase):
         self.assertEqual(call.call_count, 2)
         sleep.assert_called_once_with(1)
 
+    @patch("main.requests.get")
+    def test_page_size_does_not_hide_orders_with_fewer_positions(self, get):
+        short_order = {"id": 1, "orderItems": [{"id": 10}]}
+
+        def page(*args, **kwargs):
+            params = kwargs["params"]
+            rows = [short_order] if int(params.get("count", 0)) <= 1 else []
+            return Mock(status_code=200, ok=True, json=lambda: {"result": True, "orders": rows})
+
+        get.side_effect = page
+        result = main.request_orders_page(page=2, page_size=25)
+        self.assertEqual(result["orders"], [short_order])
+        self.assertEqual(get.call_args.kwargs["params"]["pageSize"], 25)
+        self.assertEqual(get.call_args.kwargs["params"]["page"], 2)
+
     @patch("main.requests.post")
     @patch("main.requests.get")
     def test_uses_ids_filter_and_returns_order_items(self, get, post):
