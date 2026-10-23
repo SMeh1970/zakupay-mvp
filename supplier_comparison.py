@@ -445,6 +445,10 @@ def mutate(result, payload, conn=None):
     action = payload.get("action")
     if result.get("live_offer_created"):
         raise ValueError("Предложение уже отправлено. Сравнение доступно только для просмотра.")
+    if action == "prototype_state":
+        from comparison_prototype import save_state
+        save_state(result, payload)
+        return
     if action == "load_catalog":
         if conn is None:
             raise ValueError("Для подбора нужен доступ к сохранённым прайсам")
@@ -557,7 +561,7 @@ def install_supplier_comparison(app):
     @app.get("/dashboard/comparison/assets/{name}")
     def asset(name: str, request: Request):
         _session(request)
-        if name not in {"comparison.js", "comparison.css"}:
+        if name not in {"comparison.js", "comparison.css", "prototype.js", "prototype.css"}:
             raise HTTPException(404)
         return Response((ASSETS / name).read_text(), media_type="text/javascript" if name.endswith(".js") else "text/css", headers={"Cache-Control": "no-cache"})
 
@@ -568,26 +572,19 @@ def install_supplier_comparison(app):
             row, result = load(job_id, conn)
         data = model(result, row["result_json"])
         data.update(csrf=_csrf(request), job_id=job_id, read_only=data["read_only"] or row["status"] in {"processing", "offer_created"})
+        from comparison_prototype import matrix_model
+        data["prototype"] = matrix_model(result)
         serialized = json.dumps(data, ensure_ascii=False, allow_nan=False).replace("<", "\\u003c").replace("&", "\\u0026")
         nonce = security.secrets.token_urlsafe(18)
-        content = f"""<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Сравнение поставщиков · Закупай</title><link rel="stylesheet" href="/dashboard/comparison/assets/comparison.css"></head><body>
-        <nav><a href="/dashboard/automation">Закупай <span>MVP</span></a><a href="/dashboard/automation/jobs/{job_id}/review">← К проверке заявки</a><a href="/dashboard/prices">Прайсы</a></nav>
-        <main><h1>Сравнение поставщиков — интерактивная таблица</h1><div id="order-title" class="sub"></div>
-        <div id="message" role="status" aria-live="polite"></div><section id="summary" class="summary-bar"></section>
-        <section class="toolbar"><button id="show-all">Показать все скрытые столбцы</button><button id="load-catalog">Подобрать из прайсов</button><button id="export">Скачать CSV</button><label><input type="checkbox" id="show-excluded" checked> Показывать исключённые</label></section>
-        <section class="mode-switch" id="mode"><span class="mode-label">Показывать:</span><label><input type="radio" name="compareMode" value="sum"> суммы (₽ всего по количеству поставщика)</label><label><input type="radio" name="compareMode" value="price"> цены за единицу заявки (₽/ед.)</label></section>
-        <section class="matrix-wrap table-wrap" aria-label="Сравнительная таблица"><table id="matrix"></table></section>
-        <div class="legend"><span><i class="swatch min-swatch"></i> минимальная сумма среди допущенных</span><span><i class="diff-badge">!</i> требуется проверка</span><span>◉ выбран для закупки</span><span>○ выбрать поставщика</span></div>
-        <p class="note-foot">Галочка в шапке исключает поставщика, галочка у цены — отдельное предложение. Клик по цене раскрывает под заявкой наименование, количество и единицу поставщика. ✓/✗ у характеристики или единицы действует у всех поставщиков этой позиции; решение по количеству — у предложений с таким же количеством и единицей. Пересчёт единиц открывается отдельно. Скрытый столбец участвует в расчёте.</p>
-        <noscript>Для интерактивного сравнения включите JavaScript. Обычная проверка заявки доступна по ссылке выше.</noscript></main>
-        <script nonce="{nonce}" type="application/json" id="comparison-data">{serialized}</script><script nonce="{nonce}" src="/dashboard/comparison/assets/comparison.js"></script></body></html>"""
+        template = (ASSETS / "prototype-body.html").read_text()
+        content = f'''<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Сравнение поставщиков · Закупай</title><link rel="stylesheet" href="/dashboard/comparison/assets/prototype.css"></head><body><nav><a href="/dashboard/automation">Закупай MVP</a><a href="/dashboard/automation/jobs/{job_id}/review">← К проверке заявки</a><a href="/dashboard/prices">Прайсы</a></nav>{template}<script nonce="{nonce}" type="application/json" id="comparison-data">{serialized}</script><script nonce="{nonce}" src="/dashboard/comparison/assets/prototype.js"></script></body></html>'''
         return HTMLResponse(content, headers={"Cache-Control": "no-store", "Content-Security-Policy": f"default-src 'none'; script-src 'nonce-{nonce}'; style-src 'self'; connect-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"})
 
     @app.post("/dashboard/automation/jobs/{job_id}/comparison/action")
     async def action(job_id: int, request: Request):
         _session(request)
         body = await request.body()
-        if len(body) > 16384:
+        if len(body) > 262144:
             raise HTTPException(413, "Слишком большой запрос")
         try:
             payload = json.loads(body)
@@ -619,7 +616,7 @@ def install_supplier_comparison(app):
                 invoice_number = max(INVOICE_NUMBER_START, (last["maximum"] or INVOICE_NUMBER_START - 1) + 1)
                 result["invoice_number"] = invoice_number
             raw = json.dumps(result, ensure_ascii=False, allow_nan=False)
-            cursor = _execute(conn, "UPDATE automation_jobs SET result_json=?,status=?,invoice_number=?,updated_at=? WHERE id=? AND result_json=? AND status=?", (raw, result["status"], invoice_number, datetime.now(timezone.utc).isoformat(), job_id, row["result_json"], row["status"]))
+            cursor = _execute(conn, "UPDATE automation_jobs SET result_json=?,status=?,invoice_number=?,updated_at=? WHERE id=? AND result_json=? AND status=?", (raw, row["status"] if payload.get("action") == "prototype_state" else result["status"], invoice_number, datetime.now(timezone.utc).isoformat(), job_id, row["result_json"], row["status"]))
             if cursor.rowcount != 1:
                 raise HTTPException(409, "Заявка изменена. Обновите страницу.")
         data = model(result, raw)

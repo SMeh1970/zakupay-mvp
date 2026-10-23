@@ -1,0 +1,86 @@
+
+
+<h1 id="comparison-title">Сравнение поставщиков</h1><div id="save-status" role="status" aria-live="polite"></div>
+<div class="sub">Снимите галочку с названия фирмы — она полностью выходит из сравнения. Снимите галочку с конкретной цены — эта цена перестаёт участвовать в сравнении и в сумме по этой фирме.</div>
+
+<div class="summary-bar">
+  <div class="summary-card">
+    <div class="label">Итого по минимальным ценам</div>
+    <div class="value grand-total-cell" id="grandTotal">—</div>
+  </div>
+  <div class="summary-card">
+    <div class="label">Сумма выбранных позиций (вручную)</div>
+    <div class="value grand-total-cell" id="selectedTotal" style="color:var(--warn);">—</div>
+  </div>
+  <div class="summary-card">
+    <div class="label">Позиций учтено в итоге</div>
+    <div class="value" id="rowsCounted" style="font-size:18px;">—</div>
+  </div>
+  <div class="summary-card">
+    <div class="label">Активных поставщиков</div>
+    <div class="value" id="activeSuppliers" style="font-size:18px;">—</div>
+  </div>
+</div>
+
+<div class="toolbar">
+  <button id="showAllBtn">Показать все скрытые столбцы</button>
+</div>
+
+<div class="mode-switch">
+  <span class="mode-label">Сравнивать по:</span>
+  <label><input type="radio" name="compareMode" value="sum" checked=""> суммам (₽ всего, по факту количества у поставщика)</label>
+  <label><input type="radio" name="compareMode" value="price"> ценам за единицу (₽/ед., без учёта разницы в объёме)</label>
+  <label title="По умолчанию решение по отличию (ед.изм., кол-во, слово названия) применяется ко всем таким же отличиям у других поставщиков в этой же позиции"><input type="checkbox" id="scopeAll"> применять решение по такому же отличию и в других позициях</label>
+</div>
+
+<div class="table-wrap">
+<table id="cmpTable">
+  <thead>
+    <tr id="headRow">
+      <th class="item-col">Позиция</th>
+      <th class="qty-col">Кол-во</th>
+      <th class="unit-col">Ед.</th>
+    </tr>
+  </thead>
+  <tbody id="bodyRows"></tbody>
+  <tfoot>
+    <tr class="total-row" id="totalRow">
+      <td class="item-col">ИТОГО (минимальные цены)</td>
+      <td></td><td></td>
+    </tr>
+    <tr class="own-total-row" id="ownTotalRow">
+      <td class="item-col">Сумма у поставщика (все доступные позиции)</td>
+      <td></td><td></td>
+    </tr>
+    <tr class="info-row" id="deliveryRow">
+      <td class="item-col">Доставка</td>
+      <td></td><td></td>
+    </tr>
+    <tr class="own-total-row" id="grandWithDeliveryRow" style="background:#e4dcc0;">
+      <td class="item-col">Итого с доставкой</td>
+      <td></td><td></td>
+    </tr>
+    <tr class="info-row" id="coverageRow">
+      <td class="item-col">Покрытие заявки</td>
+      <td></td><td></td>
+    </tr>
+    <tr class="info-row" id="vusRow">
+      <td class="item-col">Дата цены</td>
+      <td></td><td></td>
+    </tr>
+    <tr class="info-row" id="noteRow">
+      <td class="item-col">Примечание</td>
+      <td></td><td></td>
+    </tr>
+  </tfoot>
+</table>
+</div>
+
+<div class="legend">
+  <span><span class="swatch" style="background:var(--min-bg); border:1px solid var(--min);"></span>минимальная цена в строке</span>
+  <span><span class="swatch" style="background:var(--warn-soft); border:1px solid var(--warn);"></span>аномальная цена (проверить)</span>
+  <span><span class="swatch" style="background:var(--excluded);"></span>снято галочкой / нет позиции</span>
+</div>
+
+<div class="note-foot">В ячейках — цена и количество предложения поставщика. Галочки включают и исключают предложения из сравнения. Нажмите цену: под исходными названием, количеством и единицей откроются данные поставщика и кнопки ✓/✗. Непроверенные отличия отмечены красным «!», отклонённые исключаются из итогов. Переключатель суммы/цены меняет только отображение; итоги считаются по полной сумме предложения. Скрытие столбца не исключает поставщика. Решения сравнения сохраняются; отправка счёта выполняется отдельно на странице проверки заявки.</div>
+

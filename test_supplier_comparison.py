@@ -292,6 +292,18 @@ class ComparisonRouteTests(unittest.TestCase):
         with patch.object(security,"_valid_session",return_value=False):
             self.assertEqual(self.client.get(self.url).status_code,401)
 
+    def test_original_matrix_state_persists_without_changing_review(self):
+        data=self.data();matrix=data['prototype'];state=matrix['state']
+        state['cellOn']={'1_0':False};state['diffState']={'1_0_qty':'accepted'}
+        response=self.post(action='prototype_state',signature=matrix['signature'],state=state)
+        self.assertEqual(response.status_code,200,response.text)
+        self.assertEqual(self.data()['prototype']['state'],state)
+        with pipeline._connect() as conn:
+            row=conn.execute('SELECT result_json,status FROM automation_jobs WHERE id=?',(self.job,)).fetchone()
+        result=json.loads(row['result_json']);result.pop('prototype_comparison')
+        self.assertEqual(result,self.result)
+        self.assertEqual(row['status'],'needs_review')
+
     def test_quantity_choice_is_saved_and_survives_page_reload(self):
         key=comparison.quote_key(self.a)
         response=self.post(action="quantity",position=1,key=key,decision="accepted")
