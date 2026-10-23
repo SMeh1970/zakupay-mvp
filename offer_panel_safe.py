@@ -16,6 +16,7 @@ from fastapi import HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from starlette.concurrency import run_in_threadpool
 from invoice_generator import customer_validation_error, normalize_customer, validate_seller, invoice_filename
+from offer_responses import confirmed_offer_id, UNCONFIRMED_OFFER_ERROR
 
 TOKEN_CHECK_PATH = os.getenv("ZAKUPAY_TOKEN_CHECK_PATH", "/api/v1/util/check/token?format=xml")
 FILE_UPLOAD_PATH = os.getenv("ZAKUPAY_FILE_UPLOAD_PATH", "/core/files/upload?format=xml")
@@ -793,9 +794,9 @@ def install_offer_panel(
                 error=f"HTTP {r.status_code}",
             )
             return HTMLResponse(f"<h1>Закупай отклонил предложение</h1><p>HTTP {r.status_code}</p><pre>{esc(json.dumps(data, ensure_ascii=False, indent=2))}</pre><h3>JSON</h3><pre>{esc(json.dumps(payload, ensure_ascii=False, indent=2))}</pre><p><a href='/dashboard/order/{order_id}/offer'>← Исправить</a></p>", status_code=r.status_code)
-        offer_id = _find_first_key(data, "id")
-        if not offer_id or str(_find_first_key(data, "result")).lower() in {"false", "0"}:
-            await run_in_threadpool(finish_submission, submission_id, "unknown", response=data, error="Ответ Закупай не подтверждает создание предложения")
+        offer_id = confirmed_offer_id(data)
+        if not offer_id:
+            await run_in_threadpool(finish_submission, submission_id, "unknown", response=data, error=UNCONFIRMED_OFFER_ERROR)
             return _submission_block_page(order_id, context["job_id"], {"id": submission_id, "status": "unknown"})
         await run_in_threadpool(finish_submission, submission_id, "confirmed", offer_id=offer_id, response=data)
         logger.warning("invoice submission order=%s attempt=%s stage=completed confirmed", order_id, submission_id)

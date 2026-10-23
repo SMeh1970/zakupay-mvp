@@ -53,7 +53,7 @@ class CustomerWorkflowTests(unittest.TestCase):
         self.db_patch = patch.multiple(pipeline, DB_PATH=os.path.join(self.tmp.name, "jobs.db"), DATABASE_URL="", _initialized_database_key=None)
         self.db_patch.start()
         self.order = {"id": 37238573, "orderItems": [{"id": 10, "goodName": "Товар", "count": 2, "unit": {"name": "шт"}}]}
-        self.result = {"order_id": self.order["id"], "invoice_number": 262, "items": [copy.deepcopy(ITEM)],
+        self.result = {"order_id": self.order["id"], "invoice_number": 262, "seller": copy.deepcopy(SELLER), "items": [copy.deepcopy(ITEM)],
                        "summary": {"positions": 1, "auto_ready": 0, "approved": 1, "included_in_invoice": 1}, "status": "ready_for_review"}
         with pipeline._connect() as conn:
             cursor = conn.execute(

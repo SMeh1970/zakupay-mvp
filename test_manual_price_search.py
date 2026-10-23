@@ -209,7 +209,11 @@ class ManualPriceSearchTests(unittest.TestCase):
                 self.assertEqual(row["invoice_number"], expected_number)
                 self.assertEqual(result["items"][0]["proposed_unit_price"], 10.5)
                 self.assertFalse(result["live_offer_created"])
-                self.assertEqual(self.client.get(f"/dashboard/automation/jobs/{job_id}/invoice.xlsx").status_code, 200)
+                self.assertEqual(self.client.get(f"/dashboard/automation/jobs/{job_id}/invoice.xlsx").status_code, 409)
+                response = self.client.post(f"/dashboard/automation/jobs/{job_id}/review", data={
+                    'invoice_seller_id': 'avior', 'invoice_vat_rate': '0.22', 'review_action': 'download',
+                    'include_1': '1', 'candidate_1': '0', 'quantity_1': '2', 'price_1': '10.5'})
+                self.assertEqual(response.status_code, 200)
             self.assertEqual(search.call_count, 2)
             external_post.assert_not_called()
 

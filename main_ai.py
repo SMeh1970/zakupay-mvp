@@ -3,6 +3,7 @@ import hmac
 import secrets
 import time
 import re
+import logging
 from urllib.parse import parse_qsl, urlencode
 
 from fastapi.responses import RedirectResponse
@@ -22,6 +23,7 @@ from automation_pipeline import (
     latest_offer_submission,
     load_automation_offer_context,
     mark_automation_offer_created,
+    reconcile_offer_confirmations,
     saved_job_id,
     save_invoice_settings,
 )
@@ -52,6 +54,14 @@ DEPLOY_MARKER = "comparison-density-2026-10-23"
 def start_order_diagnostic():
     from order_diagnostics import start_configured_diagnostic
     start_configured_diagnostic(ZAKUPAY_BASE_URL, zakupay_headers)
+
+
+@app.on_event("startup")
+async def restore_confirmed_offer_statuses():
+    try:
+        await run_in_threadpool(reconcile_offer_confirmations)
+    except Exception as exc:
+        logging.getLogger(__name__).warning('Offer confirmation recovery failed: %s', type(exc).__name__)
 
 
 @app.get("/version")

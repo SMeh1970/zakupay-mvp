@@ -155,6 +155,33 @@ class OfferSubmissionTests(unittest.TestCase):
         self.assertEqual(post.call_count, 2)
 
     @patch("offer_panel_safe.requests.post")
+    def test_actual_offer_id_response_is_confirmed_in_json_and_xml(self, post):
+        replies = [self.response({'result': True, 'offerId': 340932504,
+                                   'offerUrl': 'https://zakupay.sel-be.ru/core/offers/340932504/report'}),
+                   self.response({'result': True, 'id': 'unrelated-id', 'offerId': 340932504}),
+                   Mock(status_code=200, ok=True, headers={'content-type': 'application/xml'},
+                        text='<response><result>true</result><offerId>340932504</offerId></response>')]
+        for reply in replies:
+            with self.subTest(reply=reply):
+                self.submission = None
+                post.side_effect = [self.upload(), reply]
+                response = self.client.post(self.url, data=self.form)
+                self.assertEqual(response.status_code, 200, response.text)
+                self.assertEqual(self.submission['status'], 'confirmed')
+                self.assertEqual(self.submission['offer_id'], '340932504')
+
+    @patch("offer_panel_safe.requests.post")
+    def test_foreign_file_id_and_negative_result_do_not_confirm_an_offer(self, post):
+        for data in ({'result': True, 'files': [{'id': 'only-file-id'}]},
+                     {'result': False, 'offerId': 340932504}, {'result': True, 'offerId': 0},
+                     {'result': True, 'offerId': 0, 'id': 'unrelated-id'}):
+            with self.subTest(data=data):
+                self.submission = None
+                post.side_effect = [self.upload(), self.response(data)]
+                self.assertEqual(self.client.post(self.url, data=self.form).status_code, 409)
+                self.assertEqual(self.submission['status'], 'unknown')
+
+    @patch("offer_panel_safe.requests.post")
     def test_network_failure_during_post_is_unknown_and_never_retried(self, post):
         post.side_effect = [self.upload(), requests.Timeout("slow")]
         self.assertEqual(self.client.post(self.url, data=self.form).status_code, 409)

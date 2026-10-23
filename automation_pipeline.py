@@ -35,6 +35,7 @@ from search_session import SearchSession
 from vi_order_match import _contains_brand, _identifiers, _label, _measurements, _norm, _requested_brands, _score_details
 from zakupay_email import parse_zakupay_email
 from invoice_generator import build_invoice_xlsx, customer_validation_error, normalize_customer, validate_seller, invoice_filename
+from offer_responses import confirmed_offer_id, UNCONFIRMED_OFFER_ERROR
 from saved_dashboard import STATUSES, CATEGORY_PICKER_CSS, category_picker_script, filter_highlight_script, filter_form, listing_query, pagination, select_page
 from zakupay_categories import SCHEMA as CATEGORY_SCHEMA, load_categories, save_categories
 
@@ -1261,6 +1262,20 @@ def invoice_result_for_job(result, job_id):
     return result
 
 
+def _invoice_seller_profiles(result):
+    from porcelain import sellers
+    profiles = dict(sellers())
+    if result.get('seller'):
+        profiles['saved'] = result['seller']
+    return profiles
+
+
+def _require_invoice_seller(result):
+    if not result.get('seller'):
+        raise ValueError('Выберите нашу фирму над таблицей и нажмите «Сформировать и скачать счёт».')
+    return result
+
+
 def load_automation_offer_context(order_id: int) -> dict | None:
     """Return the latest locally persisted, reviewable application snapshot."""
     with _connect() as conn:
@@ -1474,6 +1489,16 @@ def begin_offer_submission(
         }
 
 
+def _confirm_offer_job(conn, row, result, offer_id, response, timestamp):
+    result.update(
+        live_offer_created=True, live_offer_created_at=timestamp,
+        live_offer_id=offer_id, live_offer_file_id=row['file_id'],
+        live_offer_response=response, offer_submission_id=int(row['id']),
+    )
+    _execute(conn, "UPDATE automation_jobs SET status='offer_created', result_json=?, updated_at=? WHERE id=?",
+             (json.dumps(result, ensure_ascii=False), timestamp, int(row['job_id'])))
+
+
 def finish_offer_submission(
     submission_id: int,
     status: str,
@@ -1490,7 +1515,7 @@ def finish_offer_submission(
         row = _execute(conn, "SELECT * FROM offer_submissions WHERE id=?", (int(submission_id),)).fetchone()
         if not row:
             raise LookupError("Попытка отправки не найдена")
-        _execute(
+        changed = _execute(
             conn,
             """UPDATE offer_submissions
                SET status=?, stage='completed', offer_id=?, response_json=?, error=?, updated_at=?
@@ -1501,26 +1526,47 @@ def finish_offer_submission(
                 str(error or ""), now, int(submission_id),
             ),
         )
-        if status == "confirmed":
+        if status == "confirmed" and changed.rowcount == 1:
             job = _execute(conn, "SELECT result_json FROM automation_jobs WHERE id=?", (int(row["job_id"]),)).fetchone()
             if not job or not job["result_json"]:
                 raise LookupError("Сохранённая обработка заявки не найдена")
-            result = json.loads(job["result_json"])
-            result.update(
-                {
-                    "live_offer_created": True,
-                    "live_offer_created_at": now,
-                    "live_offer_id": offer_id,
-                    "live_offer_file_id": row["file_id"],
-                    "live_offer_response": response,
-                    "offer_submission_id": int(submission_id),
-                }
-            )
-            _execute(
-                conn,
-                "UPDATE automation_jobs SET status='offer_created', result_json=?, updated_at=? WHERE id=?",
-                (json.dumps(result, ensure_ascii=False), now, int(row["job_id"])),
-            )
+            _confirm_offer_job(conn, row, json.loads(job["result_json"]), offer_id, response, now)
+
+
+def reconcile_offer_confirmations():
+    """Repair saved successful replies misread by the old id-only parser.
+
+    No remote calls or retries. Timeouts and HTTP failures remain blocked.
+    """
+    repaired = []
+    with _lock, _connect() as conn:
+        rows = _execute(conn, """SELECT * FROM offer_submissions
+            WHERE status='unknown' AND error=? AND response_json IS NOT NULL
+            ORDER BY id LIMIT 100""", (UNCONFIRMED_OFFER_ERROR,)).fetchall()
+        for row in rows:
+            try:
+                response = json.loads(row['response_json'])
+                offer_id = confirmed_offer_id(response, require_explicit_success=True)
+                if not offer_id:
+                    continue
+                job = _execute(conn, 'SELECT result_json FROM automation_jobs WHERE id=?', (int(row['job_id']),)).fetchone()
+                if not job or not job['result_json']:
+                    continue
+                result = json.loads(job['result_json'])
+            except (ValueError, TypeError):
+                continue
+            if result.get('live_offer_created') and str(result.get('live_offer_id')) != offer_id:
+                continue
+            timestamp = datetime.now(timezone.utc).isoformat()
+            changed = _execute(conn, """UPDATE offer_submissions
+                SET status='confirmed', stage='completed', offer_id=?, error='', updated_at=?
+                WHERE id=? AND status='unknown' AND error=? AND response_json=?""",
+                (offer_id, timestamp, int(row['id']), UNCONFIRMED_OFFER_ERROR, row['response_json']))
+            if changed.rowcount == 1:
+                _confirm_offer_job(conn, row, result, offer_id, response, timestamp)
+                repaired.append(int(row['id']))
+                logger.warning('Recovered successful offer response attempt=%s offer=%s', row['id'], offer_id)
+    return repaired
 
 
 def latest_offer_submission(job_id: int) -> dict | None:
@@ -2423,6 +2469,7 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
         result = json.loads(row["result_json"]) if row["result_json"] else None
         if not result:
             raise HTTPException(status_code=409, detail=row["error"] or "Расчёт ещё не готов")
+        result = invoice_result_for_job(result, job_id)
         is_manual = row["event_type"] == "manual_order"
         request_heading = (
             f"Ручная заявка {html.escape(str(result.get('manual_reference') or 'без номера'))}"
@@ -2599,12 +2646,31 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
             + "<p><label><input type='checkbox' name='confirm_customer' value='CONFIRMED' required> Реквизиты сверены с заявкой или сообщением плательщика</label></p>"
             + "<button type='submit'>Сохранить реквизиты плательщика</button></form></section>"
         )
+        seller_options = ''.join(
+            f"<option value='{html.escape(str(key), quote=True)}' {'selected' if key == 'saved' else ''}>"
+            f"{html.escape(str(profile['name']))} · ИНН {html.escape(str(profile['inn']))} · р/с {html.escape(str(profile['account']))}</option>"
+            for key, profile in _invoice_seller_profiles(result).items()
+            if key == 'saved' or profile != result.get('seller')
+        )
+        vat_options = ''.join(
+            f"<option value='{rate}' {'selected' if rate == result.get('vat_rate', 0.22) else ''}>{label}</option>"
+            for rate, label in ((0.22, '22%'), (0.2, '20%'), (0.1, '10%'), (0, 'Без НДС'))
+        )
+        seller_disabled = 'disabled' if offer_created else ''
+        seller_controls = (
+            "<section style='padding:14px;background:#eef4ff;border-radius:8px;margin:14px 0'><h2>Наша фирма в счёте</h2>"
+            f"<label>Фирма <select form='review-form' name='invoice_seller_id' required {seller_disabled}>"
+            f"<option value=''>Выберите нашу фирму</option>{seller_options}</select></label> "
+            f"<label>НДС <select form='review-form' name='invoice_vat_rate' {seller_disabled}>{vat_options}</select></label>"
+            "<p>Выбор применяется при сохранении или формировании счёта.</p>"
+            "<a href='/dashboard/tiles/sellers'>Реквизиты наших фирм</a></section>"
+        )
         invoice_link = (
             "<p><b>Формирование счёта заблокировано до заполнения реквизитов плательщика.</b></p>"
             if customer_error else
             f"<p><a href='/dashboard/automation/jobs/{job_id}/invoice.xlsx'>Скачать сформированный счёт</a></p>"
-            if result.get("status") == "ready_for_review" else
-            "<p><b>Счёт пока не сформирован: имеются позиции для проверки.</b></p>"
+            if offer_created else
+            "<p><button form='review-form' type='submit' name='review_action' value='download'>Сформировать и скачать счёт</button></p>"
         )
         if offer_created:
             offer_id = html.escape(str(result.get("live_offer_id") or "—"))
@@ -2621,7 +2687,7 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
                 "<p><b>Ручная заявка:</b> счёт можно скачать, но отправка предложения в Закупай не выполняется.</p>"
                 if is_manual else
                 "<p>Отправка предложения заблокирована до сохранения реквизитов плательщика.</p>" if customer_error else
-                f"<p><a href='/dashboard/order/{row['order_id']}/offer'>Перейти к подтверждению предложения в Закупай</a></p>"
+                "<p><button form='review-form' type='submit' name='review_action' value='offer'>Перейти к подтверждению предложения в Закупай</button></p>"
             )
             top_controls = f"<form method='post' action='/dashboard/automation/jobs/{job_id}/refresh'><p><button class='button' type='submit'>Повторить поиск у поставщиков</button></p></form>"
             save_control = "<p><button form='review-form' type='submit'>Сохранить и пересчитать счёт</button></p>"
@@ -2649,7 +2715,7 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
                 f"<p><a href='/dashboard/automation'>← Все заявки</a> · <a href='/dashboard/automation/jobs/{job_id}/comparison'>Сравнительная таблица поставщиков →</a></p>"
                 f"<h1>{request_heading}</h1>"
                 f"<p>Счёт № {row['invoice_number']} · статус: {'предложение выставлено' if offer_created else html.escape(str(row['status']))}</p>"
-                f"{navigation_notice}{sent_notice}{customer_form}{top_controls}{search_report}"
+                f"{navigation_notice}{sent_notice}{seller_controls}{customer_form}{top_controls}{search_report}"
                 f"<form id='review-form' method='post' action='/dashboard/automation/jobs/{job_id}/review'></form>{''.join(row_search_forms)}<table><tr><th><label class='include-priced'><input id='include-all-priced' type='checkbox' {'disabled' if offer_created else ''}> Включить все позиции с ценами</label></th><th>№</th><th>Заявка</th><th>Подбор поставщика<br><small>(закупочная цена)</small></th><th>Количество</th><th>Наша цена<br><small>за единицу заявки (+5%)</small></th>"
                 "<th>Статус подбора</th><th>Замена</th><th>Наличие</th><th>Срок</th><th>Решение</th></tr>"
                 + "".join(table_rows) + "</table>" + save_control + invoice_link + offer_link
@@ -2786,7 +2852,25 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
             row = _execute(conn, "SELECT * FROM automation_jobs WHERE id=?", (job_id,)).fetchone()
             if not row or not row["result_json"]:
                 raise HTTPException(status_code=404, detail="Заявка не найдена")
-            result = json.loads(row["result_json"])
+            result = invoice_result_for_job(json.loads(row["result_json"]), job_id)
+            submission = _execute(conn, 'SELECT status FROM offer_submissions WHERE job_id=? ORDER BY id DESC LIMIT 1', (job_id,)).fetchone()
+            if row['status'] in {'processing', 'offer_created'} or result.get('live_offer_created') or (submission and submission['status'] in {'sending', 'unknown'}):
+                raise HTTPException(409, 'Изменение счёта заблокировано: выполняется обработка или отправка уже начата.')
+            if 'invoice_seller_id' in form:
+                try:
+                    profile = _invoice_seller_profiles(result).get(str(form.get('invoice_seller_id') or ''))
+                    if not profile:
+                        raise ValueError('Выберите нашу фирму из списка.')
+                    seller = validate_seller(profile)
+                    vat_rate = float(form.get('invoice_vat_rate', result.get('vat_rate', 0.22)))
+                    if vat_rate not in (0, 0.1, 0.2, 0.22):
+                        raise ValueError('Выберите ставку НДС из списка.')
+                except (ValueError, TypeError) as exc:
+                    raise HTTPException(409, str(exc))
+                previous = result.get('seller') or {}
+                if (previous.get('inn'), previous.get('account')) != (seller['inn'], seller['account']):
+                    result['destination_account_id'] = ''
+                result.update(seller=seller, vat_rate=vat_rate, invoice_seller_confirmed_at=datetime.now(timezone.utc).isoformat())
             for item in result.get("items") or []:
                 pos = item.get("position")
                 raw_idx = str(form.get(f"candidate_{pos}") or "")
@@ -2866,7 +2950,12 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
             )
         for requested_name, candidate, action, request_key in feedback:
             _save_match_feedback(requested_name, candidate, action, request_key)
-        return Response(status_code=303, headers={"Location": f"/dashboard/automation/jobs/{job_id}/review"})
+        if form.get('review_action') == 'offer' and row['event_type'] != 'manual_order':
+            target = f"/dashboard/order/{row['order_id']}/offer"
+        else:
+            page = 'invoice.xlsx' if form.get('review_action') == 'download' else 'review'
+            target = f"/dashboard/automation/jobs/{job_id}/{page}"
+        return Response(status_code=303, headers={"Location": target})
 
     @app.get("/dashboard/automation/jobs/{job_id}/invoice.xlsx")
     def dashboard_automation_invoice(job_id: int):
@@ -2875,7 +2964,7 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
         if not row or not row["result_json"]:
             raise HTTPException(status_code=404, detail="Готовый счёт не найден")
         try:
-            result = invoice_result_for_job(json.loads(row["result_json"]), job_id)
+            result = _require_invoice_seller(invoice_result_for_job(json.loads(row["result_json"]), job_id))
             content = build_invoice_xlsx(result)
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc))
@@ -2890,8 +2979,8 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
             raise HTTPException(status_code=404, detail="Задание не найдено")
         if not row["result_json"]:
             raise HTTPException(status_code=409, detail=row["error"] or "Расчёт ещё не готов")
-        result = invoice_result_for_job(json.loads(row["result_json"]), job_id)
         try:
+            result = _require_invoice_seller(invoice_result_for_job(json.loads(row["result_json"]), job_id))
             content = build_invoice_xlsx(result)
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc))
