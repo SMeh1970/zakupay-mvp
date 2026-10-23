@@ -55,7 +55,13 @@ def diagnose_order_lookup(order_id, base_url, headers, *, get=None):
         if response.status_code == 200:
             # Parse bytes: Requests can guess Latin-1 for UTF-8 YAML without a
             # charset, producing C1 control characters in Russian descriptions.
-            parameters = _order_parameters(yaml.safe_load(response.content))
+            schema = yaml.safe_load(response.content)
+            metadata = {"type": type(schema).__name__}
+            if isinstance(schema, dict):
+                metadata["keys"] = sorted(str(key) for key in schema)
+                metadata["order_paths"] = [str(key) for key in (schema.get("paths") or {}) if "order" in str(key).lower()][:20]
+            logger.warning("order diagnostic schema_metadata=%s", json.dumps(metadata, ensure_ascii=False))
+            parameters = _order_parameters(schema)
             documented = {p.get("name") for p in parameters if isinstance(p.get("name"), str)}
             logger.warning("order diagnostic parameter_names=%s", json.dumps(sorted(documented), ensure_ascii=False))
             # The descriptions are from a public specification, not API data.
@@ -71,9 +77,10 @@ def diagnose_order_lookup(order_id, base_url, headers, *, get=None):
     common = {"ids": order_id, "format": "json", "isoDate": "true", "ignoreKeywordFilter": "true"}
     cases = [("current", common)]
     cases.append(("explicit_page", {**common, "count": 1, "page": 1}))
-    scope = {key: "true" for key in sorted(PROFILE_FLAGS & documented)}
-    if scope:
-        cases.append(("documented_profile_scope", {**common, "count": 1, "page": 1, **scope}))
+    # These flags are in the integration's previously reviewed specification.
+    # The public Swagger URL can return an index instead of the supplier spec.
+    scope = {key: "true" for key in sorted((PROFILE_FLAGS & documented) or PROFILE_FLAGS)}
+    cases.append(("profile_scope", {**common, "count": 1, "page": 1, **scope}))
     cases.append(("support_exact", {"ids": order_id}))
     for label, params in cases:
         if time.monotonic() >= deadline:
