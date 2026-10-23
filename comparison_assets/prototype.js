@@ -429,8 +429,8 @@ function buildBody(){
 }
 
 function fmtDelivery(d){
-  if(d.included) return '<span class="vus-yes">вкл. в цену товара</span>' + (d.note ? '<br><span style="color:var(--muted)">'+d.note+'</span>' : '');
-  if(d.amount !== null) return '<b>'+fmt(d.amount)+' ₽</b>' + (d.note ? '<br><span style="color:var(--muted)">'+d.note+'</span>' : '');
+  if(d.included) return '<span class="vus-yes">вкл. в цену товара</span>' + (d.note ? '<br><span class="delivery-note">'+d.note+'</span>' : '');
+  if(d.amount !== null) return '<b>'+fmt(d.amount)+' ₽</b>' + (d.note ? '<br><span class="delivery-note">'+d.note+'</span>' : '');
   return '<span style="color:var(--excluded)">не указана</span>';
 }
 
@@ -518,6 +518,7 @@ function recompute(){
     th.classList.toggle('off', !supplierOn[si]);
   });
 
+  const minimumTotals=suppliers.map(()=>0);
   let grandTotal = 0;
   let rowsCounted = 0;
 
@@ -550,7 +551,7 @@ function recompute(){
     });
 
     if(minCell){
-      minCell.classList.add('is-min');
+      minCell.classList.add('is-min');minimumTotals[+minCell.dataset.supplier]+=minSum;
     }
     if(anyIncluded && isFinite(minSum)){
       grandTotal += minSum;
@@ -558,6 +559,7 @@ function recompute(){
     }
   });
 
+  const totalRow=document.getElementById('totalRow');while(totalRow.children.length>3)totalRow.removeChild(totalRow.lastChild);minimumTotals.forEach((value,si)=>{const td=document.createElement('td');td.className='foot-cell';td.dataset.supplier=si;td.textContent=supplierOn[si]?fmt(value):'—';totalRow.appendChild(td);});
   document.getElementById('grandTotal').textContent = fmt(grandTotal)+' ₽';
   document.getElementById('rowsCounted').textContent = rowsCounted+' / '+items.length;
   document.getElementById('activeSuppliers').textContent = supplierOn.filter(Boolean).length + ' / ' + suppliers.length;

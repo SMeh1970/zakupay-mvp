@@ -10,15 +10,15 @@
   </div>
   <div class="summary-card">
     <div class="label">Сумма выбранных позиций (вручную)</div>
-    <div class="value grand-total-cell" id="selectedTotal" style="color:var(--warn);">—</div>
+    <div class="value grand-total-cell" id="selectedTotal">—</div>
   </div>
   <div class="summary-card">
     <div class="label">Позиций учтено в итоге</div>
-    <div class="value" id="rowsCounted" style="font-size:18px;">—</div>
+    <div class="value" id="rowsCounted">—</div>
   </div>
   <div class="summary-card">
     <div class="label">Активных поставщиков</div>
-    <div class="value" id="activeSuppliers" style="font-size:18px;">—</div>
+    <div class="value" id="activeSuppliers">—</div>
   </div>
 </div>
 
@@ -56,7 +56,7 @@
       <td class="item-col">Доставка</td>
       <td></td><td></td>
     </tr>
-    <tr class="own-total-row" id="grandWithDeliveryRow" style="background:#e4dcc0;">
+    <tr class="own-total-row" id="grandWithDeliveryRow">
       <td class="item-col">Итого с доставкой</td>
       <td></td><td></td>
     </tr>
@@ -77,9 +77,9 @@
 </div>
 
 <div class="legend">
-  <span><span class="swatch" style="background:var(--min-bg); border:1px solid var(--min);"></span>минимальная цена в строке</span>
-  <span><span class="swatch" style="background:var(--warn-soft); border:1px solid var(--warn);"></span>аномальная цена (проверить)</span>
-  <span><span class="swatch" style="background:var(--excluded);"></span>снято галочкой / нет позиции</span>
+  <span><span class="swatch"></span>минимальная цена в строке</span>
+  <span><span class="swatch"></span>аномальная цена (проверить)</span>
+  <span><span class="swatch"></span>снято галочкой / нет позиции</span>
 </div>
 
 <div class="note-foot">В ячейках — цена и количество предложения поставщика. Галочки включают и исключают предложения из сравнения. Нажмите цену: под исходными названием, количеством и единицей откроются данные поставщика и кнопки ✓/✗. Непроверенные отличия отмечены красным «!», отклонённые исключаются из итогов. Переключатель суммы/цены меняет только отображение; итоги считаются по полной сумме предложения. Скрытие столбца не исключает поставщика. Решения сравнения сохраняются; отправка счёта выполняется отдельно на странице проверки заявки.</div>

@@ -619,5 +619,7 @@ def install_supplier_comparison(app):
             cursor = _execute(conn, "UPDATE automation_jobs SET result_json=?,status=?,invoice_number=?,updated_at=? WHERE id=? AND result_json=? AND status=?", (raw, row["status"] if payload.get("action") == "prototype_state" else result["status"], invoice_number, datetime.now(timezone.utc).isoformat(), job_id, row["result_json"], row["status"]))
             if cursor.rowcount != 1:
                 raise HTTPException(409, "Заявка изменена. Обновите страницу.")
+        if payload.get("action") == "prototype_state":
+            return JSONResponse({"revision": revision(raw)}, headers={"Cache-Control": "no-store"})
         data = model(result, raw)
         return JSONResponse(data, headers={"Cache-Control": "no-store"})
