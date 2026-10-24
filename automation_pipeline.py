@@ -539,16 +539,25 @@ def _merge_line_ids(order: dict, detailed: dict | None) -> dict:
     return merged
 
 
+def _norm_keep_decimals(text: str) -> str:
+    """_norm, but 3,5 / 3.5 stay one number instead of splitting into "3 5"."""
+    protected = re.sub(r"(?<=\d)[.,](?=\d)", "decpoint", text or "")
+    return _norm(protected).replace("decpoint", ".")
+
+
 def _search_variants(requested: str) -> list[str]:
     """Search exact identifiers first, then progressively broader text variants."""
     variants = []
     for identifier in sorted(_identifiers(requested), key=len, reverse=True):
+        # A bare size such as 5Х51 (the tail of "3,5х51") is not an article.
+        if re.fullmatch(r"\d+[XХ]\d+", identifier):
+            continue
         variants.append(identifier)
     cleaned = re.sub(r"https?://\S+", " ", requested, flags=re.I)
     cleaned = re.sub(r"\b(?:комментарий|код товара)\s*:\s*", " ", cleaned, flags=re.I)
     cleaned = " ".join(cleaned.split())
     key_tokens = [
-        token for token in _norm(cleaned).split()
+        token for token in _norm_keep_decimals(cleaned).split()
         if len(token) >= 2 and token not in {
             "для", "шт", "штук", "упаковка", "комплект", "набор", "требуется",
             "эквивалент", "аналог", "цвет", "материал", "товар", "изделие",
@@ -560,7 +569,7 @@ def _search_variants(requested: str) -> list[str]:
     # understands long descriptions, while the API may rank them differently.
     # Mixed Cyrillic/Latin multiplication signs and decimal commas are common.
     fastener_text = cleaned.lower().replace("×", "x").replace("х", "x").replace("*", "x")
-    fastener_size = re.search(r"(?<!\\d)(\\d+(?:[.,]\\d+)?)\\s*x\\s*(\\d+(?:[.,]\\d+)?)(?!\\d)", fastener_text)
+    fastener_size = re.search(r"(?<!\d)(\d+(?:[.,]\d+)?)\s*x\s*(\d+(?:[.,]\d+)?)(?!\d)", fastener_text)
     if fastener_size and ("саморез" in fastener_text or "винт самонарезающ" in fastener_text):
         diameter, length = fastener_size.groups()
         diameter = diameter.replace(",", ".")
@@ -581,7 +590,7 @@ def _search_variants(requested: str) -> list[str]:
         ("стекло защитное", "светофильтр"),
         ("держатель", "адаптер"),
     )
-    normalized = _norm(cleaned)
+    normalized = _norm_keep_decimals(cleaned)
 
     # VI's public site expands Russian word forms automatically, while the
     # OpenAPI product search is less forgiving.  A catalogue request such as
@@ -611,11 +620,16 @@ def _search_variants(requested: str) -> list[str]:
     # a category that the public site finds but the API text search may omit.
     if "нарукавник" in normalized and "брезент" in normalized:
         variants.extend(["36641496", "28210004", "30698780", "38046468"])
+    def swap_synonym(text: str, source: str, target: str) -> str:
+        # Replace the whole word form, so "саморезы" does not become
+        # "винт самонарезающийы".
+        return re.sub(r"(?<!\w)" + re.escape(source) + r"\w*", target, text)
+
     for left, right in synonym_groups:
         if left in normalized:
-            variants.append(normalized.replace(left, right))
+            variants.append(swap_synonym(normalized, left, right))
         if right in normalized:
-            variants.append(normalized.replace(right, left))
+            variants.append(swap_synonym(normalized, right, left))
     variants.extend([cleaned, requested])
     return list(dict.fromkeys(value for value in variants if value.strip()))
 
