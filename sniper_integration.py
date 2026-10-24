@@ -343,11 +343,12 @@ def install_sniper(app):
     router = APIRouter(prefix="/dashboard/sniper", dependencies=[Depends(require_session)])
 
     @router.get("")
-    def dashboard(request: Request, message: str = "", job_id: int = 0, login: str = "", connection_error: bool = False):
+    def dashboard(request: Request, message: str = "", job_id: int = 0, login: str = "", connection_error: bool = False, positions: str = "", batch: int = 1):
         saved = settings()
         configured = bool(saved.get("encrypted_token") or os.getenv("SNIPER_API_TOKEN"))
         state = "Доступ проверен " + esc(saved["verified_at"]) if saved.get("verified_at") else "Ключ настроен, доступ ещё не проверен" if configured else "Аккаунт ещё не подключён"
         goods, name = "", "Запрос поставщикам"
+        batches = ""
         if job_id:
             from automation_pipeline import _saved_order_snapshot
             with database() as conn:
@@ -357,7 +358,25 @@ def install_sniper(app):
             order = _saved_order_snapshot(row, json.loads(row["result_json"] or "{}")) or {}
             name = str(order.get("name") or row["subject"] or name)[:100]
             entries = []
-            for item in order.get("orderItems") or []:
+            selected = {int(v) for v in positions.split(",") if v.isdigit() and int(v)>0}
+            if positions and not selected:
+                raise HTTPException(400, "Не выбраны позиции")
+            source_items = order.get("orderItems") or []
+            if selected and not selected.issubset(set(range(1,len(source_items)+1))):
+                raise HTTPException(400, "Позиция отсутствует в заявке")
+            chosen = sorted(selected or set(range(1, len(source_items)+1)))
+            count = (len(chosen)+19)//20
+            if batch < 1 or batch > max(1,count):
+                raise HTTPException(400, "Партия отсутствует")
+            if count > 1:
+                params = {"job_id": job_id, "positions": ",".join(map(str, chosen))}
+                batches = (f"<p>Выбрано {len(chosen)} позиций. Sniper принимает до 20 за запрос. "
+                    f"Сейчас партия {batch} из {count}; каждую партию запускайте отдельно.</p>"
+                    + " ".join(f"<a href='/dashboard/sniper?{esc(urlencode({**params, 'batch':n}))}'>Партия {n}</a>" for n in range(1,count+1)))
+            selected = set(chosen[(batch-1)*20:batch*20])
+            for position, item in enumerate(source_items, 1):
+                if selected and position not in selected:
+                    continue
                 unit = item.get("unit") or {}
                 entries.append(f"{item.get('goodName') or ''}; {item.get('count') or ''}; {unit.get('name', '') if isinstance(unit, dict) else unit}")
             goods = "\n".join(entries)
@@ -374,7 +393,7 @@ def install_sniper(app):
             body += "</details>"
         if configured:
             body += start_form(request, "/dashboard/sniper/check") + "<button>Проверить доступ без поиска и рассылки</button></form>"
-        body += "</section><section><h2>Новый запрос</h2><p>Поиск собирает контакты поставщиков. Рассылка дополнительно ищет поставщиков и отправляет им письмо от вашего аккаунта Sniper.</p>"
+        body += "</section><section><h2>Новый запрос</h2>" + batches + "<p>Поиск собирает контакты поставщиков. Рассылка дополнительно ищет поставщиков и отправляет им письмо от вашего аккаунта Sniper.</p>"
         body += start_form(request, "/dashboard/sniper/prepare") + f"<input type='hidden' name='job_id' value='{job_id or ''}'><label>Название <input name='name' value='{esc(name)}' maxlength='100' required></label><label>Действие <select name='kind'><option value='scan'>Только поиск поставщиков</option><option value='wizard'>Поиск и рассылка</option></select></label><label>Позиции: наименование; количество; единица<br><textarea name='goods' rows='12' cols='90' required>{esc(goods)}</textarea></label><p class='note'>До 20 позиций за один запуск. Для заявки большего размера оставьте нужную партию. Дробные количества укажите также в тексте письма. Поиск по умолчанию: русский язык, весь мир — согласно настройкам Sniper.</p><label>Тема письма (для рассылки) <input name='email_subject' maxlength='100' value='Запрос цен и наличия'></label><label>Текст письма (для рассылки)<br><textarea name='email_body' rows='8' cols='90' maxlength='10000'>{esc(email_text)}</textarea></label><button>Проверить запрос перед запуском</button></form></section>"
         emails = "\n".join(json.loads(saved.get("email_blacklist") or "[]"))
         sites = "\n".join(json.loads(saved.get("site_blacklist") or "[]"))

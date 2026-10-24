@@ -577,6 +577,10 @@ def install_supplier_comparison(app):
         serialized = json.dumps(data, ensure_ascii=False, allow_nan=False).replace("<", "\\u003c").replace("&", "\\u0026")
         nonce = security.secrets.token_urlsafe(18)
         template = (ASSETS / "prototype-body.html").read_text()
+        if result.get("live_offer_created"):
+            template = (f"<section><b>По этому варианту выставлен счёт.</b>"
+                f"<form method='post' action='/dashboard/automation/jobs/{job_id}/revision'>"
+                "<button>Продолжить подбор в новом варианте</button></form></section>" + template)
         content = f'''<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Сравнение поставщиков · Закупай</title><link rel="stylesheet" href="/dashboard/comparison/assets/prototype.css"></head><body><nav><a href="/dashboard/automation">Закупай MVP</a><a href="/dashboard/automation/jobs/{job_id}/review">← К проверке заявки</a><a href="/dashboard/prices">Прайсы</a></nav>{template}<script nonce="{nonce}" type="application/json" id="comparison-data">{serialized}</script><script nonce="{nonce}" src="/dashboard/comparison/assets/prototype.js"></script></body></html>'''
         return HTMLResponse(content, headers={"Cache-Control": "no-store", "Content-Security-Policy": f"default-src 'none'; script-src 'nonce-{nonce}'; style-src 'self'; connect-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"})
 

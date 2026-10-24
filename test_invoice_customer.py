@@ -152,12 +152,18 @@ class CustomerWorkflowTests(unittest.TestCase):
     def test_correcting_sent_invoice_keeps_duplicate_submission_protection(self):
         pipeline.mark_automation_offer_created(self.job_id, offer_id=340691441)
         self.assertEqual(self.client.post(self.customer_url, data=self.customer_form, follow_redirects=False).status_code, 303)
-        self.assertEqual(self.client.get(self.invoice_url).status_code, 200)
-        result = pipeline.load_automation_offer_context(self.order["id"])["result"]
+        draft = pipeline.editable_revision(self.job_id)
+        self.assertNotEqual(draft, self.job_id)
+        self.assertEqual(self.client.get(f"/dashboard/automation/jobs/{draft}/invoice.xlsx").status_code, 200)
+        from contextlib import closing
+        with closing(pipeline._connect()) as conn:
+            old = conn.execute("SELECT result_json FROM automation_jobs WHERE id=?", (self.job_id,)).fetchone()
+        result = json.loads(old[0])
         self.assertTrue(result["live_offer_created"])
         self.assertEqual(result["live_offer_id"], 340691441)
-        response = self.client.post(f"/dashboard/order/{self.order['id']}/offer/submit", data={"confirm_send": "SEND", "producer_offer_number": "262"})
-        self.assertEqual(response.status_code, 409)
+        new_result = pipeline.load_automation_offer_context(self.order["id"])["result"]
+        self.assertFalse(new_result["live_offer_created"])
+        self.assertEqual(new_result["previous_offer"]["job_id"], self.job_id)
         self.fetch.assert_not_called()
 
     def test_list_shows_source_date_and_customer_without_external_lookup(self):
@@ -168,22 +174,23 @@ class CustomerWorkflowTests(unittest.TestCase):
         response = self.client.get("/dashboard/automation")
         self.assertEqual(response.status_code, 200)
         self.assertIn("Дата заявки:</b> 29.09.2026", response.text)
-        self.assertIn("Заказчик:</b> ООО «Заказчик &lt;источник&gt;»", response.text)
+        self.assertIn("title='ООО «Заказчик &lt;источник&gt;»'", response.text)
+        self.assertIn(">Заказчик &lt;источник&gt;</span>", response.text)
         self.assertNotIn("Заказчик:</b> ООО «СТРОЙЛОГИСТИКА»", response.text)
         self.fetch.assert_not_called()
 
     def test_list_does_not_present_import_date_as_missing_order_date(self):
         response = self.client.get("/dashboard/automation")
         self.assertIn("Дата заявки:</b> не передана", response.text)
-        self.assertIn("Заказчик:</b> не указан", response.text)
+        self.assertIn(">не указан</span>", response.text)
 
     def test_pending_and_manual_requests_show_metadata_before_supplier_search(self):
         pending = pipeline.save_api_order_for_manual_start({**self.order, "id": 999, "creationDate": "2026-10-01", "customer": {"name": "Заказчик без подбора"}})
         manual = pipeline.save_manual_order("Ручная заявка", [{"goodName": "Товар", "count": 1}], customer_name="Ручной заказчик")
         response = self.client.get("/dashboard/automation")
         self.assertIn("Дата заявки:</b> 01.10.2026", response.text)
-        self.assertIn("Заказчик:</b> Заказчик без подбора", response.text)
-        self.assertIn("Заказчик:</b> Ручной заказчик", response.text)
+        self.assertIn(">Заказчик без подбора</span>", response.text)
+        self.assertIn(">Ручной заказчик</span>", response.text)
         self.assertNotEqual(pending["job_id"], manual["job_id"])
 
     def test_default_selection_distinguishes_suppliers_with_same_sku_and_allows_override(self):

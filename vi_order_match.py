@@ -21,7 +21,99 @@ def _tokens(s):
 _GENERIC_TOKENS = {
     "для", "шт", "штук", "мм", "см", "м", "набор", "комплект", "упаковка",
     "инструмент", "расходный", "материал", "профессиональный",
+    # Units are compared by _measurements(); as words they only add noise.
+    "дюйм", "дюйма", "дюймов", "дюймовый", "inch",
 }
+
+# Explicit, reviewed synonym groups. Both the request and the candidate are
+# rewritten to the same canonical token, so a match appears only when both
+# sides state the feature. This does not lower any score threshold.
+_FEATURE_SYNONYMS = (
+    (re.compile(r"\b(?:прорезинен\w*|epdm|резинов\w*\s+(?:уплотнител\w*|прокладк\w*|вкладыш\w*|вставк\w*))"), "feat_rubber_lined"),
+)
+
+_RANGE_RE = re.compile(r"(?<!\d)(?<!\d[.,])(\d{1,3})\s*[-–—]\s*(\d{1,3})(?!\d)(?![.,]\d)(?:\s*(мм|mm|см|cm|м|m)(?![а-яa-z]))?", re.I)
+
+
+def _canonical_features(normalized):
+    for pattern, token in _FEATURE_SYNONYMS:
+        normalized = re.sub(r"\b(?:без|нет|не)\s+(?:" + pattern.pattern + r")", "neg_" + token, normalized)
+        normalized = re.sub(r"(?:" + pattern.pattern + r")\s+(?:нет|отсутствует|отсутствуют)\b", "neg_" + token, normalized)
+        normalized = pattern.sub(token, normalized)
+    return normalized
+
+
+def _range_records(s):
+    """Only locally identified dimensions; unrelated units do not identify articles."""
+    text = str(s or "").lower()
+    records = []
+    for match in _RANGE_RE.finditer(text):
+        if (match.start() and re.match(r"[\w./–—-]", text[match.start()-1])) or (match.end() < len(text) and re.match(r"[\w/–—-]", text[match.end()])):
+            continue
+        low, high, unit = match.groups()
+        if int(low) >= int(high):
+            continue
+        prefix = text[:match.start()]
+        label = re.search(r"\b(диаметр|длина|ширина|высота|толщина|dn|ду)\s*[:=]?\s*$", prefix)
+        article = re.search(r"\b(?:артикул|арт|модель|код)\.?\s*[:=]?\s*$", prefix)
+        if article:
+            continue
+        kind = label.group(1) if label else ""
+        # A single unlabelled clamp range conventionally describes its diameter.
+        if not kind and re.search(r"\bхомут\w*\b", text) and len(list(_RANGE_RE.finditer(text))) == 1:
+            kind = "диаметр"
+        if not kind and not unit:
+            continue
+        unit = {"mm": "мм", "cm": "см", "m": "м"}.get((unit or "").lower(), (unit or "").lower())
+        records.append((int(low), int(high), unit, kind, match.start(), match.end()))
+    return records
+
+
+def _ranges(s):
+    return {record[:3] for record in _range_records(s)}
+
+
+def _range_relation(requested, candidate_text):
+    """Compare size ranges of the request and the candidate.
+
+    None: no comparable ranges. same / different (overlap) / disjoint (same
+    explicit unit on both sides) / disjoint_unverified (a unit is missing, so it
+    is not certain that the same characteristic is compared).
+    """
+    wanted, offered = _range_records(requested), _range_records(candidate_text)
+    if not wanted:
+        return None
+    results = []
+    for w in wanted:
+        peers = [o for o in offered if w[3] and w[3] == o[3]]
+        if len(peers) != 1 or sum(r[3] == w[3] for r in wanted) != 1:
+            results.append("disjoint_unverified")
+            continue
+        o = peers[0]
+        if w[2] and o[2] and w[2] != o[2]:
+            results.append("disjoint_unverified")
+        elif w[:2] == o[:2]:
+            results.append("same")
+        elif w[0] <= o[1] and o[0] <= w[1]:
+            results.append("different")
+        else:
+            results.append("disjoint" if w[2] and w[2] == o[2] else "disjoint_unverified")
+    if "disjoint" in results:
+        return "disjoint"
+    if "disjoint_unverified" in results:
+        return "disjoint_unverified"
+    if "different" in results:
+        return "different"
+    return "same"
+
+
+def _features(text):
+    """Canonical feature tokens (e.g. feat_rubber_lined) stated in a text."""
+    return {t for t in _canonical_features(_norm(text)).split() if t.startswith("feat_")}
+
+
+def _negative_features(text):
+    return {t[4:] for t in _canonical_features(_norm(text)).split() if t.startswith("neg_feat_")}
 
 # Supplier brand fields extend this vocabulary at each search, including brands
 # that were not known when the application was deployed.
@@ -46,7 +138,10 @@ def _requested_brands(requested, brands=()):
 
 def _identifiers(s):
     """Model/article-like fragments: RT-IB150, 80661, DIN7504-O, RF-TC7005."""
-    raw = (s or "").upper().replace("Ё", "Е")
+    raw = s or ""
+    for record in reversed(_range_records(raw)):
+        raw = raw[:record[4]] + " " + raw[record[5]:]
+    raw = raw.upper().replace("Ё", "Е")
     values = set(re.findall(r"(?<![A-ZА-Я0-9])(?=[A-ZА-Я0-9./_-]{4,})(?=[A-ZА-Я0-9./_-]*\d)[A-ZА-Я0-9]+(?:[-_/][A-ZА-Я0-9]+)*(?![A-ZА-Я0-9])", raw))
     normalized = {re.sub(r"[^A-ZА-Я0-9]", "", x) for x in values}
     measurement_only = re.compile(r"^\d+(?:ММ|СМ|М|МЛ|Л|Г|КГ|ВТ|КВТ|В|А|БАР)$")
@@ -56,6 +151,8 @@ def _identifiers(s):
 def _measurements(s):
     """Comparable measurements while keeping the unit (10x160 mm, 2 inch, 500 g)."""
     text = (s or "").lower().replace("×", "x").replace("*", "x").replace(",", ".")
+    for record in reversed(_range_records(text)):
+        text = text[:record[4]] + " " + text[record[5]:]
     found = set()
     for dims, unit in re.findall(r"(\d+(?:\.\d+)?(?:\s*x\s*\d+(?:\.\d+)?){0,2})\s*(мм|mm|см|cm|мл|ml|м|m|л|l|г|гр|g|кг|kg|вт|w|квт|kw|в|v|а|a|бар|bar|дюйм(?:а|ов)?|inch|\")", text):
         nums = "x".join(part.strip().lstrip("0") or "0" for part in dims.split("x"))
@@ -76,8 +173,8 @@ def _score_details(request_name, quote):
     if not a or not b:
         return 0.0, ["пустое наименование"]
     seq = SequenceMatcher(None, a, b).ratio()
-    ta = _tokens(a) - _GENERIC_TOKENS
-    tb = _tokens(b) - _GENERIC_TOKENS
+    ta = _tokens(_canonical_features(a)) - _GENERIC_TOKENS
+    tb = _tokens(_canonical_features(b)) - _GENERIC_TOKENS
     overlap = len(ta & tb) / max(1, len(ta))
     bonus = 0.0
     reasons = []
@@ -107,6 +204,13 @@ def _score_details(request_name, quote):
         if not shared_measures:
             penalty += 0.38
             reasons.append("конфликт размеров")
+
+    relation = _range_relation(request_name, quote.name)
+    if relation == "same":
+        bonus += 0.06
+        reasons.append("совпал диапазон размеров")
+    elif relation == "different":
+        reasons.append("диапазон размеров отличается")
 
     req_brand = _norm(str(quote.brand or ""))
     if req_brand and req_brand not in a and any(x in a for x in ("karbosan", "matrix", "gigant", "runtec", "izeltas", "rockforce", "сибртех", "практика", "skole", "voll")):

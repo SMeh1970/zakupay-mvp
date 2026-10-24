@@ -3,6 +3,7 @@
 import html
 import json
 import math
+import re
 import unicodedata
 from datetime import datetime
 from urllib.parse import urlencode
@@ -79,6 +80,41 @@ def _norm(value):
     return str(value or "").casefold().replace("ё", "е").strip()
 
 
+def short_company_name(value):
+    name = " ".join(str(value or "").split())
+    prefix = re.compile(r'^(?:общество\s+с\s+ограниченной\s+ответственностью|'
+        r'публичное\s+акционерное\s+общество|непубличное\s+акционерное\s+общество|'
+        r'акционерное\s+общество|закрытое\s+акционерное\s+общество|открытое\s+акционерное\s+общество|'
+        r'индивидуальный\s+предприниматель|специализированный\s+застройщик|ООО|ПАО|НАО|ЗАО|ОАО|АО|ИП|СЗ)\b[\s«»"“”]*', re.I)
+    original = name
+    name = name.strip(' «»"“”')
+    while prefix.match(name):
+        name = prefix.sub('', name, count=1).strip(' «»"“”')
+    return name or original
+
+
+def short_category_name(value):
+    name = str(value or '').strip()
+    # Drop parent sections only where the source explicitly supplies a path.
+    leaf = re.split(r'\s*(?:→|>| / | \\ )\s*', name)[-1].strip()
+    return leaf if len(leaf) <= 70 else leaf[:67].rstrip() + '…'
+
+
+def order_city(order):
+    for key in ('city', 'deliveryCity', 'locality', 'settlement'):
+        value = _name(order.get(key)).strip()
+        if value:
+            return value
+    address = order.get('deliveryAddress') or order.get('address') or ''
+    if isinstance(address, dict):
+        value = order_city(address)
+        if value:
+            return value
+        address = address.get('fullAddress') or address.get('address') or ''
+    match = re.search(r'(?:^|[,;]\s*|\s)(?:город\s+|г\.\s*)([^,;\n]+)', str(address), re.I)
+    return match[1].strip() if match else ''
+
+
 def _number(value):
     try:
         number = float(str(value).strip().replace(",", ".")) if value is not None and str(value).strip() else None
@@ -151,6 +187,8 @@ def describe(row):
         "id": int(row["id"]), "order_id": str(row["order_id"]),
         "reference": str(result.get("manual_reference") or ""), "title": title,
         "customer": customer["name"], "inn": customer["inn"],
+        "customer_short": short_company_name(customer["name"]), "city": order_city(order),
+        "category_short": " · ".join(dict.fromkeys(short_category_name(v) for v in categories.values())),
         "source": "manual" if row["event_type"] == "manual_order" else "zakupay",
         "status": "offer_created" if result.get("live_offer_created") else row["status"],
         "viewed": bool(row["viewed_at"]), "sent": sent,

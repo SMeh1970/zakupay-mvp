@@ -32,7 +32,7 @@ from fastapi.responses import JSONResponse, Response
 
 from supplier_adapters import KrepKompAdapter, VseinstrumentiAdapter, PriceListAdapter, OwnCatalogAdapter
 from search_session import SearchSession
-from vi_order_match import _contains_brand, _identifiers, _label, _measurements, _norm, _requested_brands, _score_details
+from vi_order_match import _contains_brand, _identifiers, _label, _measurements, _norm, _features, _negative_features, _range_relation, _ranges, _requested_brands, _score_details
 from zakupay_email import parse_zakupay_email
 from invoice_generator import build_invoice_xlsx, customer_validation_error, normalize_customer, validate_seller, invoice_filename
 from offer_responses import confirmed_offer_id, UNCONFIRMED_OFFER_ERROR
@@ -548,9 +548,16 @@ def _norm_keep_decimals(text: str) -> str:
 def _search_variants(requested: str) -> list[str]:
     """Search exact identifiers first, then progressively broader text variants."""
     variants = []
+    if "хомут" in requested.lower():
+        # Keep the original inch notation and mounting range intact.
+        variants.append(requested.strip())
     for identifier in sorted(_identifiers(requested), key=len, reverse=True):
         # A bare size such as 5Х51 (the tail of "3,5х51") is not an article.
         if re.fullmatch(r"\d+[XХ]\d+", identifier):
+            continue
+        # Same for a range (56-64 -> 5664) next to an explicit size; only an extra
+        # query is skipped here, the full text query is always sent.
+        if identifier in _range_forms(requested) and re.search(r'дюйм|inch|"|″|\bмм\b|\bmm\b', requested, re.I):
             continue
         variants.append(identifier)
     cleaned = re.sub(r"https?://\S+", " ", requested, flags=re.I)
@@ -852,6 +859,10 @@ def _hard_conflicts(requested: str, selected: dict) -> list[str]:
         )
     requested_ids = _identifiers(requested)
     candidate_ids = _identifiers(candidate_text)
+    relation = _range_relation(requested, candidate_text)
+    if (_features(requested) & _negative_features(candidate_text)
+            or _negative_features(requested) & _features(candidate_text)):
+        conflicts.append("противоречие обязательному признаку: резиновый уплотнитель")
     if requested_ids and not candidate_ids:
         conflicts.append("в найденном товаре отсутствует обязательная модель/артикул")
     elif requested_ids and not (requested_ids & candidate_ids):
@@ -859,11 +870,73 @@ def _hard_conflicts(requested: str, selected: dict) -> list[str]:
     requested_measures = _measurements(requested)
     candidate_measures = _measurements(candidate_text)
     if requested_measures and not candidate_measures:
-        conflicts.append("в найденном товаре отсутствуют обязательные размеры/характеристики")
+        conflicts.append("в найденном товаре отсутствуют обязательные размеры/характеристики: " + ", ".join(sorted(requested_measures)))
     elif requested_measures and not requested_measures.issubset(candidate_measures):
         missing = ", ".join(sorted(requested_measures - candidate_measures))
         conflicts.append(f"не совпадают размеры: {missing}")
+    if relation == "disjoint":
+        conflicts.append("диапазон размеров не пересекается с заявкой: "
+                         + _format_ranges(_ranges(candidate_text)) + " вместо " + _format_ranges(_ranges(requested)))
     return conflicts
+
+
+def _format_ranges(ranges) -> str:
+    return ", ".join(f"{low}-{high}" + (f" {unit}" if unit else "") for low, high, unit in sorted(ranges))
+
+
+def _range_forms(text: str) -> set[str]:
+    """Digits-only forms that _identifiers produces from ranges (56-64 -> 5664)."""
+    return {f"{low}{high}" for low, high, _ in _ranges(text)}
+
+
+def _range_note(requested: str, candidate: dict | None) -> str | None:
+    """Soft note: the size range differs from the request, user must confirm."""
+    if not candidate:
+        return None
+    text = " ".join(str(candidate.get(key) or "") for key in ("name", "article", "sku"))
+    relation = _range_relation(requested, text)
+    if relation == "different":
+        return ("диапазон размеров отличается: в заявке " + _format_ranges(_ranges(requested))
+                + ", в товаре " + _format_ranges(_ranges(text)) + " — требуется подтверждение")
+    if relation == "disjoint_unverified":
+        return ("назначение, единица или значение диапазона не подтверждены: в заявке "
+                + _format_ranges(_ranges(requested)) + ", в товаре " + _format_ranges(_ranges(text))
+                + " — требуется проверка")
+    return None
+
+
+def _required_clarifications(requested: str, candidate: dict) -> list[str]:
+    text = " ".join(str(candidate.get(key) or "") for key in ("name", "article", "sku"))
+    reasons = []
+    note = _range_note(requested, candidate)
+    if note:
+        reasons.append(note)
+    for feature in sorted(_features(requested) - _features(text)):
+        label = {"feat_rubber_lined": "прорезиненный (резиновый уплотнитель)"}.get(feature, feature)
+        reasons.append(f"в названии не указан признак «{label}» — нужно уточнить")
+    if _negative_features(requested) - _negative_features(text):
+        reasons.append("отсутствие резинового уплотнителя не подтверждено — нужно уточнить")
+    return reasons
+
+
+def _clarification_reasons(requested: str, candidate: dict) -> list[str] | None:
+    """Characteristic-based 'close variant' test, independent of the text score.
+
+    None: not close (conflict, other product type, nothing shared). Otherwise the
+    list of points the user has to confirm. Never makes a candidate selectable.
+    """
+    if _hard_conflicts(requested, candidate):
+        return None
+    text = " ".join(str(candidate.get(key) or "") for key in ("name", "article", "sku"))
+    head = next((t for t in _norm(requested).split() if len(t) >= 5 and t not in {"сантехнический", "металлический"}), "")
+    if not head or not any(t.startswith(head[:5]) for t in _norm(text).split()):
+        return None
+    shared_measure = bool(_measurements(requested) & _measurements(text))
+    relation = _range_relation(requested, text)
+    if not shared_measure and relation not in {"same", "different"}:
+        return None
+    reasons = _required_clarifications(requested, candidate)
+    return reasons or ["совпали тип и размер, текстовое сходство низкое — нужно уточнить"]
 
 
 def _match_status(requested: str, candidate: dict | None, score: float, conflicts: list[str]) -> str:
@@ -874,12 +947,17 @@ def _match_status(requested: str, candidate: dict | None, score: float, conflict
     candidate_text = " ".join(str(candidate.get(key) or "") for key in ("name", "article", "sku"))
     exact_identifier = bool(_identifiers(requested) & _identifiers(candidate_text))
     if exact_identifier or score >= AUTO_MATCH_THRESHOLD:
-        return "точное"
-    if score >= REVIEW_MATCH_THRESHOLD:
-        return "аналог"
-    if score >= 0.48:
+        status = "точное"
+    elif score >= REVIEW_MATCH_THRESHOLD:
+        status = "аналог"
+    elif score >= 0.48:
+        status = "сомнительное"
+    else:
+        return "не соответствует"
+    # A different size range is never an automatic match: show it for confirmation.
+    if status in {"точное", "аналог"} and _required_clarifications(requested, candidate):
         return "сомнительное"
-    return "не соответствует"
+    return status
 
 
 def _supplier_balanced_candidates(candidates: list[dict], per_supplier: int = 3, limit: int = 8) -> list[dict]:
@@ -947,6 +1025,11 @@ def _build_match_row(position: int, item: dict, suppliers, excluded_keys: set[st
     # diagnostics; they must never become the selected invoice line.
     acceptable = [x for x in candidates if (x.get("match_score") or 0) >= 0.48]
     rejected.extend(x for x in candidates if (x.get("match_score") or 0) < 0.48)
+    near_candidates = []
+    for x in candidates:
+        reasons = _clarification_reasons(requested, x) if (x.get("match_score") or 0) < 0.48 else None
+        if reasons is not None:
+            near_candidates.append({**x, "clarification_reasons": reasons})
     candidates = acceptable
     best = candidates[0] if candidates else None
     score = (best or {}).get("match_score") or 0
@@ -961,6 +1044,7 @@ def _build_match_row(position: int, item: dict, suppliers, excluded_keys: set[st
     dated_availability = not historical and stock is None and bool(courier_date or pickup_date)
     conflicts = _hard_conflicts(requested, best or {}) if best else []
     match_status = _match_status(requested, best, score, conflicts)
+    clarification = _required_clarifications(requested, best) if best else []
     availability_status = (
         "цена из прайса/каталога; наличие требует подтверждения" if historical else
         "количество подтверждено" if enough_stock else
@@ -969,7 +1053,7 @@ def _build_match_row(position: int, item: dict, suppliers, excluded_keys: set[st
         "подтвержденного количества недостаточно" if stock is not None else
         "наличие не подтверждено"
     )
-    can_auto = match_status == "точное"
+    can_auto = match_status == "точное" and not clarification
     if can_auto and (enough_stock or dated_availability) and math.isfinite(_unit_candidate_price(best, requested_unit)):
         decision = "auto_ready"
     elif match_status in {"аналог", "сомнительное"}:
@@ -998,7 +1082,10 @@ def _build_match_row(position: int, item: dict, suppliers, excluded_keys: set[st
         "pack_size": pack_size,
         "purchase_units": purchase_units,
         "match_status": match_status,
-        "replacement_details": conflicts,
+        "replacement_details": conflicts + ([note] if (note := _range_note(requested, best)) else []),
+        "clarification_reasons": clarification,
+        "near_candidates": near_candidates[:5],
+        "needs_clarification": bool(clarification or near_candidates),
         "candidates": _supplier_balanced_candidates(candidates),
         "rejected_candidates": rejected[:20],
         "excluded_candidate_keys": sorted(excluded_keys),
@@ -1344,8 +1431,49 @@ def saved_job_id(order_id: int) -> int | None:
     return int(row["id"]) if row else None
 
 
+def editable_revision(job_id):
+    """Fork a sent snapshot once; submission history remains attached to its job."""
+    from contextlib import closing
+    with _lock, closing(_connect()) as conn, conn:
+        while True:
+            row = _execute(conn, "SELECT * FROM automation_jobs WHERE id=?", (job_id,)).fetchone()
+            if not row:
+                raise HTTPException(404, "Заявка не найдена")
+            result = json.loads(row["result_json"] or "{}")
+            pending = _execute(conn, "SELECT id FROM offer_submissions WHERE job_id=? AND status IN ('sending','unknown') LIMIT 1", (job_id,)).fetchone()
+            if pending:
+                raise HTTPException(409, "Сначала проверьте состояние отправки")
+            if not result.get("live_offer_created") and row["status"] != "offer_created":
+                if row["status"] == "processing":
+                    raise HTTPException(409, "Дождитесь окончания поиска")
+                return job_id
+            dedupe = f"revision:{job_id}"
+            existing = _execute(conn, "SELECT id FROM automation_jobs WHERE dedupe_key=?", (dedupe,)).fetchone()
+            if not existing:
+                break
+            job_id = existing["id"]
+        result["previous_offer"] = dict(job_id=job_id, offer_id=result.get("live_offer_id"),
+            invoice_number=row["invoice_number"], sent_at=result.get("live_offer_created_at"))
+        for key in list(result):
+            if key.startswith("live_offer_") or key in {"offer_response", "file_id", "invoice_number"}:
+                result.pop(key, None)
+        result["live_offer_created"] = False
+        maximum = _execute(conn, "SELECT MAX(invoice_number) AS maximum FROM automation_jobs").fetchone()["maximum"]
+        result["invoice_number"] = max(INVOICE_NUMBER_START, (maximum or INVOICE_NUMBER_START - 1) + 1)
+        _refresh_summary(result)
+        stamp = datetime.now(timezone.utc).isoformat()
+        _execute(conn, """INSERT INTO automation_jobs
+            (dedupe_key,order_id,event_type,subject,sender,status,order_json,result_json,created_at,updated_at,invoice_number)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(dedupe_key) DO NOTHING""",
+            (dedupe,row["order_id"],row["event_type"],row["subject"],row["sender"],result["status"],
+             row["order_json"],json.dumps(result,ensure_ascii=False),stamp,stamp,result["invoice_number"]))
+        return _execute(conn, "SELECT id FROM automation_jobs WHERE dedupe_key=?", (dedupe,)).fetchone()["id"]
+
+
 def _preserve_invoice_customer(result: dict, previous: dict) -> None:
     """Keep operator-confirmed payer details when rebuilding supplier matches."""
+    if previous.get("previous_offer"):
+        result["previous_offer"] = copy.deepcopy(previous["previous_offer"])
     if previous.get("invoice_customer_confirmed_at"):
         for key in ("customer", "invoice_customer_confirmed_at", "invoice_customer_history"):
             if key in previous:
@@ -2143,6 +2271,7 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
 
     @app.post("/dashboard/automation/jobs/{job_id}/start")
     async def automation_dashboard_start(job_id: int, request: Request):
+        job_id = editable_revision(job_id)
         with _connect() as conn:
             row = _execute(conn, "SELECT * FROM automation_jobs WHERE id=?", (job_id,)).fetchone()
         if not row:
@@ -2344,6 +2473,10 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
             viewed = bool(row["viewed_at"])
             offer_created = bool(result.get("live_offer_created") or row["status"] == "offer_created")
             order_date, customer_name = _order_list_details(row, result)
+            from saved_dashboard import short_company_name
+            card_details = listing_details[int(row["id"])]
+            location_label = card_details.get("city") or "не указан"
+            category_label = card_details.get("category_short") or "не указаны"
             summary = result.get("summary") or {}
             total = summary.get("positions", 0)
             exact = summary.get("auto_ready", 0)
@@ -2425,7 +2558,8 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
             cards.append(
                 f"<section class='card {cls} {'offer-created' if offer_created else ''} {'read' if viewed else 'unread'}'><div><a class='title' target='_blank' rel='noopener' href='/dashboard/automation/jobs/{row['id']}/review'>"
                 f"Заявка №{display_number}{order_label}</a>{source_badge}{offer_badge}<div class='meta'>{html.escape(' · '.join(parts))}</div>"
-                f"<div class='meta'><b>Дата заявки:</b> {html.escape(order_date)} · <b>Заказчик:</b> {html.escape(customer_name)}</div>"
+                f"<div class='meta'><b>Дата заявки:</b> {html.escape(order_date)} · <b>Заказчик:</b> <span title='{html.escape(customer_name, quote=True)}'>{html.escape(short_company_name(customer_name))}</span></div>"
+                f"<div class='meta'><b>Город:</b> {html.escape(location_label)} · <b>Рубрики:</b> <span title='{html.escape(card_details.get('category') or '', quote=True)}'>{html.escape(category_label)}</span></div>"
                 f"{quantity_label}"
                 f"{progress_bar}"
                 f"<div class='meta'><b>Поставщики:</b> {html.escape(suppliers_label)}</div>"
@@ -2511,7 +2645,9 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
             f"Ручная заявка {html.escape(str(result.get('manual_reference') or 'без номера'))}"
             if is_manual else f"Заявка Закупай № {row['order_id']}"
         )
-        offer_created = bool(result.get("live_offer_created") or row["status"] == "offer_created")
+        sent_variant = bool(result.get("live_offer_created") or row["status"] == "offer_created")
+        previous_offer = result.get("previous_offer") or {}
+        offer_created = False
         navigation_notice = (
             "<p style='padding:12px;background:#e8f0fe;border-radius:8px' role='status'>"
             "Вы вернулись к заявке. Проверьте выбранные позиции и нажмите кнопку поиска цен. "
@@ -2646,14 +2782,22 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
                 f"<form id='{search_form_id}' method='post' action='/dashboard/automation/jobs/{job_id}/items/{pos}/refresh'></form>"
             )
             rejected_count = len(item.get("rejected_candidates") or [])
+            clarification_html = ""
+            if item.get("clarification_reasons"):
+                clarification_html += "<div><small>Уточнить: " + html.escape("; ".join(item["clarification_reasons"])) + "</small></div>"
+            if item.get("near_candidates"):
+                clarification_html += ("<div><small>Близкие варианты (подтвердить вручную): " + " | ".join(
+                    html.escape(f"{c.get('name')} — " + "; ".join(c.get("clarification_reasons") or []))
+                    for c in item["near_candidates"][:3]) + "</small></div>")
             table_rows.append(
                 "<tr>"
                 f"<td><input form='review-form' type='checkbox' name='include_{pos}' value='1' data-bulk-allowed='{'1' if selected_allowed(item) else '0'}' {checked} {disabled}></td>"
-                f"<td>{pos}</td>"
+                f"<td><label><input form='position-search' class='search-position' type='checkbox' name='selected_position' value='{pos}'> {pos}</label></td>"
                 f"<td>{html.escape(str(item.get('requested_name') or ''))}</td>"
                 f"<td><select form='review-form' class='candidate-select' data-position='{pos}' name='candidate_{pos}' {disabled}>{''.join(candidate_options) or '<option>Не найден</option>'}</select>"
-                f"<div><small>{html.escape(selection_notice)}</small></div>"
+                f"<div><small>{html.escape(selection_notice)}</small></div>{clarification_html}"
                 f"<div>{'' if offer_created else f'''<button class='row-search' form='{search_form_id}' type='submit'>Искать другие варианты</button>'''}"
+                f" <a class='row-search button' href='/dashboard/sniper?job_id={job_id}&amp;positions={pos}'>Искать через Sniper</a>"
                 f"<small> ранее отклонено: {rejected_count}</small></div></td>"
                 f"<td><input form='review-form' class='qty' name='quantity_{pos}' type='number' step='0.001' value='{html.escape(str(item.get('quantity') or ''))}' {disabled}> {html.escape(str(item.get('unit') or ''))}</td>"
                 f"<td><input form='review-form' id='price-{pos}' class='price' name='price_{pos}' type='number' step='0.01' value='{html.escape(str(item.get('proposed_unit_price') or ''))}' {disabled}></td>"
@@ -2727,6 +2871,16 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
             )
             top_controls = f"<form method='post' action='/dashboard/automation/jobs/{job_id}/refresh'><p><button class='button' type='submit'>Повторить поиск у поставщиков</button></p></form>"
             save_control = "<p><button form='review-form' type='submit'>Сохранить и пересчитать счёт</button></p>"
+        if sent_variant or previous_offer:
+            prior_id = result.get("live_offer_id") if sent_variant else previous_offer.get("offer_id")
+            sent_notice = ("<div class='sent-notice'><b>По предыдущему варианту выставлен счёт.</b> "
+                + "ID предложения: " + html.escape(str(prior_id or "—"))
+                + ". Изменения сохраняются в новом варианте; отправленный счёт остаётся в истории.</div>")
+        top_controls += (
+            f"<form id='position-search' method='post' action='/dashboard/automation/jobs/{job_id}/search-selected'>"
+            "<p><label><input id='search-all' type='checkbox'> Выбрать все позиции для поиска</label></p>"
+            "<button name='engine' value='standard'>Найти цены по выбранным позициям</button> "
+            "<button name='engine' value='sniper'>Искать выбранные через Sniper</button></form>")
         search_report = ""
         if result.get("deferred_suppliers"):
             search_report += (
@@ -2756,7 +2910,7 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
                 "<th>Статус подбора</th><th>Замена</th><th>Наличие</th><th>Срок</th><th>Решение</th></tr>"
                 + "".join(table_rows) + "</table>" + save_control + invoice_link + offer_link
                 + f"<p><a href='/dashboard/prices/match-order/{job_id}'>Подобрать по характеристикам из прайсов</a> · <a href='/dashboard/automation/jobs/{job_id}/catalog-sale'>Сохранить успешную продажу в наш каталог</a> · <a href='/dashboard/prices'>Прайсы</a> · <a href='/dashboard/catalog'>Наш каталог</a> · <a href='/dashboard/automation/jobs/{job_id}/tiles'>Подобрать керамогранит с доставкой</a> · <a href='/dashboard/sniper?job_id={job_id}'>Найти поставщиков через Sniper</a></p>"
-                + f"<script nonce='{review_script_nonce}'>{_REVIEW_SELECTION_SCRIPT}</script>"
+                + f"<script nonce='{review_script_nonce}'>{_REVIEW_SELECTION_SCRIPT};document.getElementById('search-all')?.addEventListener('change',e=>document.querySelectorAll('.search-position').forEach(c=>c.checked=e.target.checked));</script>"
                 + "</main></body></html>"
             ),
             media_type="text/html",
@@ -2765,6 +2919,7 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
 
     @app.post("/dashboard/automation/jobs/{job_id}/customer")
     async def automation_save_customer(job_id: int, request: Request):
+        job_id = editable_revision(job_id)
         form = await request.form()
         if form.get("confirm_customer") != "CONFIRMED":
             raise HTTPException(status_code=400, detail="Подтвердите проверку реквизитов плательщика")
@@ -2781,8 +2936,28 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
             raise HTTPException(status_code=409, detail=str(exc))
         return Response(status_code=303, headers={"Location": f"/dashboard/automation/jobs/{job_id}/review"})
 
+    @app.post("/dashboard/automation/jobs/{job_id}/revision")
+    def create_revision(job_id: int):
+        target = editable_revision(job_id)
+        return Response(status_code=303, headers={"Location": f"/dashboard/automation/jobs/{target}/review"})
+
+    @app.post("/dashboard/automation/jobs/{job_id}/search-selected")
+    async def search_selected(job_id: int, request: Request):
+        from urllib.parse import urlencode
+        form = await request.form()
+        positions = sorted({int(v) for v in form.getlist("selected_position") if str(v).isdigit() and int(v) > 0})
+        if not positions:
+            raise HTTPException(400, "Отметьте позиции для поиска")
+        if form.get("engine") == "sniper":
+            target = "/dashboard/sniper?" + urlencode({"job_id": job_id, "positions": ",".join(map(str, positions))})
+            return Response(status_code=303, headers={"Location": target})
+        if form.get("engine") != "standard":
+            raise HTTPException(400, "Выберите способ поиска")
+        return await automation_dashboard_start(job_id, request)
+
     @app.post("/dashboard/automation/jobs/{job_id}/refresh")
     def automation_review_refresh(job_id: int):
+        job_id = editable_revision(job_id)
         with _connect() as conn:
             row = _execute(conn, "SELECT * FROM automation_jobs WHERE id=?", (job_id,)).fetchone()
         if not row:
@@ -2824,6 +2999,7 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
 
     @app.post("/dashboard/automation/jobs/{job_id}/items/{position}/refresh")
     def automation_review_refresh_position(job_id: int, position: int):
+        job_id = editable_revision(job_id)
         with _connect() as conn:
             row = _execute(conn, "SELECT * FROM automation_jobs WHERE id=?", (job_id,)).fetchone()
         if not row or not row["result_json"]:
@@ -2882,6 +3058,7 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
 
     @app.post("/dashboard/automation/jobs/{job_id}/review")
     async def automation_review_save(job_id: int, request: Request):
+        job_id = editable_revision(job_id)
         form = await request.form()
         feedback = []
         with _lock, _connect() as conn:
