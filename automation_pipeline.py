@@ -663,7 +663,13 @@ def _search_candidates(suppliers, requested: str, time_budget_seconds: float | N
                     supplier_found += 1
             # A relevant API page already provides enough alternatives for
             # scoring. Avoid issuing every synonym/inflection query needlessly.
-            if supplier_found >= enough_candidates:
+            # Do not stop after a generic first page for fasteners: it can
+            # contain many irrelevant products before the exact size is tried.
+            fastener_probe = getattr(supplier, "code", "") == "vseinstrumenti" and (
+                "саморез" in requested.lower() or "винт самонарезающ" in requested.lower()
+            )
+            minimum_queries = min(3, len(queries)) if fastener_probe else 1
+            if supplier_found >= enough_candidates and supplier_queries >= minimum_queries:
                 break
         elapsed = round(time.monotonic() - supplier_started, 3)
         diagnostics.append({
