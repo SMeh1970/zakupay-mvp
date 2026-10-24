@@ -556,6 +556,22 @@ def _search_variants(requested: str) -> list[str]:
     ]
     if key_tokens:
         variants.append(" ".join(key_tokens[:10]))
+    # Preserve fastener dimensions as a compact search phrase. The retail site
+    # understands long descriptions, while the API may rank them differently.
+    # Mixed Cyrillic/Latin multiplication signs and decimal commas are common.
+    fastener_text = cleaned.lower().replace("×", "x").replace("х", "x").replace("*", "x")
+    fastener_size = re.search(r"(?<!\\d)(\\d+(?:[.,]\\d+)?)\\s*x\\s*(\\d+(?:[.,]\\d+)?)(?!\\d)", fastener_text)
+    if fastener_size and ("саморез" in fastener_text or "винт самонарезающ" in fastener_text):
+        diameter, length = fastener_size.groups()
+        diameter = diameter.replace(",", ".")
+        length = length.replace(",", ".")
+        for size in (f"{diameter}x{length}", f"{diameter.replace('.', ',')}х{length}"):
+            variants.extend([f"саморез {size}", f"саморезы {size}"])
+        if "крупн" in fastener_text:
+            variants.append(f"саморез {diameter}x{length} крупный шаг")
+        if "оксид" in fastener_text:
+            variants.append(f"саморез {diameter}x{length} оксидированный")
+
     # Common catalogue names differ between the request and VI. These variants
     # widen retrieval only; hard dimensions/models are still checked below.
     synonym_groups = (
