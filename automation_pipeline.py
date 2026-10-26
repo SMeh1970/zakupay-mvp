@@ -724,6 +724,9 @@ def _purchase_label(candidate: dict, requested_unit: str) -> str:
     # Historical saved drafts did not persist a supplier field and were VI-only.
     supplier = str(candidate.get("supplier") or "ВсеИнструменты.ру")
     supplier_label = "ВИ" if supplier == "ВсеИнструменты.ру" else supplier
+    # The clickable supplier name is rendered separately when a source URL exists.
+    if _review_source_url(candidate):
+        supplier_label = ""
     price = candidate.get("price")
     if price is None:
         return supplier_label
@@ -744,7 +747,8 @@ def _purchase_label(candidate: dict, requested_unit: str) -> str:
         provenance = f" · прайс {candidate.get('source_filename')}, {candidate.get('source_sheet')}, строка {candidate.get('source_row')}, от {candidate.get('price_date')}"
     elif candidate.get("source_type") == "own_catalog":
         provenance = f" · наш каталог, от {candidate.get('price_date')}"
-    return f"{supplier_label}: {price_text} ₽ {price_basis}{provenance}"
+    prefix = f"{supplier_label}: " if supplier_label else ""
+    return f"{prefix}{price_text} ₽ {price_basis}{provenance}"
 
 
 def _candidate_pack_size(candidate: dict, requested_unit: str) -> int:
@@ -877,6 +881,16 @@ def _review_candidate_details(item: dict, candidate: dict) -> str:
 def _review_source_url(candidate: dict) -> str:
     url = str(candidate.get("url") or candidate.get("source_url") or "").strip()
     return url if re.match(r"https?://[^\s/]+(?:/|$)", url, re.I) else ""
+
+
+def _review_missing_price_note(candidate: dict) -> str:
+    if candidate.get("source_type") == "price_list":
+        return "В прайсе нет цены"
+    if candidate.get("source_type") == "own_catalog":
+        return "В каталоге нет цены"
+    if candidate.get("supplier") in {None, "", "ВИ", "ВсеИнструменты.ру", "КРЕП-КОМП"}:
+        return "В API поставщика нет цены"
+    return "Поставщик не передал цену"
 
 
 def _review_delivery_date(value) -> str:
@@ -1337,8 +1351,11 @@ _REVIEW_SELECTION_SCRIPT = """
         const row = input.closest('tr');
         input.title = option?.title || '';
         row.querySelector('.candidate-details').textContent = option?.dataset.details || '';
-        row.querySelector('.price-note').hidden = option?.dataset.priceMissing !== '1';
+        const priceNote = row.querySelector('.price-note');
+        priceNote.hidden = option?.dataset.priceMissing !== '1';
+        priceNote.textContent = option?.dataset.priceNote || '';
         const source = row.querySelector('.candidate-source');
+        source.textContent = (option?.dataset.supplier || 'Поставщик') + ' ↗';
         const url = option?.dataset.url || '';
         source.hidden = !url;
         if (url) source.href = url;
@@ -2823,6 +2840,7 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
                 offer_price = round(float(purchase_price) / pack_size * (1 + DEFAULT_MARKUP), 2) if purchase_price is not None else ""
                 candidate_options.append(
                     f"<option value='{idx}' data-price='{offer_price}' data-price-missing='{'1' if purchase_price is None else '0'}' "
+                    f"data-supplier='{html.escape(str(candidate.get('supplier') or 'ВсеИнструменты.ру'), quote=True)}' data-price-note='{html.escape(_review_missing_price_note(candidate), quote=True)}' "
                     f"data-url='{html.escape(_review_source_url(candidate), quote=True)}' title='{html.escape(str(candidate.get('name') or ''), quote=True)}' "
                     f"data-details='{html.escape(details, quote=True)}' {'selected' if key == selected_key else ''}>"
                     f"{html.escape(label)}</option>"
@@ -2847,13 +2865,13 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
                 f"<td><label><input form='position-search' class='search-position' type='checkbox' name='selected_position' value='{pos}'> {pos}</label></td>"
                 f"<td>{html.escape(str(item.get('requested_name') or ''))}</td>"
                 f"<td><select form='review-form' class='candidate-select' data-position='{pos}' name='candidate_{pos}' title='{html.escape(str(selected.get('name') or ''), quote=True)}' {disabled}>{''.join(candidate_options)}</select>"
-                f"{clarification_html}<a class='candidate-source' href='{html.escape(source_url, quote=True)}' target='_blank' rel='noopener noreferrer' {'' if source_url else 'hidden'}>Карточка поставщика ↗</a>"
+                f"{clarification_html}<a class='candidate-source' href='{html.escape(source_url, quote=True)}' target='_blank' rel='noopener noreferrer' {'' if source_url else 'hidden'}>{html.escape(str(selected.get('supplier') or 'ВсеИнструменты.ру'))} ↗</a>"
                 f"<div>{'' if offer_created else f'''<button class='row-search' form='{search_form_id}' type='submit'>Искать другие варианты</button>'''}"
                 f" <a class='row-search button' href='/dashboard/sniper?job_id={job_id}&amp;positions={pos}'>Искать через Sniper</a>"
                 f"<small> ранее отклонено: {rejected_count}</small></div></td>"
                 f"<td><input form='review-form' class='qty' name='quantity_{pos}' type='number' step='0.001' value='{html.escape(str(item.get('quantity') or ''))}' {disabled}> {html.escape(str(item.get('unit') or ''))}</td>"
                 f"<td><input form='review-form' id='price-{pos}' class='price' name='price_{pos}' type='number' step='0.01' placeholder='{'Нет цены' if missing_price else ''}' value='{html.escape(str(item.get('proposed_unit_price') or ''))}' {disabled}>"
-                f"<small class='price-note' {'' if missing_price else 'hidden'}>Поставщик не передал цену</small></td>"
+                f"<small class='price-note' {'' if missing_price else 'hidden'}>{html.escape(_review_missing_price_note(selected))}</small></td>"
                 f"<td>{html.escape(str(item.get('match_status') or '—'))}<br><small>поиск: {html.escape(str(item.get('search_elapsed_seconds') or '—'))} сек."
                 f"{' · лимит времени' if item.get('search_timed_out') else ''}</small></td>"
                 f"<td>{html.escape(', '.join(item.get('replacement_details') or []) or 'нет')}</td>"

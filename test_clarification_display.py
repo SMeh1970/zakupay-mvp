@@ -93,9 +93,12 @@ class ClarificationDisplayTests(unittest.TestCase):
             conn.execute("UPDATE automation_jobs SET result_json=? WHERE id=?", (json.dumps(result), self.job_id))
         page = self.client.get(f"/dashboard/automation/jobs/{self.job_id}/review").text
         self.assertIn("placeholder='Нет цены' value=''", page)
-        self.assertIn("class='price-note' >Поставщик не передал цену", page)
+        self.assertIn("class='price-note' >В API поставщика нет цены", page)
         self.assertIn("data-price='' data-price-missing='1'", page)
         self.assertIn("href='https://www.vseinstrumenti.ru/product/foam/'", page)
+        self.assertIn(">ВсеИнструменты.ру ↗</a>", page)
+        self.assertNotIn("Карточка поставщика", page)
+        self.assertEqual(pipeline._review_missing_price_note({"source_type": "price_list"}), "В прайсе нет цены")
         self.assertEqual(pipeline._review_source_url({"url": "javascript:alert(1)"}), "")
 
     def test_near_candidate_selection_is_saved_and_survives_reload(self):
