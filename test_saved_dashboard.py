@@ -202,6 +202,43 @@ class SavedDashboardTests(unittest.TestCase):
         self.fetch.assert_not_called()
         self.fetch_all.assert_not_called()
 
+    def test_list_title_opens_review_and_persists_first_view(self):
+        page = self.client.get("/dashboard/automation").text
+        self.assertNotIn(">Открыть заявку</a>", page)
+        self.assertNotIn(">Открыть</a>", page)
+        path = re.search(r"<a class='title'[^>]*href='([^']+)'", page).group(1)
+        job_id = int(path.split("/")[-2])
+        self.assertEqual(self.client.head(path).status_code, 200)
+        with pipeline._connect() as conn:
+            self.assertIsNone(conn.execute("SELECT viewed_at FROM automation_jobs WHERE id=?", (job_id,)).fetchone()[0])
+        self.assertEqual(self.client.get(path).status_code, 200)
+        with pipeline._connect() as conn:
+            viewed_at = conn.execute("SELECT viewed_at FROM automation_jobs WHERE id=?", (job_id,)).fetchone()[0]
+        self.assertTrue(viewed_at)
+        self.assertEqual(self.client.get(path).status_code, 200)
+        with pipeline._connect() as conn:
+            self.assertEqual(conn.execute("SELECT viewed_at FROM automation_jobs WHERE id=?", (job_id,)).fetchone()[0], viewed_at)
+        page = self.client.get("/dashboard/automation").text
+        self.assertIn(".card.read .title{color:#5f6368}", page)
+        self.assertRegex(page, rf"<section class='card [^']* read'><div><a class='title'[^>]*href='{path}'")
+        self.assertEqual(self.ids(viewed="yes"), [str(job_id)])
+
+    def test_comparison_requires_actual_offers_not_request_positions(self):
+        job_id = self.first["job_id"]
+        link = f"href='/dashboard/automation/jobs/{job_id}/comparison'"
+        self.assertNotIn(link, self.client.get("/dashboard/automation").text)
+        for field in ("selected", "candidates", "rejected_candidates", "catalog_candidates"):
+            for offer in (None, {"name": "Труба", "error": "Поиск не удался"},
+                          {"name": "Труба", "supplier": "Тест", "price": 100}):
+                with self.subTest(field=field, offer=offer):
+                    item = {field: offer if field == "selected" else ([offer] if offer else [])}
+                    result = {"items": [item]}
+                    with pipeline._connect() as conn:
+                        conn.execute("UPDATE automation_jobs SET status='ready_for_review',result_json=? WHERE id=?",
+                                     (json.dumps(result), job_id))
+                    page = self.client.get("/dashboard/automation").text
+                    self.assertEqual(link in page, bool(offer and not offer.get("error")))
+
     def test_viewed_and_offer_filters_track_actual_state(self):
         self.client.get(f"/dashboard/automation/jobs/{self.first['job_id']}/review")
         self.assertEqual(self.ids(viewed="yes"), [str(self.first["job_id"])])

@@ -2550,10 +2550,9 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
                 more = f"<li>Ещё подходящих позиций: {len(quantity_matches) - 5}</li>" if len(quantity_matches) > 5 else ""
                 quantity_label = "<div class='meta quantity-match'><b>По фильтру количества:</b><ul>" + lines + more + "</ul></div>"
             display_number = html.escape(str(result.get("manual_reference") or "без номера")) if is_manual else str(row["order_id"])
-            primary_action = (
-                f"<a class='button' target='_blank' rel='noopener' href='/dashboard/automation/jobs/{row['id']}/review'>Открыть заявку</a>"
-                if pending else
-                f"<a class='button' target='_blank' rel='noopener' href='/dashboard/automation/jobs/{row['id']}/review'>Открыть</a>"
+            from supplier_comparison import candidates as comparison_candidates
+            has_comparison_offers = any(
+                comparison_candidates(item) for item in result.get("items") or []
             )
             cards.append(
                 f"<section class='card {cls} {'offer-created' if offer_created else ''} {'read' if viewed else 'unread'}'><div><a class='title' target='_blank' rel='noopener' href='/dashboard/automation/jobs/{row['id']}/review'>"
@@ -2564,8 +2563,8 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
                 f"{progress_bar}"
                 f"<div class='meta'><b>Поставщики:</b> {html.escape(suppliers_label)}</div>"
                 f"<div class='meta'>Статус: {'счёт выставлен в Закупай' if offer_created else 'поиск цен не запускался' if pending else html.escape(STATUSES.get(row['status'], 'Требуется проверка'))} · счёт: {row['invoice_number'] or '—'}</div></div>"
-                f"<div class='actions'>{primary_action}"
-                + (f"<a class='button secondary' target='_blank' rel='noopener' href='/dashboard/automation/jobs/{row['id']}/comparison'>Сравнить поставщиков</a>" if result.get("items") or row["order_json"] else "")
+                f"<div class='actions'>"
+                + (f"<a class='button secondary' target='_blank' rel='noopener' href='/dashboard/automation/jobs/{row['id']}/comparison'>Сравнить поставщиков</a>" if has_comparison_offers else "")
                 + f"{invoice}{send}</div></section>"
             )
         sync_report = ""
@@ -2599,7 +2598,7 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
             "<title>Заявки — Закупай MVP</title><style>body{font-family:Arial;margin:0;background:#f4f6f8;color:#202124}main{max-width:1200px;margin:auto;padding:28px}"
             ".filter-panel{background:#fff;border-radius:12px;padding:20px;margin-top:20px}.filters{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:14px;margin-bottom:18px}.filters label{display:block;color:#5f6368;font-size:14px}.filters input,.filters select{width:100%;box-sizing:border-box;margin-top:6px;padding:9px;border:1px solid #c9cdd3;border-radius:7px;background:#fff;color:#202124}details{margin-bottom:18px}summary{cursor:pointer;font-weight:bold;margin-bottom:14px}.pager{display:flex;justify-content:center;align-items:center;gap:18px;margin:22px 0;flex-wrap:wrap}.filter-error{color:#b3261e}.list-count{color:#5f6368}button.button{border:0;cursor:pointer}.empty{background:#fff;padding:24px;border-radius:12px}"
             ".card{display:flex;justify-content:space-between;gap:20px;background:#fff;border-left:7px solid #9aa0a6;border-radius:12px;padding:18px;margin:12px 0;box-shadow:0 2px 8px #0001}.card.read{background:#e9eef3}.card.unread{background:#fff}.card.ok{border-color:#188038}.card.warn{border-color:#f9ab00}.card.bad{border-color:#d93025}.card.processing{border-color:#1a73e8;background:#e8f0fe}.card.offer-created{background:#e6f4ea;border-color:#188038}.offer-badge,.source-badge{display:inline-block;margin-left:12px;padding:5px 9px;border-radius:12px;background:#188038;color:#fff;font-size:12px;font-weight:700;vertical-align:middle}.source-badge{background:#174ea6}.source-badge.manual{background:#7b1fa2}.progress{height:8px;max-width:460px;background:#c7d5ec;border-radius:5px;margin-top:9px;overflow:hidden}.progress span{display:block;height:100%;background:#1a73e8}"
-            ".title{font-size:20px;font-weight:700;color:#174ea6;text-decoration:none}.meta{margin-top:8px;color:#5f6368}.actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.button{background:#1a73e8;color:#fff;padding:10px 13px;border-radius:7px;text-decoration:none;font-weight:700}.secondary{background:#5f6368}.send{background:#188038}.sent{display:inline-block;padding:10px 13px;background:#e6f4ea;color:#137333;border-radius:7px;font-weight:700}.muted{color:#777}@media(max-width:760px){.card{display:block}.actions{margin-top:14px}}"
+            ".title{font-size:20px;font-weight:700;color:#174ea6;text-decoration:none}.card.read .title{color:#5f6368}.meta{margin-top:8px;color:#5f6368}.actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.button{background:#1a73e8;color:#fff;padding:10px 13px;border-radius:7px;text-decoration:none;font-weight:700}.secondary{background:#5f6368}.send{background:#188038}.sent{display:inline-block;padding:10px 13px;background:#e6f4ea;color:#137333;border-radius:7px;font-weight:700}.muted{color:#777}@media(max-width:760px){.card{display:block}.actions{margin-top:14px}}"
             + CATEGORY_PICKER_CSS + "</style>"
             "<main><a style='float:right' href='/logout'>Выйти</a><h1>Заявки</h1><p>Откройте заявку и проверьте её состав. Поиск цен запускается только кнопкой внутри заявки; отправка счёта подтверждается отдельно.</p>"
             "<div class='actions'><form method='post' action='/dashboard/automation/sync'><button class='button' type='submit'>Получить из Закупай</button></form>"
