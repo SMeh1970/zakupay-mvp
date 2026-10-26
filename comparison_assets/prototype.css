@@ -393,7 +393,7 @@
 /* Application integration; original typography, spacing and colors above. */
 nav{display:flex;gap:20px;margin-bottom:20px;font-size:12px}nav a{color:var(--accent)}
 #save-status{font-size:12px;min-height:20px;color:var(--accent)}#save-status.error{color:#a12f1a}
-body.saving .table-wrap{opacity:.75;pointer-events:none}.readonly .diff-btn{display:none}
+body.saving .table-wrap{opacity:.75;pointer-events:none}.readonly .diff-btn{cursor:not-allowed}
 .variant-picker{max-width:100%;font-size:inherit;margin-bottom:6px}.source-link{display:block;margin-top:5px}
 #selectedTotal{color:var(--warn)}#rowsCounted,#activeSuppliers{font-size:18px}
 #grandWithDeliveryRow td{background:#e4dcc0}.delivery-note{color:var(--muted)}
@@ -412,3 +412,9 @@ body.saving .table-wrap{opacity:.75;pointer-events:none}.readonly .diff-btn{disp
 #cmpTable .diff-btn.tiny{width:calc(14px * var(--table-font-scale,1));height:calc(14px * var(--table-font-scale,1))}
 #cmpTable .diff-badge{width:calc(14px * var(--table-font-scale,1));height:calc(14px * var(--table-font-scale,1))}
 #cmpTable input[type=checkbox]{width:calc(13px * var(--table-font-scale,1));height:calc(13px * var(--table-font-scale,1))}
+
+/* Decisions must remain visible next to every expanded difference. */
+#cmpTable .raw-sub .diff-btn{min-width:20px;min-height:20px;opacity:1;font-size:max(12px,1em)}
+#cmpTable .raw-sub .diff-btn.ok{border-color:var(--accent);color:var(--accent)}
+#cmpTable .raw-sub .diff-btn.no{border-color:#c0392b;color:#c0392b}
+#cmpTable .raw-sub .diff-btn.active{color:white}

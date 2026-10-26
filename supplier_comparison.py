@@ -443,12 +443,13 @@ def preserve_comparison(new, old):
 
 def mutate(result, payload, conn=None):
     action = payload.get("action")
-    if result.get("live_offer_created"):
-        raise ValueError("Предложение уже отправлено. Сравнение доступно только для просмотра.")
+    # Matrix decisions are a separate snapshot and never rewrite a sent invoice.
     if action == "prototype_state":
         from comparison_prototype import save_state
         save_state(result, payload)
         return
+    if result.get("live_offer_created"):
+        raise ValueError("Предложение уже отправлено. Сравнение доступно только для просмотра.")
     if action == "load_catalog":
         if conn is None:
             raise ValueError("Для подбора нужен доступ к сохранённым прайсам")
@@ -571,14 +572,14 @@ def install_supplier_comparison(app):
         with _connect() as conn:
             row, result = load(job_id, conn)
         data = model(result, row["result_json"])
-        data.update(csrf=_csrf(request), job_id=job_id, read_only=data["read_only"] or row["status"] in {"processing", "offer_created"})
+        data.update(csrf=_csrf(request), job_id=job_id, read_only=row["status"] == "processing")
         from comparison_prototype import matrix_model
         data["prototype"] = matrix_model(result)
         serialized = json.dumps(data, ensure_ascii=False, allow_nan=False).replace("<", "\\u003c").replace("&", "\\u0026")
         nonce = security.secrets.token_urlsafe(18)
         template = (ASSETS / "prototype-body.html").read_text()
         if result.get("live_offer_created"):
-            template = (f"<section><b>По этому варианту выставлен счёт.</b>"
+            template = (f"<section><b>По этому варианту выставлен счёт.</b> Решения по отличиям доступны; отправленный счёт от них не меняется."
                 f"<form method='post' action='/dashboard/automation/jobs/{job_id}/revision'>"
                 "<button>Продолжить подбор в новом варианте</button></form></section>" + template)
         content = f'''<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Сравнение поставщиков · Закупай</title><link rel="stylesheet" href="/dashboard/comparison/assets/prototype.css"></head><body><nav><a href="/dashboard/automation">Закупай MVP</a><a href="/dashboard/automation/jobs/{job_id}/review">← К проверке заявки</a><a href="/dashboard/prices">Прайсы</a></nav>{template}<script nonce="{nonce}" type="application/json" id="comparison-data">{serialized}</script><script nonce="{nonce}" src="/dashboard/comparison/assets/prototype.js"></script></body></html>'''
@@ -602,7 +603,7 @@ def install_supplier_comparison(app):
             raise HTTPException(403, "Обновите страницу и повторите действие")
         with _lock, _connect() as conn:
             row, result = load(job_id, conn)
-            if row["status"] in {"processing", "offer_created"}:
+            if row["status"] == "processing" or (row["status"] == "offer_created" and payload.get("action") != "prototype_state"):
                 raise HTTPException(409, "Заявка обрабатывается или предложение уже отправлено")
             if payload.get("revision") != revision(row["result_json"]):
                 raise HTTPException(409, "Заявка изменена в другом окне. Обновите страницу.")

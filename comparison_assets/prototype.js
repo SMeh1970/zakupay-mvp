@@ -226,10 +226,14 @@ function renderNameDiff(itemId, si){
       const okB = document.createElement('button');
       okB.className = 'diff-btn ok tiny' + (state==='accepted' ? ' active' : '');
       okB.textContent = '✓';
+      okB.title = 'Принять отличие: '+word;
+      okB.setAttribute('aria-label',okB.title);
       okB.onclick = (e)=>{ e.stopPropagation(); propagateDecision(itemId, si, 'nameword', idx, 'accepted'); };
       const noB = document.createElement('button');
       noB.className = 'diff-btn no tiny' + (state==='rejected' ? ' active' : '');
       noB.textContent = '✗';
+      noB.title = 'Отклонить отличие: '+word;
+      noB.setAttribute('aria-label',noB.title);
       noB.onclick = (e)=>{ e.stopPropagation(); propagateDecision(itemId, si, 'nameword', idx, 'rejected'); };
       wbtns.appendChild(okB);
       wbtns.appendChild(noB);
@@ -663,7 +667,7 @@ recompute();
 lastSaved=JSON.stringify(stateSnapshot());ready=true;
 document.getElementById('comparison-title').textContent='Сравнение поставщиков — '+(initial.order_name||initial.order_id);
 document.querySelectorAll('input[name="compareMode"]').forEach(r=>r.checked=r.value===compareMode);
-if(initial.read_only){document.body.classList.add('readonly');document.getElementById('save-status').textContent='Предложение уже отправлено: решения доступны только для просмотра.';}
+if(initial.read_only){document.body.classList.add('readonly');document.getElementById('save-status').textContent='Заявка обрабатывается: решения временно доступны только для просмотра.';}
 const zoomSteps=[75,100,125,150,175,200];
 const zoomField=document.getElementById('table-zoom'), zoomTable=document.getElementById('cmpTable'), zoomWrap=zoomTable.parentElement;
 let tableZoom=100;

@@ -304,6 +304,32 @@ class ComparisonRouteTests(unittest.TestCase):
         self.assertEqual(result,self.result)
         self.assertEqual(row['status'],'needs_review')
 
+    def test_sent_invoice_allows_matrix_decisions_without_mutating_invoice(self):
+        self.result['live_offer_created'] = True
+        self.result['invoice_number'] = 278
+        with pipeline._connect() as conn:
+            conn.execute("UPDATE automation_jobs SET status='offer_created',result_json=?,invoice_number=278 WHERE id=?",(json.dumps(self.result),self.job))
+        data=self.data()
+        self.assertFalse(data['read_only'])
+        matrix=data['prototype'];state=matrix['state']
+        state['diffState']={'1_0_qty':'accepted'}
+        response=self.post(action='prototype_state',signature=matrix['signature'],state=state)
+        self.assertEqual(response.status_code,200,response.text)
+        self.assertEqual(self.data()['prototype']['state'],state)
+        with pipeline._connect() as conn:
+            row=conn.execute('SELECT result_json,status,invoice_number FROM automation_jobs WHERE id=?',(self.job,)).fetchone()
+        saved=json.loads(row['result_json']);saved.pop('prototype_comparison')
+        self.assertEqual(saved,self.result)
+        self.assertEqual((row['status'],row['invoice_number']),('offer_created',278))
+        self.assertEqual(self.post(action='mode',value='price').status_code,409)
+
+    def test_processing_matrix_remains_locked(self):
+        with pipeline._connect() as conn:
+            conn.execute("UPDATE automation_jobs SET status='processing' WHERE id=?",(self.job,))
+        data=self.data();self.assertTrue(data['read_only'])
+        matrix=data['prototype']
+        self.assertEqual(self.post(action='prototype_state',signature=matrix['signature'],state=matrix['state']).status_code,409)
+
     def test_quantity_choice_is_saved_and_survives_page_reload(self):
         key=comparison.quote_key(self.a)
         response=self.post(action="quantity",position=1,key=key,decision="accepted")
