@@ -7,6 +7,21 @@ from vi_order_match import _requested_brands
 
 
 class CandidateSelectionTests(unittest.TestCase):
+    def test_position_six_sealant_does_not_select_gun_even_with_matching_model(self):
+        name = "Герметик / ИНЗАГРЕМ ХПС (310 мл)"
+        gun = SupplierQuote("ВИ", "Пистолет для герметика ИНЗАГРЕМ ХПС 310 мл", sku="gun", price=10, stock=100)
+        with patch.object(pipeline, "_search_candidates", return_value=([gun], [], False)):
+            row = pipeline._build_match_row(6, {"goodName": name, "count": 2, "unit": {"name": "шт"}}, [])
+        self.assertIsNone(row["selected"])
+        self.assertNotEqual(row["decision"], "auto_ready")
+        self.assertTrue(any("тип товара" in reason for reason in row["rejected_candidates"][0]["hard_conflicts"]))
+        self.assertEqual(pipeline._review_candidates(row)[0]["sku"], "gun")
+
+    def test_all_search_results_survive_previous_supplier_and_total_limits(self):
+        quotes = [SupplierQuote("ВИ", f"Маркер черный модель {i}", sku=str(i), price=10+i, stock=100) for i in range(25)]
+        row = self.match("Маркер черный", quotes)
+        self.assertEqual(len(pipeline._review_candidates(row)), 25)
+
     def match(self, name, quotes):
         item = {"goodName": name, "count": 2, "unit": {"name": "шт"}}
         with patch.object(pipeline, "_search_candidates", return_value=(quotes, [], False)):

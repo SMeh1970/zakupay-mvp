@@ -794,6 +794,8 @@ def _candidate_matches_brand(candidate: dict, brands: set[str]) -> bool:
 
 
 _PRODUCT_TYPE_MARKERS = {
+    "герметик": ("герметик",),
+    "пистолет": ("пистолет",),
     "мешок": ("мешок", "мешки", "пакет для мусора"),
     "компрессор": ("компрессор",),
     "анкер": ("анкер",),
@@ -829,6 +831,9 @@ _PRODUCT_TYPE_MARKERS = {
 def _product_types(text: str) -> set[str]:
     """Return conservative product classes; unknown is safer than a false class."""
     normalized = f" {_norm(text)} "
+    # A gun *for* sealant is a tool, even when its name mentions sealant.
+    if "пистолет" in normalized:
+        return {"пистолет"}
     found = set()
     for product_type, markers in _PRODUCT_TYPE_MARKERS.items():
         if any(_norm(marker) in normalized for marker in markers):
@@ -841,6 +846,33 @@ def _candidate_key(candidate: dict) -> str:
     identity = str(candidate.get("sku") or candidate.get("article") or candidate.get("name") or "")
     source = f":{candidate.get('source_type')}:{candidate.get('source_key')}" if candidate.get("source_type") in {"price_list", "own_catalog"} else ""
     return f"{supplier}{source}:{_norm(identity)}"
+
+
+def _review_candidates(item: dict) -> list[dict]:
+    """Shared display/POST order: preserve existing indices, append every variant."""
+    result, seen = [], set()
+    for candidate in [*(item.get("candidates") or []), *(item.get("near_candidates") or []),
+                      *(item.get("rejected_candidates") or []), item.get("selected") or {}]:
+        if not candidate.get("name") or candidate.get("error"):
+            continue
+        key = _candidate_key(candidate)
+        if key not in seen:
+            result.append(candidate)
+            seen.add(key)
+    return result
+
+
+def _review_candidate_details(item: dict, candidate: dict) -> str:
+    reasons = list(dict.fromkeys([
+        *(candidate.get("hard_conflicts") or []),
+        *_hard_conflicts(item.get("requested_name") or "", candidate),
+        *(candidate.get("clarification_reasons") or []),
+        *((item.get("clarification_reasons") or [])
+          if _candidate_key(candidate) == _candidate_key(item.get("selected") or {}) else []),
+    ]))
+    return _purchase_label(candidate, str(item.get("unit") or "")) + (
+        " · Отличия / уточнить: " + "; ".join(reasons) if reasons else ""
+    )
 
 
 def _hard_conflicts(requested: str, selected: dict) -> list[str]:
@@ -1084,10 +1116,10 @@ def _build_match_row(position: int, item: dict, suppliers, excluded_keys: set[st
         "match_status": match_status,
         "replacement_details": conflicts + ([note] if (note := _range_note(requested, best)) else []),
         "clarification_reasons": clarification,
-        "near_candidates": near_candidates[:5],
+        "near_candidates": near_candidates,
         "needs_clarification": bool(clarification or near_candidates),
-        "candidates": _supplier_balanced_candidates(candidates),
-        "rejected_candidates": rejected[:20],
+        "candidates": candidates,
+        "rejected_candidates": rejected,
         "excluded_candidate_keys": sorted(excluded_keys),
         "search_elapsed_seconds": round(time.monotonic() - position_started, 3),
         "search_timed_out": search_timed_out,
@@ -1286,6 +1318,11 @@ _REVIEW_SELECTION_SCRIPT = """
     document.querySelectorAll('.price').forEach(input => input.addEventListener('input', update));
     document.querySelectorAll('.candidate-select').forEach(input => input.addEventListener('change', () => {
         document.getElementById('price-' + input.dataset.position).value = input.options[input.selectedIndex].dataset.price || '';
+        const row = input.closest('tr');
+        row.querySelector('.candidate-details').textContent = input.selectedOptions[0]?.dataset.details || '';
+        const notice = row.querySelector('.selection-notice');
+        if (notice) notice.hidden = true;
+        if (input.value === 'none') row.querySelector('input[name^="include_"]').checked = false;
         update();
     }));
     update();
@@ -2762,17 +2799,21 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
                 selection_notice = ""
             candidate_options = []
             selected_key = _candidate_key(selected)
-            usable_candidates = [candidate for candidate in candidates if not candidate.get("error")]
+            usable_candidates = _review_candidates(item)
             for idx, candidate in enumerate(usable_candidates):
                 key = _candidate_key(candidate)
-                label = _purchase_label(candidate, str(item.get("unit") or ""))
+                label = str(candidate.get("name") or "Товар")
+                if len(label) > 100:
+                    label = label[:97] + "…"
+                details = _review_candidate_details(item, candidate)
                 pack_size = _candidate_pack_size(candidate, str(item.get("unit") or ""))
                 purchase_price = candidate.get("price")
                 offer_price = round(float(purchase_price) / pack_size * (1 + DEFAULT_MARKUP), 2) if purchase_price is not None else ""
                 candidate_options.append(
-                    f"<option value='{idx}' data-price='{offer_price}' {'selected' if key == selected_key else ''}>"
+                    f"<option value='{idx}' data-price='{offer_price}' data-details='{html.escape(details, quote=True)}' {'selected' if key == selected_key else ''}>"
                     f"{html.escape(label)}</option>"
                 )
+            candidate_options.append(f"<option value='none' {'selected' if not selected else ''}>Не найден</option>")
             checked = "checked" if _included(item) else ""
             disabled = "disabled" if offer_created else ""
             pos = item.get("position")
@@ -2782,19 +2823,16 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
             )
             rejected_count = len(item.get("rejected_candidates") or [])
             clarification_html = ""
-            if item.get("clarification_reasons"):
-                clarification_html += "<div><small>Уточнить: " + html.escape("; ".join(item["clarification_reasons"])) + "</small></div>"
-            if item.get("near_candidates"):
-                clarification_html += ("<div><small>Близкие варианты (подтвердить вручную): " + " | ".join(
-                    html.escape(f"{c.get('name')} — " + "; ".join(c.get("clarification_reasons") or []))
-                    for c in item["near_candidates"][:3]) + "</small></div>")
+            clarification_html = "<div class='candidate-details' aria-live='polite'>" + (
+                html.escape(_review_candidate_details(item, selected)) if selected else ""
+            ) + "</div>"
             table_rows.append(
                 "<tr>"
                 f"<td><input form='review-form' type='checkbox' name='include_{pos}' value='1' data-bulk-allowed='{'1' if selected_allowed(item) else '0'}' {checked} {disabled}></td>"
                 f"<td><label><input form='position-search' class='search-position' type='checkbox' name='selected_position' value='{pos}'> {pos}</label></td>"
                 f"<td>{html.escape(str(item.get('requested_name') or ''))}</td>"
                 f"<td><select form='review-form' class='candidate-select' data-position='{pos}' name='candidate_{pos}' {disabled}>{''.join(candidate_options) or '<option>Не найден</option>'}</select>"
-                f"<div><small>{html.escape(selection_notice)}</small></div>{clarification_html}"
+                f"<div class='selection-notice'><small>{html.escape(selection_notice)}</small></div>{clarification_html}"
                 f"<div>{'' if offer_created else f'''<button class='row-search' form='{search_form_id}' type='submit'>Искать другие варианты</button>'''}"
                 f" <a class='row-search button' href='/dashboard/sniper?job_id={job_id}&amp;positions={pos}'>Искать через Sniper</a>"
                 f"<small> ранее отклонено: {rejected_count}</small></div></td>"
@@ -2900,7 +2938,7 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
                 "<!doctype html><html lang='ru'><meta charset='utf-8'>"
                 "<title>Проверка заявки</title><style>body{font-family:Arial;margin:24px;background:#f4f6f8}main{background:#fff;padding:20px;border-radius:12px;overflow:auto}"
                 "table{border-collapse:collapse;width:100%}td,th{border:1px solid #ccc;padding:8px}"
-                "th{background:#eee}.include-priced{display:block;min-width:145px;max-width:180px;text-align:left;font-size:12px}select{min-width:280px}.qty{width:90px}.price{width:100px}button,.button{display:inline-block;padding:11px 16px;background:#1a73e8;color:white;border:0;border-radius:7px;text-decoration:none;font-weight:bold}.row-search{margin-top:7px;padding:7px 10px;background:#5f6368}.sent-notice{padding:14px;background:#e6f4ea;color:#137333;border-radius:8px;margin:14px 0}</style><body><main>"
+                "th{background:#eee}.candidate-select{width:100%;min-width:0;max-width:380px}.candidate-details{max-width:380px;overflow-wrap:anywhere;font-size:12px;margin-top:6px}.include-priced{display:block;min-width:145px;max-width:180px;text-align:left;font-size:12px}.qty{width:90px}.price{width:100px}button,.button{display:inline-block;padding:11px 16px;background:#1a73e8;color:white;border:0;border-radius:7px;text-decoration:none;font-weight:bold}.row-search{margin-top:7px;padding:7px 10px;background:#5f6368}.sent-notice{padding:14px;background:#e6f4ea;color:#137333;border-radius:8px;margin:14px 0}</style><body><main>"
                 f"<p><a href='/dashboard/automation'>← Все заявки</a> · <a href='/dashboard/automation/jobs/{job_id}/comparison'>Сравнительная таблица поставщиков →</a></p>"
                 f"<h1>{request_heading}</h1>"
                 f"<p>Счёт № {row['invoice_number']} · статус: {'предложение выставлено' if offer_created else html.escape(str(row['status']))}</p>"
@@ -3086,11 +3124,15 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
             for item in result.get("items") or []:
                 pos = item.get("position")
                 raw_idx = str(form.get(f"candidate_{pos}") or "")
-                candidates = [x for x in (item.get("candidates") or []) if not x.get("error")]
+                candidates = _review_candidates(item)
                 if item.get("comparison"):
                     from supplier_comparison import selected_allowed
                     if result.get("live_offer_created"):
                         raise HTTPException(409, "Предложение уже отправлено")
+                    if raw_idx == "none":
+                        item.update(selected=None, purchase_price=None, proposed_unit_price=0,
+                                    decision="excluded", operator_included=False)
+                        continue
                     if raw_idx.isdigit() and int(raw_idx) < len(candidates) and _candidate_key(candidates[int(raw_idx)]) != _candidate_key(item.get("selected") or {}):
                         raise HTTPException(409, "Измените поставщика в сравнительной таблице, чтобы проверить характеристики и количество.")
                     try:
@@ -3110,6 +3152,8 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
                         feedback.append((item.get("requested_name") or "", item["selected"], item["decision"],
                                          _feedback_request_key(result.get("order_id"), item, pos)))
                     continue
+                if raw_idx == "none":
+                    item.update(selected=None, purchase_price=None, replacement_details=[], match_status="не найден", selection_rule="operator_selected")
                 if raw_idx.isdigit() and int(raw_idx) < len(candidates):
                     if _candidate_key(candidates[int(raw_idx)]) != _candidate_key(item.get("selected") or {}):
                         item["selection_rule"] = "operator_selected"
@@ -3144,7 +3188,7 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
                         "доступно к заказу, количество не подтверждено" if item["courier_date"] else
                         "доступно к самовывозу, количество не подтверждено" if item["pickup_date"] else
                         "подтвержденного количества недостаточно" if selected.get("stock") is not None else "наличие не подтверждено")
-                include = form.get(f"include_{pos}") == "1"
+                include = form.get(f"include_{pos}") == "1" and bool(item.get("selected"))
                 item["decision"] = "approved" if include and item.get("selected") and item.get("proposed_unit_price") is not None else "excluded"
                 item["operator_included"] = include
                 if item.get("comparison"):

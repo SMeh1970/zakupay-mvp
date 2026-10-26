@@ -1,5 +1,6 @@
 """The review table shows clarification reasons and close variants (read-only)."""
 import copy
+import gc
 import json
 import os
 import tempfile
@@ -39,13 +40,14 @@ class ClarificationDisplayTests(unittest.TestCase):
     def tearDown(self):
         self.client.close()
         self.db_patch.stop()
+        gc.collect()  # sqlite context managers commit but close during collection on Windows.
         self.tmp.cleanup()
 
     def test_review_page_lists_reasons_and_close_variants_escaped(self):
         page = self.client.get(f"/dashboard/automation/jobs/{self.job_id}/review")
         self.assertEqual(page.status_code, 200)
-        self.assertIn("Уточнить: диапазон размеров отличается", page.text)
-        self.assertIn("Близкие варианты (подтвердить вручную)", page.text)
+        self.assertNotIn("Близкие варианты (подтвердить вручную)", page.text)
+        self.assertIn("Хомут СВК &lt;b&gt;60-64&lt;/b&gt;</option>", page.text)
         self.assertIn("не указан признак", page.text)
         self.assertNotIn("<b>60-64</b>", page.text)  # supplier text is escaped
 
@@ -59,3 +61,34 @@ class ClarificationDisplayTests(unittest.TestCase):
         page = self.client.get(f"/dashboard/automation/jobs/{self.job_id}/review")
         self.assertEqual(page.status_code, 200)
         self.assertNotIn("Близкие варианты", page.text)
+
+    def test_selected_details_do_not_include_other_candidates(self):
+        page = self.client.get(f"/dashboard/automation/jobs/{self.job_id}/review").text
+        details = page.split("class='candidate-details' aria-live='polite'>", 1)[1].split("</div>", 1)[0]
+        self.assertIn("Товар", details)
+        self.assertNotIn("Хомут", details)
+        self.assertIn("value='none'", page)
+
+    def test_near_candidate_selection_is_saved_and_survives_reload(self):
+        response = self.client.post(f"/dashboard/automation/jobs/{self.job_id}/review", data={
+            "candidate_1": "1", "quantity_1": "2", "price_1": "123", "include_1": "1",
+        }, follow_redirects=False)
+        self.assertEqual(response.status_code, 303, response.text)
+        with pipeline._connect() as conn:
+            result = json.loads(conn.execute("SELECT result_json FROM automation_jobs WHERE id=?", (self.job_id,)).fetchone()[0])
+        self.assertEqual(result["items"][0]["selected"]["name"], "Хомут СВК <b>60-64</b>")
+        self.assertEqual(result["items"][0]["proposed_unit_price"], 123)
+        page = self.client.get(f"/dashboard/automation/jobs/{self.job_id}/review").text
+        self.assertIn("selected>Хомут СВК &lt;b&gt;60-64&lt;/b&gt;</option>", page)
+
+    def test_not_found_clears_selection_and_excludes_even_if_include_submitted(self):
+        response = self.client.post(f"/dashboard/automation/jobs/{self.job_id}/review", data={
+            "candidate_1": "none", "quantity_1": "2", "price_1": "0", "include_1": "1",
+        }, follow_redirects=False)
+        self.assertEqual(response.status_code, 303, response.text)
+        with pipeline._connect() as conn:
+            result = json.loads(conn.execute("SELECT result_json FROM automation_jobs WHERE id=?", (self.job_id,)).fetchone()[0])
+        item = result["items"][0]
+        self.assertIsNone(item["selected"])
+        self.assertEqual(item["decision"], "excluded")
+        self.assertIn("value='none' selected>Не найден", self.client.get(f"/dashboard/automation/jobs/{self.job_id}/review").text)
