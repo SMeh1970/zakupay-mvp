@@ -65,9 +65,38 @@ class ClarificationDisplayTests(unittest.TestCase):
     def test_selected_details_do_not_include_other_candidates(self):
         page = self.client.get(f"/dashboard/automation/jobs/{self.job_id}/review").text
         details = page.split("class='candidate-details' aria-live='polite'>", 1)[1].split("</div>", 1)[0]
-        self.assertIn("Товар", details)
+        self.assertNotIn("Товар", details)
+        self.assertTrue(details.startswith("ВИ"))
         self.assertNotIn("Хомут", details)
         self.assertIn("value='none'", page)
+
+    def test_purchase_details_do_not_repeat_name_or_selection_rule(self):
+        with pipeline._connect() as conn:
+            result = json.loads(conn.execute("SELECT result_json FROM automation_jobs WHERE id=?", (self.job_id,)).fetchone()[0])
+            item = result["items"][0]
+            item.update(selected=item["candidates"][0], selection_rule="brand_match", requested_brands=["Remontix"], courier_date="2026-10-30T06:00:00.000+03:00")
+            conn.execute("UPDATE automation_jobs SET result_json=? WHERE id=?", (json.dumps(result), self.job_id))
+        page = self.client.get(f"/dashboard/automation/jobs/{self.job_id}/review").text
+        details = page.split("class='candidate-details' aria-live='polite'>", 1)[1].split("</div>", 1)[0]
+        self.assertIn("ВИ: 100 ₽ за 1 шт", details)
+        self.assertNotIn("Товар", details)
+        self.assertNotIn("Подбор по указанному бренду", page)
+        self.assertIn(">30.10.2026</td>", page)
+
+    def test_missing_supplier_price_is_explained_without_inventing_a_price(self):
+        with pipeline._connect() as conn:
+            result = json.loads(conn.execute("SELECT result_json FROM automation_jobs WHERE id=?", (self.job_id,)).fetchone()[0])
+            item = result["items"][0]
+            candidate = {"name": "Пена REMONTIX PRO 65", "supplier": "ВсеИнструменты.ру", "price": None,
+                         "url": "https://www.vseinstrumenti.ru/product/foam/"}
+            item.update(selected=candidate, candidates=[candidate], proposed_unit_price=None)
+            conn.execute("UPDATE automation_jobs SET result_json=? WHERE id=?", (json.dumps(result), self.job_id))
+        page = self.client.get(f"/dashboard/automation/jobs/{self.job_id}/review").text
+        self.assertIn("placeholder='Нет цены' value=''", page)
+        self.assertIn("class='price-note' >Поставщик не передал цену", page)
+        self.assertIn("data-price='' data-price-missing='1'", page)
+        self.assertIn("href='https://www.vseinstrumenti.ru/product/foam/'", page)
+        self.assertEqual(pipeline._review_source_url({"url": "javascript:alert(1)"}), "")
 
     def test_near_candidate_selection_is_saved_and_survives_reload(self):
         response = self.client.post(f"/dashboard/automation/jobs/{self.job_id}/review", data={

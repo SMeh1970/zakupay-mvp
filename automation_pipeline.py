@@ -723,10 +723,10 @@ def _purchase_label(candidate: dict, requested_unit: str) -> str:
     """Human-readable supplier purchase price with its sales-unit context."""
     # Historical saved drafts did not persist a supplier field and were VI-only.
     supplier = str(candidate.get("supplier") or "ВсеИнструменты.ру")
-    name = str(candidate.get("name") or "Товар")
+    supplier_label = "ВИ" if supplier == "ВсеИнструменты.ру" else supplier
     price = candidate.get("price")
     if price is None:
-        return f"{name} — закупочная цена {supplier} не передана"
+        return supplier_label
     numeric_price = float(price)
     price_text = (
         str(int(numeric_price))
@@ -739,13 +739,12 @@ def _purchase_label(candidate: dict, requested_unit: str) -> str:
     else:
         supplier_unit = str(candidate.get("unit") or requested_unit or "ед.").strip()
         price_basis = f"за 1 {supplier_unit}"
-    supplier_label = "ВИ" if supplier == "ВсеИнструменты.ру" else supplier
     provenance = ""
     if candidate.get("source_type") == "price_list":
         provenance = f" · прайс {candidate.get('source_filename')}, {candidate.get('source_sheet')}, строка {candidate.get('source_row')}, от {candidate.get('price_date')}"
     elif candidate.get("source_type") == "own_catalog":
         provenance = f" · наш каталог, от {candidate.get('price_date')}"
-    return f"{name} — закупка {supplier_label}: {price_text} ₽ {price_basis}{provenance}"
+    return f"{supplier_label}: {price_text} ₽ {price_basis}{provenance}"
 
 
 def _candidate_pack_size(candidate: dict, requested_unit: str) -> int:
@@ -873,6 +872,20 @@ def _review_candidate_details(item: dict, candidate: dict) -> str:
     return _purchase_label(candidate, str(item.get("unit") or "")) + (
         " · Отличия / уточнить: " + "; ".join(reasons) if reasons else ""
     )
+
+
+def _review_source_url(candidate: dict) -> str:
+    url = str(candidate.get("url") or candidate.get("source_url") or "").strip()
+    return url if re.match(r"https?://[^\s/]+(?:/|$)", url, re.I) else ""
+
+
+def _review_delivery_date(value) -> str:
+    if not value:
+        return "—"
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00")).strftime("%d.%m.%Y")
+    except ValueError:
+        return str(value)
 
 
 def _hard_conflicts(requested: str, selected: dict) -> list[str]:
@@ -1317,11 +1330,19 @@ _REVIEW_SELECTION_SCRIPT = """
     boxes.forEach(box => box.addEventListener('change', update));
     document.querySelectorAll('.price').forEach(input => input.addEventListener('input', update));
     document.querySelectorAll('.candidate-select').forEach(input => input.addEventListener('change', () => {
-        document.getElementById('price-' + input.dataset.position).value = input.options[input.selectedIndex].dataset.price || '';
+        const option = input.selectedOptions[0];
+        const price = document.getElementById('price-' + input.dataset.position);
+        price.value = option?.dataset.price || '';
+        price.placeholder = option?.dataset.priceMissing === '1' ? 'Нет цены' : '';
         const row = input.closest('tr');
-        row.querySelector('.candidate-details').textContent = input.selectedOptions[0]?.dataset.details || '';
-        const notice = row.querySelector('.selection-notice');
-        if (notice) notice.hidden = true;
+        input.title = option?.title || '';
+        row.querySelector('.candidate-details').textContent = option?.dataset.details || '';
+        row.querySelector('.price-note').hidden = option?.dataset.priceMissing !== '1';
+        const source = row.querySelector('.candidate-source');
+        const url = option?.dataset.url || '';
+        source.hidden = !url;
+        if (url) source.href = url;
+        else source.removeAttribute('href');
         if (input.value === 'none') row.querySelector('input[name^="include_"]').checked = false;
         update();
     }));
@@ -2788,15 +2809,6 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
         from supplier_comparison import selected_allowed
         for item in result.get("items") or []:
             selected = item.get("selected") or {}
-            candidates = item.get("candidates") or []
-            selection_notice = (
-                "Бренд не указан — выбран самый дешёвый подходящий вариант за единицу заявки"
-                if item.get("selection_rule") == "lowest_unit_price" else
-                "Подбор по указанному бренду: " + ", ".join(item.get("requested_brands") or [])
-                if item.get("selection_rule") == "brand_match" else ""
-            )
-            if not selected:
-                selection_notice = ""
             candidate_options = []
             selected_key = _candidate_key(selected)
             usable_candidates = _review_candidates(item)
@@ -2810,7 +2822,9 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
                 purchase_price = candidate.get("price")
                 offer_price = round(float(purchase_price) / pack_size * (1 + DEFAULT_MARKUP), 2) if purchase_price is not None else ""
                 candidate_options.append(
-                    f"<option value='{idx}' data-price='{offer_price}' data-details='{html.escape(details, quote=True)}' {'selected' if key == selected_key else ''}>"
+                    f"<option value='{idx}' data-price='{offer_price}' data-price-missing='{'1' if purchase_price is None else '0'}' "
+                    f"data-url='{html.escape(_review_source_url(candidate), quote=True)}' title='{html.escape(str(candidate.get('name') or ''), quote=True)}' "
+                    f"data-details='{html.escape(details, quote=True)}' {'selected' if key == selected_key else ''}>"
                     f"{html.escape(label)}</option>"
                 )
             candidate_options.append(f"<option value='none' {'selected' if not selected else ''}>Не найден</option>")
@@ -2822,7 +2836,8 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
                 f"<form id='{search_form_id}' method='post' action='/dashboard/automation/jobs/{job_id}/items/{pos}/refresh'></form>"
             )
             rejected_count = len(item.get("rejected_candidates") or [])
-            clarification_html = ""
+            missing_price = bool(selected) and selected.get("price") is None
+            source_url = _review_source_url(selected)
             clarification_html = "<div class='candidate-details' aria-live='polite'>" + (
                 html.escape(_review_candidate_details(item, selected)) if selected else ""
             ) + "</div>"
@@ -2831,18 +2846,19 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
                 f"<td><input form='review-form' type='checkbox' name='include_{pos}' value='1' data-bulk-allowed='{'1' if selected_allowed(item) else '0'}' {checked} {disabled}></td>"
                 f"<td><label><input form='position-search' class='search-position' type='checkbox' name='selected_position' value='{pos}'> {pos}</label></td>"
                 f"<td>{html.escape(str(item.get('requested_name') or ''))}</td>"
-                f"<td><select form='review-form' class='candidate-select' data-position='{pos}' name='candidate_{pos}' {disabled}>{''.join(candidate_options) or '<option>Не найден</option>'}</select>"
-                f"<div class='selection-notice'><small>{html.escape(selection_notice)}</small></div>{clarification_html}"
+                f"<td><select form='review-form' class='candidate-select' data-position='{pos}' name='candidate_{pos}' title='{html.escape(str(selected.get('name') or ''), quote=True)}' {disabled}>{''.join(candidate_options)}</select>"
+                f"{clarification_html}<a class='candidate-source' href='{html.escape(source_url, quote=True)}' target='_blank' rel='noopener noreferrer' {'' if source_url else 'hidden'}>Карточка поставщика ↗</a>"
                 f"<div>{'' if offer_created else f'''<button class='row-search' form='{search_form_id}' type='submit'>Искать другие варианты</button>'''}"
                 f" <a class='row-search button' href='/dashboard/sniper?job_id={job_id}&amp;positions={pos}'>Искать через Sniper</a>"
                 f"<small> ранее отклонено: {rejected_count}</small></div></td>"
                 f"<td><input form='review-form' class='qty' name='quantity_{pos}' type='number' step='0.001' value='{html.escape(str(item.get('quantity') or ''))}' {disabled}> {html.escape(str(item.get('unit') or ''))}</td>"
-                f"<td><input form='review-form' id='price-{pos}' class='price' name='price_{pos}' type='number' step='0.01' value='{html.escape(str(item.get('proposed_unit_price') or ''))}' {disabled}></td>"
+                f"<td><input form='review-form' id='price-{pos}' class='price' name='price_{pos}' type='number' step='0.01' placeholder='{'Нет цены' if missing_price else ''}' value='{html.escape(str(item.get('proposed_unit_price') or ''))}' {disabled}>"
+                f"<small class='price-note' {'' if missing_price else 'hidden'}>Поставщик не передал цену</small></td>"
                 f"<td>{html.escape(str(item.get('match_status') or '—'))}<br><small>поиск: {html.escape(str(item.get('search_elapsed_seconds') or '—'))} сек."
                 f"{' · лимит времени' if item.get('search_timed_out') else ''}</small></td>"
                 f"<td>{html.escape(', '.join(item.get('replacement_details') or []) or 'нет')}</td>"
                 f"<td>{html.escape(str(item.get('availability_status') or '—'))}</td>"
-                f"<td>{html.escape(str(item.get('courier_date') or item.get('pickup_date') or '—'))}</td>"
+                f"<td title='{html.escape(str(item.get('courier_date') or item.get('pickup_date') or ''), quote=True)}'>{html.escape(_review_delivery_date(item.get('courier_date') or item.get('pickup_date')))}</td>"
                 f"<td>{'В счёте' if _included(item) else 'Исключено'}</td>"
                 "</tr>"
             )
@@ -2938,12 +2954,15 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
                 "<!doctype html><html lang='ru'><meta charset='utf-8'>"
                 "<title>Проверка заявки</title><style>body{font-family:Arial;margin:24px;background:#f4f6f8}main{background:#fff;padding:20px;border-radius:12px;overflow:auto}"
                 "table{border-collapse:collapse;width:100%}td,th{border:1px solid #ccc;padding:8px}"
-                "th{background:#eee}.candidate-select{width:100%;min-width:0;max-width:380px}.candidate-details{max-width:380px;overflow-wrap:anywhere;font-size:12px;margin-top:6px}.include-priced{display:block;min-width:145px;max-width:180px;text-align:left;font-size:12px}.qty{width:90px}.price{width:100px}button,.button{display:inline-block;padding:11px 16px;background:#1a73e8;color:white;border:0;border-radius:7px;text-decoration:none;font-weight:bold}.row-search{margin-top:7px;padding:7px 10px;background:#5f6368}.sent-notice{padding:14px;background:#e6f4ea;color:#137333;border-radius:8px;margin:14px 0}</style><body><main>"
+                "th{background:#eee}.review-table{table-layout:fixed;min-width:1200px;max-width:1700px;font-size:14px;line-height:1.35}.review-table td,.review-table th{padding:6px;vertical-align:top;overflow-wrap:anywhere}.review-table th:first-child,.review-table td:first-child,.review-table th:nth-child(2),.review-table td:nth-child(2){text-align:center}.candidate-select{width:100%;min-width:0;font-size:13px}.candidate-details{overflow-wrap:anywhere;font-size:12px;margin-top:4px}.candidate-source:not([hidden]){display:inline-block;font-size:12px;margin-top:3px}.price-note:not([hidden]){display:block;color:#9a6700;font-size:12px;margin-top:4px}.include-priced{font-size:13px}.qty,.price{width:100%;box-sizing:border-box;min-width:0;max-width:100px}button,.button{display:inline-block;padding:11px 16px;background:#1a73e8;color:white;border:0;border-radius:7px;text-decoration:none;font-weight:bold}.row-search{margin-top:6px;padding:5px 7px;background:#5f6368;font-size:12px}.sent-notice{padding:14px;background:#e6f4ea;color:#137333;border-radius:8px;margin:14px 0}</style><body><main>"
                 f"<p><a href='/dashboard/automation'>← Все заявки</a> · <a href='/dashboard/automation/jobs/{job_id}/comparison'>Сравнительная таблица поставщиков →</a></p>"
                 f"<h1>{request_heading}</h1>"
                 f"<p>Счёт № {row['invoice_number']} · статус: {'предложение выставлено' if offer_created else html.escape(str(row['status']))}</p>"
                 f"{navigation_notice}{sent_notice}{seller_controls}{customer_form}{top_controls}{search_report}"
-                f"<form id='review-form' method='post' action='/dashboard/automation/jobs/{job_id}/review'></form>{''.join(row_search_forms)}<table><tr><th><label class='include-priced'><input id='include-all-priced' type='checkbox' {'disabled' if offer_created else ''}> Включить все позиции с ценами</label></th><th>№</th><th>Заявка</th><th>Подбор поставщика<br><small>(закупочная цена)</small></th><th>Количество</th><th>Наша цена<br><small>за единицу заявки (+5%)</small></th>"
+                f"<form id='review-form' method='post' action='/dashboard/automation/jobs/{job_id}/review'></form>{''.join(row_search_forms)}"
+                f"<p><label class='include-priced'><input id='include-all-priced' type='checkbox' {'disabled' if offer_created else ''}> Включить все позиции с ценами</label></p>"
+                "<table class='review-table'><colgroup><col style='width:3%'><col style='width:3%'><col style='width:23%'><col style='width:28%'><col style='width:6%'><col style='width:7%'><col style='width:7%'><col style='width:6%'><col style='width:8%'><col style='width:5%'><col style='width:4%'></colgroup>"
+                "<tr><th>В счёт</th><th>№</th><th>Заявка</th><th>Подбор поставщика<br><small>(закупочная цена)</small></th><th>Кол-во</th><th>Наша цена<br><small>за единицу заявки (+5%)</small></th>"
                 "<th>Статус подбора</th><th>Замена</th><th>Наличие</th><th>Срок</th><th>Решение</th></tr>"
                 + "".join(table_rows) + "</table>" + save_control + invoice_link + offer_link
                 + f"<p><a href='/dashboard/prices/match-order/{job_id}'>Подобрать по характеристикам из прайсов</a> · <a href='/dashboard/automation/jobs/{job_id}/catalog-sale'>Сохранить успешную продажу в наш каталог</a> · <a href='/dashboard/prices'>Прайсы</a> · <a href='/dashboard/catalog'>Наш каталог</a> · <a href='/dashboard/automation/jobs/{job_id}/tiles'>Подобрать керамогранит с доставкой</a> · <a href='/dashboard/sniper?job_id={job_id}'>Найти поставщиков через Sniper</a></p>"
