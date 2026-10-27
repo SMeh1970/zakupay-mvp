@@ -313,7 +313,7 @@ def offer_view(item, candidate):
                 enabled=state.get("cells", {}).get(key) is not False,
                 selected=quote_key(item.get("selected") or {}) == key and item.get("decision") in {"approved", "auto_ready"},
                 stock=stock, availability=("Количество предложения подтверждено оператором" if candidate.get("catalog_prepared") and candidate.get("quantity_confirmed") else "Наличие требует подтверждения" if historical or stock is None else "Остаток поставщика"),
-                source_date=candidate.get("price_date"), url=safe_url(candidate.get("url") or candidate.get("source_url")),
+                source_date=candidate.get("price_date") or candidate.get("price_observed_at"), url=safe_url(candidate.get("url") or candidate.get("source_url")),
                 catalog_prepared=bool(candidate.get("catalog_prepared")), pricing_ready=candidate.get("pricing_ready", True),
                 currency=candidate.get("currency") if candidate.get("catalog_prepared") else "RUB",
                 raw_price=candidate.get("confirmed_raw_price", candidate.get("original_price")), vat_mode=candidate.get("vat_mode"), vat_rate=candidate.get("vat_rate"),
@@ -342,6 +342,8 @@ def supplier_enabled(result, supplier):
 def selected_allowed(item):
     """Used by the invoice/procurement path, not just visual highlighting."""
     if not item.get("comparison"):
+        return True
+    if 'values' in settings(item) and set(settings(item)) <= {'request_signature', 'values'}:
         return True
     candidate = item.get("selected")
     if not candidate or item.get("comparison_supplier_disabled"):
@@ -372,8 +374,11 @@ def model(result, raw=None):
                 v["eligible"] = False
                 v["reasons"].append("Поставщик выключен")
         source = item.get("comparison_source") or item
+        from characteristic_comparison import build
+        comparison = build(item, views, lambda name: supplier_enabled(result, name))
         rows.append(dict(position=item.get("position"), name=source.get("requested_name"), quantity=source.get("quantity"),
                          unit=source.get("unit"), offers=views, active=bool(item.get("comparison")),
+                         value_comparison=comparison,
                          catalog_search=item.get("catalog_search"),
                          rules=[dict(id=k, state=v) for k, v in (settings(item).get("features") or {}).items()]))
     return dict(revision=revision(raw) if raw is not None else None, order_name=result.get("order_name"),
@@ -417,6 +422,8 @@ def reconcile(result):
     for item in result.get("items") or []:
         if not item.get("comparison"):
             continue
+        if 'values' in settings(item) and set(settings(item)) <= {'request_signature', 'values'}:
+            continue
         selected = item.get("selected") or {}
         item["comparison_supplier_disabled"] = not supplier_enabled(result, str(selected.get("supplier") or "ВсеИнструменты.ру"))
         if not selected_allowed(item):
@@ -457,7 +464,7 @@ def mutate(result, payload, conn=None):
         from comparison_prototype import save_state
         save_state(result, payload)
         return
-    if result.get("live_offer_created"):
+    if result.get("live_offer_created") and action != 'value':
         raise ValueError("Предложение уже отправлено. Сравнение доступно только для просмотра.")
     if action == "load_catalog":
         if conn is None:
@@ -483,7 +490,16 @@ def mutate(result, payload, conn=None):
             raise ValueError("Позиция не найдена")
         state = activate(item)
         views = [offer_view(item, c) for c in candidates(item)]
-        if action == "feature":
+        if action == "value":
+            from characteristic_comparison import build
+            identifier, decision = payload.get("feature"), payload.get("decision")
+            known = {v['id'] for g in build(item, views)['groups'] for v in g['values']}
+            if identifier not in known or decision not in {'accepted', 'rejected'}:
+                raise ValueError("Характеристика не найдена")
+            state.setdefault('values', {})[identifier] = decision
+            # Value comparison does not rewrite procurement/invoice decisions.
+            return
+        elif action == "feature":
             identifier, decision = payload.get("feature"), payload.get("decision")
             if decision not in {"accepted", "rejected", "pending"} or not any(f["id"] == identifier for v in views for f in v["features"]):
                 raise ValueError("Характеристика не найдена")
@@ -571,9 +587,9 @@ def install_supplier_comparison(app):
     @app.get("/dashboard/comparison/assets/{name}")
     def asset(name: str, request: Request):
         _session(request)
-        if name not in {"comparison.js", "comparison.css", "prototype.js", "prototype.css"}:
+        if name not in {"comparison.js", "comparison.css", "prototype.js", "prototype.css", "values.js"}:
             raise HTTPException(404)
-        return Response((ASSETS / name).read_text(), media_type="text/javascript" if name.endswith(".js") else "text/css", headers={"Cache-Control": "no-cache"})
+        return Response((ASSETS / name).read_text(encoding='utf-8'), media_type="text/javascript" if name.endswith(".js") else "text/css", headers={"Cache-Control": "no-cache"})
 
     @app.get("/dashboard/automation/jobs/{job_id}/comparison", response_class=HTMLResponse)
     def page(job_id: int, request: Request):
@@ -586,12 +602,12 @@ def install_supplier_comparison(app):
         data["prototype"] = matrix_model(result)
         serialized = json.dumps(data, ensure_ascii=False, allow_nan=False).replace("<", "\\u003c").replace("&", "\\u0026")
         nonce = security.secrets.token_urlsafe(18)
-        template = (ASSETS / "prototype-body.html").read_text()
+        template = '<main><h1>Сравнение по характеристикам</h1><p>✓ разрешает значение, ✕ исключает. Между параметрами — И, внутри параметра — ИЛИ. Минимум пересчитывается автоматически.</p><p id="message" role="status"></p><div id="value-rows"></div></main>'
         if result.get("live_offer_created"):
             template = (f"<section><b>По этому варианту выставлен счёт.</b> Решения по отличиям доступны; отправленный счёт от них не меняется."
                 f"<form method='post' action='/dashboard/automation/jobs/{job_id}/revision'>"
                 "<button>Продолжить подбор в новом варианте</button></form></section>" + template)
-        content = f'''<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Сравнение поставщиков · Закупай</title><link rel="stylesheet" href="/dashboard/comparison/assets/prototype.css"></head><body><nav><a href="/dashboard/automation">Закупай MVP</a><a href="/dashboard/automation/jobs/{job_id}/review">← К проверке заявки</a><a href="/dashboard/prices">Прайсы</a></nav>{template}<script nonce="{nonce}" type="application/json" id="comparison-data">{serialized}</script><script nonce="{nonce}" src="/dashboard/comparison/assets/prototype.js"></script></body></html>'''
+        content = f'''<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Сравнение поставщиков · Закупай</title><link rel="stylesheet" href="/dashboard/comparison/assets/comparison.css"></head><body><nav><a href="/dashboard/automation">Закупай MVP</a><a href="/dashboard/automation/jobs/{job_id}/review">← К проверке заявки</a><a href="/dashboard/prices">Прайсы</a></nav>{template}<script nonce="{nonce}" type="application/json" id="comparison-data">{serialized}</script><script nonce="{nonce}" src="/dashboard/comparison/assets/values.js"></script></body></html>'''
         return HTMLResponse(content, headers={"Cache-Control": "no-store", "Content-Security-Policy": f"default-src 'none'; script-src 'nonce-{nonce}'; style-src 'self'; connect-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"})
 
     @app.post("/dashboard/automation/jobs/{job_id}/comparison/action")
@@ -612,7 +628,7 @@ def install_supplier_comparison(app):
             raise HTTPException(403, "Обновите страницу и повторите действие")
         with _lock, _connect() as conn:
             row, result = load(job_id, conn)
-            if row["status"] == "processing" or (row["status"] == "offer_created" and payload.get("action") != "prototype_state"):
+            if row["status"] == "processing" or (row["status"] == "offer_created" and payload.get("action") not in {"prototype_state", "value"}):
                 raise HTTPException(409, "Заявка обрабатывается или предложение уже отправлено")
             if payload.get("revision") != revision(row["result_json"]):
                 raise HTTPException(409, "Заявка изменена в другом окне. Обновите страницу.")
@@ -630,10 +646,11 @@ def install_supplier_comparison(app):
                 invoice_number = max(INVOICE_NUMBER_START, (last["maximum"] or INVOICE_NUMBER_START - 1) + 1)
                 result["invoice_number"] = invoice_number
             raw = json.dumps(result, ensure_ascii=False, allow_nan=False)
-            cursor = _execute(conn, "UPDATE automation_jobs SET result_json=?,status=?,invoice_number=?,updated_at=? WHERE id=? AND result_json=? AND status=?", (raw, row["status"] if payload.get("action") == "prototype_state" else result["status"], invoice_number, datetime.now(timezone.utc).isoformat(), job_id, row["result_json"], row["status"]))
+            cursor = _execute(conn, "UPDATE automation_jobs SET result_json=?,status=?,invoice_number=?,updated_at=? WHERE id=? AND result_json=? AND status=?", (raw, row["status"] if payload.get("action") in {"prototype_state", "value"} else result["status"], invoice_number, datetime.now(timezone.utc).isoformat(), job_id, row["result_json"], row["status"]))
             if cursor.rowcount != 1:
                 raise HTTPException(409, "Заявка изменена. Обновите страницу.")
         if payload.get("action") == "prototype_state":
             return JSONResponse({"revision": revision(raw)}, headers={"Cache-Control": "no-store"})
         data = model(result, raw)
+        data['read_only'] = False
         return JSONResponse(data, headers={"Cache-Control": "no-store"})

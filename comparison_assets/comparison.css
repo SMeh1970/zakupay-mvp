@@ -1,4 +1,15 @@
 
+  .value-position{background:white;padding:20px;margin:20px 0;border:1px solid #dcd6c8;border-radius:12px}
+  .value-panel{display:flex;flex-wrap:wrap;gap:14px;padding:16px 0;border-bottom:1px solid #dcd6c8}
+  .value-group{display:flex;flex-wrap:wrap;align-items:center;gap:6px}
+  .value-group>b{width:100%;font-size:13px}
+  .value-chip{display:inline-flex;align-items:center;gap:6px;border:1px solid #dcd6c8;border-radius:8px;padding:5px 7px;background:#fff5df}
+  .value-chip.matched{background:#e1f3e8;border-color:#78a88a}
+  .value-chip.rejected{background:#f6e6dd;color:#8c3020}
+  .value-chip button{min-width:30px;min-height:30px;padding:3px;cursor:pointer}
+  .value-chip button[aria-pressed=true]{font-weight:bold;border:2px solid currentColor}
+  .value-result{padding-top:20px}
+  .value-offer{padding:12px 0;border-top:1px solid #dcd6c8}
   :root{
     --ink:#1c2b2e;
     --paper:#f7f5f0;

@@ -4,6 +4,7 @@ import re
 import threading
 import time
 from dataclasses import dataclass, asdict
+from datetime import datetime, timezone
 from typing import Any
 
 import requests
@@ -42,6 +43,7 @@ class SupplierQuote:
     source_sheet: str | None = None
     source_row: int | None = None
     price_date: str | None = None
+    price_observed_at: str | None = None
     source_url: str | None = None
     original_price: float | None = None
     vat_mode: str | None = None
@@ -296,6 +298,7 @@ class VseinstrumentiAdapter(SupplierAdapter):
                 width=self._num(dimensions.get("width")),
                 height=self._num(dimensions.get("height")),
                 price_type="contractor_wholesale",
+                price_observed_at=datetime.now(timezone.utc).isoformat(),
             ))
         return result
 
@@ -557,6 +560,7 @@ class KrepKompAdapter(SupplierAdapter):
                 pickup_date=warehouses or None,
                 breadcrumbs=[category] if category else None,
                 price_type="contractor_individual",
+                price_observed_at=datetime.now(timezone.utc).isoformat(),
             ))
         return quotes
 

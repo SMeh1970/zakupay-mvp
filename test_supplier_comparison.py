@@ -304,6 +304,24 @@ class ComparisonRouteTests(unittest.TestCase):
         self.assertEqual(result,self.result)
         self.assertEqual(row['status'],'needs_review')
 
+    def test_value_panel_and_decision_reload_without_changing_invoice(self):
+        data = self.data()
+        feature = next(v for g in data['rows'][0]['value_comparison']['groups']
+                       for v in g['values'] if v['value'] == '4 мм')
+        response = self.post(action='value', position=1, feature=feature['id'], decision='rejected')
+        self.assertEqual(response.status_code, 200, response.text)
+        groups = self.data()['rows'][0]['value_comparison']['groups']
+        self.assertEqual(next(v['state'] for g in groups for v in g['values'] if v['id']==feature['id']), 'rejected')
+        self.assertIn('values.js', self.client.get(self.url).text)
+        self.assertEqual(self.client.get('/dashboard/comparison/assets/values.js').status_code, 200)
+        with pipeline._connect() as conn:
+            stored = conn.execute('SELECT result_json,status,invoice_number FROM automation_jobs WHERE id=?',(self.job,)).fetchone()
+        item = json.loads(stored['result_json'])['items'][0]
+        item.pop('comparison'); item.pop('comparison_source')
+        self.assertEqual(item, self.result['items'][0])
+        self.assertEqual(stored['status'], 'needs_review')
+        self.assertIsNone(stored['invoice_number'])
+
     def test_sent_invoice_allows_matrix_decisions_without_mutating_invoice(self):
         self.result['live_offer_created'] = True
         self.result['invoice_number'] = 278
