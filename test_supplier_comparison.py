@@ -322,6 +322,17 @@ class ComparisonRouteTests(unittest.TestCase):
         self.assertEqual(stored['status'], 'needs_review')
         self.assertIsNone(stored['invoice_number'])
 
+    def test_review_embeds_value_controls_in_supplier_cell(self):
+        response = self.client.get(f'/dashboard/automation/jobs/{self.job}/review')
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertIn("<td><div class='inline-values' data-value-position='1'>", response.text)
+        self.assertIn('Наименование для счёта', response.text)
+        data = json.loads(re.search(r'id="comparison-data">(.*?)</script>', response.text, re.S)[1])
+        self.assertTrue(data['embedded'])
+        self.assertEqual(data['action_url'], self.url+'/action')
+        self.assertEqual(data['revision'], self.data()['revision'])
+        self.assertIn('value_comparison', data['rows'][0])
+
     def test_sent_invoice_allows_matrix_decisions_without_mutating_invoice(self):
         self.result['live_offer_created'] = True
         self.result['invoice_number'] = 278

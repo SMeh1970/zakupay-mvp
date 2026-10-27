@@ -600,15 +600,21 @@ def install_supplier_comparison(app):
         data.update(csrf=_csrf(request), job_id=job_id, read_only=row["status"] == "processing")
         from comparison_prototype import matrix_model
         data["prototype"] = matrix_model(result)
+        data.update(embedded=True, action_url=f'/dashboard/automation/jobs/{job_id}/comparison/action')
         serialized = json.dumps(data, ensure_ascii=False, allow_nan=False).replace("<", "\\u003c").replace("&", "\\u0026")
         nonce = security.secrets.token_urlsafe(18)
-        template = '<main><h1>Сравнение по характеристикам</h1><p>✓ разрешает значение, ✕ исключает. Между параметрами — И, внутри параметра — ИЛИ. Минимум пересчитывается автоматически.</p><p id="message" role="status"></p><div id="value-rows"></div></main>'
+        from review_values import CSS as inline_css
+        template = f'<style nonce="{nonce}">{inline_css}</style><main><p id="message" role="status"></p><table><thead><tr><th>№</th><th>Заявка</th><th>Подбор поставщика</th></tr></thead><tbody>'
+        for item in data['rows']:
+            position = html.escape(str(item['position']), quote=True)
+            template += f'<tr><td>{position}</td><td>{html.escape(str(item["name"] or ""))}</td><td><div class="inline-values" data-value-position="{position}"></div></td></tr>'
+        template += '</tbody></table></main>'
         if result.get("live_offer_created"):
             template = (f"<section><b>По этому варианту выставлен счёт.</b> Решения по отличиям доступны; отправленный счёт от них не меняется."
                 f"<form method='post' action='/dashboard/automation/jobs/{job_id}/revision'>"
                 "<button>Продолжить подбор в новом варианте</button></form></section>" + template)
         content = f'''<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Сравнение поставщиков · Закупай</title><link rel="stylesheet" href="/dashboard/comparison/assets/comparison.css"></head><body><nav><a href="/dashboard/automation">Закупай MVP</a><a href="/dashboard/automation/jobs/{job_id}/review">← К проверке заявки</a><a href="/dashboard/prices">Прайсы</a></nav>{template}<script nonce="{nonce}" type="application/json" id="comparison-data">{serialized}</script><script nonce="{nonce}" src="/dashboard/comparison/assets/values.js"></script></body></html>'''
-        return HTMLResponse(content, headers={"Cache-Control": "no-store", "Content-Security-Policy": f"default-src 'none'; script-src 'nonce-{nonce}'; style-src 'self'; connect-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"})
+        return HTMLResponse(content, headers={"Cache-Control": "no-store", "Content-Security-Policy": f"default-src 'none'; script-src 'nonce-{nonce}'; style-src 'self' 'nonce-{nonce}'; connect-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"})
 
     @app.post("/dashboard/automation/jobs/{job_id}/comparison/action")
     async def action(job_id: int, request: Request):

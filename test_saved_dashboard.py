@@ -288,7 +288,7 @@ class SavedDashboardTests(unittest.TestCase):
 
     def test_comparison_requires_actual_offers_not_request_positions(self):
         job_id = self.first["job_id"]
-        link = f"href='/dashboard/automation/jobs/{job_id}/comparison'"
+        link = f"href='/dashboard/automation/jobs/{job_id}/review#review-table'"
         self.assertNotIn(link, self.client.get("/dashboard/automation").text)
         for field in ("selected", "candidates", "rejected_candidates", "catalog_candidates"):
             for offer in (None, {"name": "Труба", "error": "Поиск не удался"},

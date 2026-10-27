@@ -2759,7 +2759,7 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
                 f"<div class='meta'><b>Поставщики:</b> {html.escape(suppliers_label)}</div>"
                 f"<div class='meta'>Статус: {'счёт выставлен в Закупай' if offer_created else 'поиск цен не запускался' if pending else html.escape(STATUSES.get(row['status'], 'Требуется проверка'))} · счёт: {row['invoice_number'] or '—'}</div></div>"
                 f"<div class='actions'>"
-                + (f"<a class='button secondary' target='_blank' rel='noopener' href='/dashboard/automation/jobs/{row['id']}/comparison'>Сравнить поставщиков</a>" if has_comparison_offers else "")
+                + (f"<a class='button secondary' target='_blank' rel='noopener' href='/dashboard/automation/jobs/{row['id']}/review#review-table'>Сравнить поставщиков</a>" if has_comparison_offers else "")
                 + f"{invoice}{send}</div></section>"
             )
         sync_report = ""
@@ -2825,7 +2825,7 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
         return Response(media_type="text/html", headers={"Cache-Control": "no-store"})
 
     @app.get("/dashboard/automation/jobs/{job_id}/review")
-    def automation_review(job_id: int, action_notice: str = ""):
+    def automation_review(job_id: int, request: Request, action_notice: str = ""):
         with _connect() as conn:
             row = _execute(conn, "SELECT * FROM automation_jobs WHERE id=?", (job_id,)).fetchone()
             if row and not row["viewed_at"]:
@@ -2948,6 +2948,8 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
             )
         table_rows = []
         review_script_nonce = base64.b64encode(os.urandom(18)).decode("ascii")
+        from review_values import assets as review_value_assets, CSS as review_value_css
+        value_assets = review_value_assets(result, row['result_json'], request, job_id, review_script_nonce)
         from supplier_comparison import selected_allowed
         for item in result.get("items") or []:
             selected = item.get("selected") or {}
@@ -2983,9 +2985,10 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
                 "<tr>"
                 f"<td><label><input form='review-form' type='checkbox' name='include_{pos}' value='1' aria-label='Выбрать позицию {pos}' data-bulk-allowed='{'1' if selected_allowed(item) else '0'}' {checked} {disabled}> {pos}</label></td>"
                 f"<td>{html.escape(str(item.get('requested_name') or ''))}</td>"
-                f"<td><select form='review-form' class='candidate-select' data-position='{pos}' name='candidate_{pos}' title='{html.escape(str(selected.get('name') or ''), quote=True)}' {disabled}>{''.join(candidate_options)}</select>"
+                f"<td><div class='inline-values' data-value-position='{pos}'></div>"
+                f"<details class='invoice-candidate'><summary>Наименование для счёта</summary><select form='review-form' class='candidate-select' data-position='{pos}' name='candidate_{pos}' title='{html.escape(str(selected.get('name') or ''), quote=True)}' {disabled}>{''.join(candidate_options)}</select>"
                 f"{clarification_html}<a class='candidate-source' href='{html.escape(source_url, quote=True)}' target='_blank' rel='noopener noreferrer' {'' if source_url else 'hidden'}>{html.escape(str(selected.get('supplier') or 'ВсеИнструменты.ру'))} ↗</a>"
-                "</td>"
+                "</details></td>"
                 f"<td><input form='review-form' class='qty' name='quantity_{pos}' type='number' step='0.001' value='{html.escape(str(item.get('quantity') or ''))}' {disabled}> {html.escape(str(item.get('unit') or ''))}</td>"
                 f"<td><input form='review-form' id='price-{pos}' class='price' name='price_{pos}' type='number' step='0.01' placeholder='{'Нет цены' if missing_price else ''}' value='{html.escape(str(item.get('proposed_unit_price') or ''))}' {disabled}>"
                 f"<small class='price-note' {'' if missing_price else 'hidden'}>{html.escape(_review_missing_price_note(selected))}</small></td>"
@@ -3099,16 +3102,18 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
                 "<title>Проверка заявки</title><style>body{font-family:Arial;margin:24px;background:#f4f6f8}main{background:#fff;padding:20px;border-radius:12px;overflow:auto}"
                 "table{border-collapse:collapse;width:100%}td,th{border:1px solid #ccc;padding:8px}"
                 "th{background:#eee}.review-table{table-layout:fixed;min-width:1400px;max-width:1700px;font-size:14px;line-height:1.35}.review-table td,.review-table th{padding:6px;vertical-align:top;overflow-wrap:anywhere}.review-table th:first-child,.review-table td:first-child{text-align:center}.candidate-select{width:100%;min-width:0;font-size:13px}.candidate-details{overflow-wrap:anywhere;font-size:12px;margin-top:4px}.candidate-source:not([hidden]){display:inline-block;font-size:12px;margin-top:3px}.price-note:not([hidden]){display:block;color:#9a6700;font-size:12px;margin-top:4px}.include-priced{font-size:13px}.qty,.price{width:100%;box-sizing:border-box;min-width:0;max-width:100px}button,.button{display:inline-block;padding:11px 16px;background:#1a73e8;color:white;border:0;border-radius:7px;text-decoration:none;font-weight:bold}.row-search{margin-top:6px;padding:5px 7px;background:#5f6368;font-size:12px}.sent-notice{padding:14px;background:#e6f4ea;color:#137333;border-radius:8px;margin:14px 0}</style><body><main>"
-                f"<p><a href='/dashboard/automation'>← Все заявки</a> · <a href='/dashboard/automation/jobs/{job_id}/comparison'>Сравнительная таблица поставщиков →</a></p>"
+                "<p><a href='/dashboard/automation'>← Все заявки</a></p>"
                 f"<h1>{request_heading}</h1>"
                 f"<p>Счёт № {row['invoice_number']} · статус: {'предложение выставлено' if offer_created else html.escape(str(row['status']))}</p>"
                 f"{navigation_notice}{sent_notice}{seller_controls}{customer_form}{top_controls}{search_report}"
+                f"<style>{review_value_css}</style><p id='message' role='status'></p>"
                 f"<form id='review-form' method='post' action='/dashboard/automation/jobs/{job_id}/review'></form>"
-                "<table class='review-table'><colgroup><col style='width:76px'><col style='width:22%'><col><col style='width:80px'><col style='width:100px'><col style='width:110px'><col style='width:80px'><col style='width:145px'><col style='width:92px'><col style='width:90px'></colgroup>"
+                "<table class='review-table' id='review-table'><colgroup><col style='width:76px'><col style='width:22%'><col><col style='width:80px'><col style='width:100px'><col style='width:110px'><col style='width:80px'><col style='width:145px'><col style='width:92px'><col style='width:90px'></colgroup>"
                 "<tr><th>№</th><th>Заявка</th><th>Подбор поставщика<br><small>(закупочная цена)</small></th><th>Кол-во</th><th>Наша цена<br><small>за единицу заявки (+5%)</small></th>"
                 "<th>Статус подбора</th><th>Замена</th><th>Наличие</th><th>Срок</th><th>Решение</th></tr>"
                 + "".join(table_rows) + "</table>" + save_control + invoice_link + offer_link
                 + f"<p><a href='/dashboard/prices/match-order/{job_id}'>Подобрать по характеристикам из прайсов</a> · <a href='/dashboard/automation/jobs/{job_id}/catalog-sale'>Сохранить успешную продажу в наш каталог</a> · <a href='/dashboard/prices'>Прайсы</a> · <a href='/dashboard/catalog'>Наш каталог</a> · <a href='/dashboard/automation/jobs/{job_id}/tiles'>Подобрать керамогранит с доставкой</a> · <a href='/dashboard/sniper?job_id={job_id}'>Найти поставщиков через Sniper</a></p>"
+                + value_assets
                 + f"<script nonce='{review_script_nonce}'>{_REVIEW_SELECTION_SCRIPT}{_INVOICE_DEFAULT_SCRIPT}</script>"
                 + "</main></body></html>"
             ),
