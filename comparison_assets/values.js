@@ -28,7 +28,7 @@
       const required=[...new Set(group.values.flatMap(v=>v.required||[]))].sort((a,b)=>b.length-a.length);
       for(const value of [...required,...(group.request_evidence||[])]) {
         const raw=value.replace(/\s+(мм|см|м|кг|г|л|мл|°)$/u,'');
-        const escaped=raw.replace(/[.*+?^${}()|[\]\\]/g,'\\$&').replace(/[.,]/g,'[.,]');
+        const escaped=raw.split(/[.,]/).map(part=>part.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')).join('[.,]');
         const match=new RegExp('(?<![\\d])'+escaped+'(?![\\d])','iu').exec(source);
         if(!match || placements.some(p=>match.index<p.end && match.index+match[0].length>p.start))continue;
         const feature=group.values.find(v=>v.value===value) || group.values.find(v=>(v.required||[]).includes(v.value));
