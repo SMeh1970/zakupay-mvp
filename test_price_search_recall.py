@@ -68,6 +68,15 @@ class PriceSearchRecallTests(unittest.TestCase):
         self.load([("Маркер черный 1 мм", 100, "ART123"), ("Маркер черный 2 мм", 1, "OTHER")])
         self.assertEqual(prices.search_prices("Маркер черный 1 мм ART123")[0].article, "ART123")
 
+    def test_numeric_only_hits_skip_expensive_scoring(self):
+        import vi_order_match
+        self.load([("Маркер черный 200 мм", 100, "M1"),
+                   *[(f"Шуруп {n} 200 мм", 1, f"S{n}") for n in range(40)]])
+        with patch.object(vi_order_match, '_score_details', wraps=vi_order_match._score_details) as score:
+            found = prices.search_prices("Маркер черный 200 мм")
+        self.assertEqual([q.article for q in found], ["M1"])
+        self.assertEqual(score.call_count, 1)
+
     def test_direct_price_search_shows_names_and_warnings(self):
         self.load([("Фанера ламинированная толщина 18 мм", 100, "F18")])
         response = self.client.get('/dashboard/prices', params={"q": "Фанера ламинированная толщина 21 мм"})

@@ -411,20 +411,23 @@ def search_prices(query, limit=8):
     requirements = extract(query)
     brands = _requested_brands(query, [item.brand for item in quotes])
     accepted = []
+    requested_types = _product_types(query)
+    id_set = set(ids)
     for item in quotes:
+        # Reject numeric-only and unrelated rows before the expensive parsers.
+        # Numeric overlap alone (200 mm, 10 pieces) is not product relevance.
+        shared_words = lexical & set(tokens(item.name))
+        exact_id = bool(id_set and id_set & _identifiers(" ".join((item.name, item.article or "", item.sku or ""))))
+        if not shared_words and not exact_id:
+            continue
+        offered_types = _product_types(item.name)
+        if requested_types and offered_types and requested_types.isdisjoint(offered_types) and not exact_id:
+            continue
         analysis = {"category": item.category, "attributes": item.characteristics} if item.category else extract(item.name)
         analysis = corrected.get(item.catalog_product_id, analysis)
         item.category, item.characteristics = analysis["category"], analysis["attributes"]
         characteristic_match = compare(requirements, analysis)
         score, _ = _score_details(query, item)
-        # Numeric overlap alone (200 mm, 10 pieces) is not product relevance.
-        shared_words = lexical & set(tokens(item.name))
-        exact_id = bool(set(ids) & _identifiers(" ".join((item.name, item.article or "", item.sku or ""))))
-        if not shared_words and not exact_id:
-            continue
-        requested_types, offered_types = _product_types(query), _product_types(item.name)
-        if requested_types and offered_types and requested_types.isdisjoint(offered_types) and not exact_id:
-            continue
         item.characteristic_conflicts = ["не совпадает характеристика: " + value
                                          for value in characteristic_match["conflicts"]]
         item.characteristic_missing = ["не подтверждена характеристика: " + value
@@ -479,10 +482,11 @@ def start_search_diagnostic():
     def run():
         from automation_pipeline import _build_match_row, _review_candidates
         from supplier_adapters import PriceListAdapter
+        adapter = PriceListAdapter()
         for index, query in enumerate(queries, 1):
             started = time.monotonic()
             try:
-                row = _build_match_row(index, {"goodName": query, "count": 1, "unit": {"name": "шт"}}, [PriceListAdapter()])
+                row = _build_match_row(index, {"goodName": query, "count": 1, "unit": {"name": "шт"}}, [adapter])
                 found = _review_candidates(row)
                 logger.warning("price search diagnostic result=%s", json.dumps({
                     "probe": index, "candidates": len(found),
