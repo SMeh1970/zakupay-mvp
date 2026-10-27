@@ -111,3 +111,16 @@ def test_same_parameter_multiple_allowed_values_use_or():
     feature=next(f for f in view['features'] if f['field']=='Толщина стенки')
     view['features'].append({**feature,'id':'alternate','value':'2 мм','differs':True})
     assert build(item,[view])['suitable_count']==1
+
+
+def test_unspecified_parameter_does_not_add_request_constraint():
+    data=result(quote('a',brand='Завод А'),quote('b',price=80,brand='Завод Б'))
+    assert row(data)['suitable_count']==2
+    assert row(data)['minimum']['price']==80
+
+
+def test_unrelated_search_hits_do_not_pollute_characteristic_panel():
+    data=result(quote('a'),quote('b','Светильник 270 мм',1,brand='Посторонний бренд'))
+    assert row(data)['minimum']['price']==100
+    assert row(data)['unrelated_count']==1
+    assert not any(v['value']=='Посторонний бренд' for g in row(data)['groups'] for v in g['values'])

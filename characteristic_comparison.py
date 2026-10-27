@@ -5,13 +5,19 @@ from datetime import date, datetime, timezone
 def build(item, views, enabled=lambda supplier: True, today=None):
     from supplier_comparison import feature_id, settings
     today = today or datetime.now(timezone.utc).date()
+    from product_characteristics import extract
+    source = item.get('comparison_source') or item
+    category = extract(source.get('requested_name') or '')['category']
+    all_views = views
+    if category != 'Не определена':
+        views = [v for v in views if extract(v['name'])['category'] == category]
     decisions = {**settings(item).get('features', {}), **settings(item).get('values', {})}
     groups = {}
     for view in views:
         for feature in view['features']:
             group = groups.setdefault(feature['field'], {})
-            group.setdefault(feature['id'], {**feature, 'state': decisions.get(feature['id'],
-                'matched' if feature['required'] and not feature['differs'] else 'pending')})
+            group.setdefault(feature['id'], {**feature, 'offer_label': (view['supplier'] + (' · '+view['sku'] if view['sku'] else '')) if feature.get('offer_specific') else '', 'state': decisions.get(feature['id'],
+                'matched' if not feature['differs'] else 'pending')})
     # Absence is a value too. Extra, unspecified parameters do not impose a new
     # requirement on products which do not declare them.
     for field, values in groups.items():
@@ -53,4 +59,5 @@ def build(item, views, enabled=lambda supplier: True, today=None):
     suitable = [v for v in output if v['comparable']]
     best = min(suitable, key=lambda v: (v['unit_price'], v['key']), default=None)
     return dict(groups=[dict(field=field, values=list(values.values())) for field, values in sorted(groups.items())],
+                unrelated_count=len(all_views)-len(views),
                 offers=output, minimum=best, suitable_count=len(suitable))

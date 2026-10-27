@@ -17,11 +17,12 @@
         for(const value of group.values) {
           const allowed = ['matched','accepted'].includes(value.state);
           const chip = node('span', '', 'value-chip ' + (allowed ? 'matched' : value.state));
-          chip.append(node('span', value.value));
+          const labelValue=value.value + (value.offer_label ? ' · '+value.offer_label : '');
+          chip.append(node('span', labelValue));
           for(const [symbol, decision, label] of [['✓','accepted','Разрешить'],['✕','rejected','Исключить']]) {
             const button = node('button', symbol);
             button.type='button'; button.disabled=busy || data.read_only;
-            button.setAttribute('aria-label', `${label}: ${group.field} ${value.value}`);
+            button.setAttribute('aria-label', `${label}: ${group.field} ${labelValue}`);
             button.setAttribute('aria-pressed', String(decision === 'accepted' ? allowed : value.state === 'rejected'));
             button.onclick=()=>save({action:'value',position:row.position,feature:value.id,decision});
             chip.append(button);
@@ -40,6 +41,7 @@
         result.append(node('p', minimum.availability + (minimum.shortage > 0 ? ` · По данным предложения не хватает ${money(minimum.shortage)} ${row.unit}` : '')));
       }
       result.append(node('p', `Подходящих предложений: ${row.value_comparison.suitable_count}. Цена за единицу заявки; доставка отдельно. Актуальность цены — 30 дней.`));
+      if(row.value_comparison.unrelated_count)result.append(node('p', `Результатов другого или нераспознанного типа товара исключено: ${row.value_comparison.unrelated_count}.`));
       const details = node('details'); details.append(node('summary', `Все найденные предложения (${row.value_comparison.offers.length})`));
       for(const offer of row.value_comparison.offers) {
         const line = node('article', '', 'value-offer');
