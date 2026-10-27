@@ -75,6 +75,6 @@ def build(item, views, enabled=lambda supplier: True, today=None):
     best = min(suitable, key=lambda v: (v['unit_price'], v['key']), default=None)
     from catalog_comparison import records
     request_records = records(source.get('requested_name'))
-    return dict(groups=[dict(field=field, values=list(values.values()), request_evidence=[r['evidence'] for r in request_records if r['field']==field and r['evidence']]) for field, values in sorted(groups.items())],
+    return dict(groups=[dict(field=field, values=list(values.values()), request_spans=[dict(text=r['evidence'],value=r['value']) for r in request_records if r['field']==field and r['evidence']]) for field, values in sorted(groups.items())],
                 unrelated_count=len(all_views)-len(views),
                 offers=output, minimum=best, suitable_count=len(suitable))

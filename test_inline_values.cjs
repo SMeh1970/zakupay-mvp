@@ -7,7 +7,9 @@ class Element {
   get text(){return this.textContent+this.children.map(n=>n.text||'').join('');}
 }
 const feature=(id,value)=>({id,value,required:[value],state:'matched'});
-const row={position:1,name:'Труба 26,9х2,8 мм',unit:'м',value_comparison:{groups:[
+const row={position:1,name:'Труба 26,9х2,8 мм Ду20 ст.20',unit:'м',value_comparison:{groups:[
+  {field:'Марка стали',values:[feature('steel','20')],request_spans:[{text:'ст.20',value:'20'}]},
+  {field:'Условный проход',values:[feature('dn','20')],request_spans:[{text:'Ду20',value:'20'}]},
   {field:'Диаметр',values:[feature('d','26.9 мм')]},
   {field:'Стенка',values:[feature('t','2.8 мм'),{id:'alt',value:'3 мм',required:['2.8 мм'],state:'pending'}]}
 ],minimum:{unit_price:100,supplier:'А'}}};
@@ -26,7 +28,10 @@ vm.runInNewContext(fs.readFileSync('comparison_assets/values.js','utf8'),context
 assert.match(target.text,/26,9/);assert.match(target.text,/2,8/);assert.match(target.text,/100 ₽/);
 const descend=e=>[e,...e.children.flatMap(descend)];
 const buttons=descend(target).filter(e=>e.tag==='button');
-assert.equal(buttons.length,6);assert.equal(descend(target).filter(e=>['h1','h2','b'].includes(e.tag)).length,0);
+assert.equal(buttons.length,10);assert.equal(descend(target).filter(e=>['h1','h2','b'].includes(e.tag)).length,0);
+assert.equal(descend(target).find(e=>e.attributes['aria-label']==='Разрешить: Марка стали 20')!==undefined,true);
+assert.equal(descend(target).find(e=>e.title==='Марка стали: 20').children[0].text,'ст.20');
+assert.equal(descend(target).find(e=>e.title==='Условный проход: 20').children[0].text,'Ду20');
 (async()=>{
   await buttons.find(b=>b.attributes['aria-label']==='Разрешить: Стенка 3 мм').onclick();
   assert.equal(posted.url,'/comparison/action');assert.equal(posted.payload.feature,'alt');
