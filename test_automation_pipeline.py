@@ -102,8 +102,8 @@ class PipelineTests(unittest.TestCase):
             {"name": "Защитные очки", "price": 76.0, "unit": "шт"},
             "шт",
         )
-        self.assertIn("закупка ВИ: 1339 ₽ за упаковку 1000 шт.", packed)
-        self.assertIn("закупка ВИ: 76 ₽ за 1 шт", single)
+        self.assertIn("ВИ: 1339 ₽ за упаковку 1000 шт.", packed)
+        self.assertIn("ВИ: 76 ₽ за 1 шт", single)
 
     def test_refresh_can_rebuild_order_from_saved_job(self):
         order = pipeline._order_from_saved_result(

@@ -651,6 +651,8 @@ def _search_candidates(suppliers, requested: str, time_budget_seconds: float | N
                        search_session: SearchSession | None = None) -> tuple[list, list[dict], bool]:
     if not isinstance(suppliers, (list, tuple)):
         suppliers = [suppliers]
+    # Local indexed sources must not lose their turn to a slow remote API.
+    suppliers = sorted(suppliers, key=lambda s: getattr(s, "code", "") not in {"price_lists", "own_catalog"})
     quotes = []
     seen = set()
     max_variants = max(1, int(os.getenv("AUTO_SEARCH_VARIANT_LIMIT", "8")))
@@ -666,6 +668,8 @@ def _search_candidates(suppliers, requested: str, time_budget_seconds: float | N
         # KREP-KOMP ranks a cached full catalogue locally. Repeating VI-style
         # text variants would only duplicate price/stock API calls and consume
         # the supplier's 1000-request daily allowance.
+        # Price-list variants are combined in one indexed SQL lookup, retaining
+        # the original request for all characteristic and safety checks.
         queries = [requested] if getattr(supplier, "code", "") in {"krep_komp", "price_lists", "own_catalog"} else _search_variants(requested)[:max_variants]
         supplier_found = 0
         for query in queries:
@@ -876,6 +880,7 @@ def _review_candidate_details(item: dict, candidate: dict) -> str:
         *(candidate.get("hard_conflicts") or []),
         *_hard_conflicts(item.get("requested_name") or "", candidate),
         *(candidate.get("clarification_reasons") or []),
+        *(candidate.get("characteristic_missing") or []),
         *((item.get("clarification_reasons") or [])
           if _candidate_key(candidate) == _candidate_key(item.get("selected") or {}) else []),
     ]))
@@ -909,7 +914,7 @@ def _review_delivery_date(value) -> str:
 
 
 def _hard_conflicts(requested: str, selected: dict) -> list[str]:
-    conflicts = []
+    conflicts = list(selected.get("characteristic_conflicts") or [])
     candidate_text = " ".join(str(selected.get(key) or "") for key in (
         "name", "article", "sku", "technical_specifications", "breadcrumbs"
     ))
@@ -972,7 +977,7 @@ def _range_note(requested: str, candidate: dict | None) -> str | None:
 
 def _required_clarifications(requested: str, candidate: dict) -> list[str]:
     text = " ".join(str(candidate.get(key) or "") for key in ("name", "article", "sku"))
-    reasons = []
+    reasons = list(candidate.get("characteristic_missing") or [])
     note = _range_note(requested, candidate)
     if note:
         reasons.append(note)
@@ -1064,6 +1069,7 @@ def _build_match_row(position: int, item: dict, suppliers, excluded_keys: set[st
             "match_level": _label(score),
             "match_reasons": reasons,
         })
+        candidate["clarification_reasons"] = _required_clarifications(requested, candidate)
         key = _candidate_key(candidate)
         conflicts = _hard_conflicts(requested, candidate)
         unit_conflict = _price_unit_conflict(candidate, requested_unit)

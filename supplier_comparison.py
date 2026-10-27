@@ -212,6 +212,15 @@ def offer_view(item, candidate):
         features.append(dict(id=identifier, field="Проверка категории", value=candidate.get("category") or "Не определена",
             required=[], state=decisions.get(identifier, "pending"), differs=True, ambiguous=True, offer_specific=True,
             evidence="Правила разбора этой категории неполные", origin="parser"))
+    # Price retrieval warnings must survive into the comparison UI, including
+    # missing parsed attributes and corrected catalogue cards. Bind approval to
+    # this offer so accepting a warning cannot approve a different product.
+    for warning in dict.fromkeys([*(candidate.get("characteristic_conflicts") or []),
+                                  *(candidate.get("characteristic_missing") or [])]):
+        identifier = feature_id("Проверка прайса", key + fingerprint(original_candidate) + warning)
+        features.append(dict(id=identifier, field="Проверка прайса", value=warning,
+            required=[], state=decisions.get(identifier, "pending"), differs=True,
+            ambiguous=True, offer_specific=True, evidence=warning, origin="parser"))
     # A fallback for arbitrary products/parameters. Whole tokens avoid substring
     # exclusions (e.g. 20 must not reject 200). Unknown text remains reviewable.
     wanted = set(lexical_tokens(without_evidence(source.get("requested_name"), required_records)))

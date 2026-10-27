@@ -54,6 +54,8 @@ class SupplierQuote:
     catalog_product_id: int | None = None
     category: str | None = None
     characteristics: list | None = None
+    characteristic_conflicts: list | None = None
+    characteristic_missing: list | None = None
 
     def to_dict(self):
         return asdict(self)

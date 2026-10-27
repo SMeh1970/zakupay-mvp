@@ -51,6 +51,12 @@ DEPLOY_MARKER = "comparison-density-2026-10-23"
 
 
 @app.on_event("startup")
+def start_price_search_diagnostic():
+    from price_lists import start_search_diagnostic
+    start_search_diagnostic()
+
+
+@app.on_event("startup")
 def start_order_diagnostic():
     from order_diagnostics import start_configured_diagnostic
     start_configured_diagnostic(ZAKUPAY_BASE_URL, zakupay_headers)

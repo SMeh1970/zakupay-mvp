@@ -368,8 +368,11 @@ def activate_list(list_id, settings):
 def search_prices(query, limit=8):
     from supplier_adapters import SupplierQuote
     from vi_order_match import _identifiers, _score_details
-    from automation_pipeline import _hard_conflicts, _candidate_matches_brand, _requested_brands
-    terms = tokens(query)
+    from automation_pipeline import _hard_conflicts, _candidate_matches_brand, _requested_brands, _search_variants, _product_types
+    # Expand once inside the indexed lookup; score against the original request.
+    variants = [query, *_search_variants(query)[:8]]
+    terms = sorted({term for variant in variants for term in tokens(variant)})[:128]
+    lexical = {t for t in terms if re.fullmatch(r"[а-яa-z]{3,}", t)}
     ids = sorted(_identifiers(query))
     if not terms and not ids:
         return []
@@ -384,22 +387,28 @@ def search_prices(query, limit=8):
             rows.update((row["id"], row) for row in exact)
         if terms:
             placeholders = ",".join("?" for _ in terms)
-            matched = execute(conn, f"""SELECT i.id,i.payload_json,COUNT(*) AS hits FROM supplier_price_tokens t
-                JOIN supplier_price_items i ON i.id=t.item_id JOIN supplier_price_lists p ON p.id=i.list_id
-                WHERE p.status='active' AND t.token IN ({placeholders})
-                GROUP BY i.id,i.payload_json,i.price ORDER BY hits DESC,i.price ASC LIMIT 400""", terms).fetchall()
+            word_slots = ",".join("?" for _ in lexical) or "NULL"
+            matched = execute(conn, f"""WITH token_hits AS MATERIALIZED (
+                SELECT t.item_id,SUM(CASE WHEN t.token IN ({word_slots}) THEN 10 ELSE 1 END) AS hits
+                FROM supplier_price_tokens t WHERE t.token IN ({placeholders}) GROUP BY t.item_id
+                ), shortlist AS (
+                SELECT h.item_id,h.hits FROM token_hits h
+                JOIN supplier_price_items si ON si.id=h.item_id
+                JOIN supplier_price_lists p ON p.id=si.list_id
+                WHERE p.status='active' ORDER BY h.hits DESC,h.item_id LIMIT 400
+                ) SELECT i.id,i.payload_json,r.hits FROM shortlist r
+                JOIN supplier_price_items i ON i.id=r.item_id ORDER BY r.hits DESC,i.id""", [*sorted(lexical), *terms]).fetchall()
             rows.update((row["id"], row) for row in matched)
-    from product_characteristics import extract, compare
-    requirements = extract(query)
-    quotes = [SupplierQuote(**json.loads(row["payload_json"])) for row in rows.values()]
-    product_ids = sorted({q.catalog_product_id for q in quotes if q.catalog_product_id})
-    corrected = {}
-    if product_ids:
-        from prepared_catalog import effective
-        with database() as conn:
+        quotes = [SupplierQuote(**json.loads(row["payload_json"])) for row in rows.values()]
+        product_ids = sorted({q.catalog_product_id for q in quotes if q.catalog_product_id})
+        corrected = {}
+        if product_ids:
+            from prepared_catalog import effective
             cards = execute(conn, "SELECT id,analysis_json,overrides_json FROM price_product_cards WHERE id IN ("
                 + ",".join("?" for _ in product_ids) + ")", product_ids).fetchall()
-        corrected = {c["id"]: effective(json.loads(c["analysis_json"]), json.loads(c["overrides_json"])) for c in cards}
+            corrected = {c["id"]: effective(json.loads(c["analysis_json"]), json.loads(c["overrides_json"])) for c in cards}
+    from product_characteristics import extract, compare
+    requirements = extract(query)
     brands = _requested_brands(query, [item.brand for item in quotes])
     accepted = []
     for item in quotes:
@@ -407,18 +416,30 @@ def search_prices(query, limit=8):
         analysis = corrected.get(item.catalog_product_id, analysis)
         item.category, item.characteristics = analysis["category"], analysis["attributes"]
         characteristic_match = compare(requirements, analysis)
-        if characteristic_match["conflicts"] or (requirements["category"] != "Не определена" and requirements["attributes"] and characteristic_match["status"] != "matched"):
-            continue
         score, _ = _score_details(query, item)
-        if score < 0.48 or _hard_conflicts(query, item.to_dict()) or (brands and not _candidate_matches_brand(item.to_dict(), brands)):
+        # Numeric overlap alone (200 mm, 10 pieces) is not product relevance.
+        shared_words = lexical & set(tokens(item.name))
+        exact_id = bool(set(ids) & _identifiers(" ".join((item.name, item.article or "", item.sku or ""))))
+        if not shared_words and not exact_id:
             continue
-        accepted.append((item, score))
+        requested_types, offered_types = _product_types(query), _product_types(item.name)
+        if requested_types and offered_types and requested_types.isdisjoint(offered_types) and not exact_id:
+            continue
+        item.characteristic_conflicts = ["не совпадает характеристика: " + value
+                                         for value in characteristic_match["conflicts"]]
+        item.characteristic_missing = ["не подтверждена характеристика: " + value
+                                       for value in characteristic_match["missing"]]
+        # Retrieval retains relevant differences for the review screen. The
+        # pipeline applies these warnings before selection and exact matching.
+        conflicts = _hard_conflicts(query, item.to_dict())
+        brand_conflict = bool(brands and not _candidate_matches_brand(item.to_dict(), brands))
+        accepted.append((item, score, bool(conflicts or brand_conflict),
+                         bool(item.characteristic_missing)))
     # Return a shortlist per supplier so a large cheap catalogue cannot hide
     # alternatives from every other firm. Final unit-aware selection is shared.
-    accepted.sort(key=lambda pair: (-pair[1], pair[0].price) if brands else
-                  (pair[0].price / (pair[0].pack_quantity or 1), -pair[1]))
+    accepted.sort(key=lambda pair: (pair[2], pair[3], -pair[1], pair[0].price, pair[0].name))
     result, counts = [], {}
-    for item, _ in accepted:
+    for item, *_ in accepted:
         if counts.get(item.supplier, 0) >= max(8, limit):
             continue
         result.append(item)
@@ -426,6 +447,54 @@ def search_prices(query, limit=8):
         if len(result) >= 80:
             break
     return result
+
+
+def start_search_diagnostic():
+    """Optional expiring read-only smoke test in the deployed runtime.
+
+    Logs counts and timing only; never changes requests, invoices or offers.
+    Disabled by default and ignored after expiry, including future restarts.
+    """
+    import logging
+    import os
+    import threading
+    import time
+
+    raw = os.getenv("PRICE_SEARCH_DIAGNOSTIC", "").strip()
+    if not raw:
+        return
+    logger = logging.getLogger("zakupay.price_search")
+    try:
+        config = json.loads(raw)
+        remaining = datetime.fromisoformat(config["until"]).timestamp() - datetime.now(timezone.utc).timestamp()
+        queries = config["queries"]
+        if not 0 < remaining <= 1800 or not isinstance(queries, list) or not 1 <= len(queries) <= 8:
+            return
+        if any(not isinstance(q, str) or not q.strip() or len(q) > 500 for q in queries):
+            return
+    except (KeyError, ValueError, TypeError):
+        logger.warning("price search diagnostic ignored=invalid_configuration")
+        return
+
+    def run():
+        from automation_pipeline import _build_match_row, _review_candidates
+        from supplier_adapters import PriceListAdapter
+        for index, query in enumerate(queries, 1):
+            started = time.monotonic()
+            try:
+                row = _build_match_row(index, {"goodName": query, "count": 1, "unit": {"name": "шт"}}, [PriceListAdapter()])
+                found = _review_candidates(row)
+                logger.warning("price search diagnostic result=%s", json.dumps({
+                    "probe": index, "candidates": len(found),
+                    "conflicting": sum(bool(c.get("hard_conflicts")) for c in found),
+                    "requires_review": sum(bool(c.get("clarification_reasons")) for c in found),
+                    "match_status": row["match_status"], "decision": row["decision"],
+                    "seconds": round(time.monotonic() - started, 3),
+                }, ensure_ascii=False))
+            except Exception as exc:
+                logger.warning("price search diagnostic probe=%s error=%s", index, type(exc).__name__)
+
+    threading.Thread(target=run, name="price-search-diagnostic", daemon=True).start()
 
 
 def page(body, title="Прайсы поставщиков"):
@@ -491,9 +560,9 @@ def install_price_lists(app):
             result_rows.append(f"<tr><td>{esc(item['supplier'])}<br>{esc(item['catalog_name'])}</td><td><a href='/dashboard/prices/{lid}/file'>{esc(item['filename'])}</a><br><a href='/dashboard/prices/prepared?list_id={lid}'>Характеристики товаров</a></td><td>{esc(item['price_date']) or 'Неизвестна'}</td><td>{item['imported_rows']}<br><small>пропущено: {item['skipped_rows']}</small></td><td>{statuses.get(item['status'],esc(item['status']))}</td><td>{action}</td></tr>")
         search_html = ""
         if q.strip():
-            from automation_pipeline import _purchase_label
             found = search_prices(q.strip(), 8)
-            search_html = "<ul>" + "".join(f"<li>{esc(_purchase_label(item.to_dict(), ''))}</li>" for item in found) + "</ul>" if found else "<p>Подходящие товары в активных прайсах не найдены.</p>"
+            from automation_pipeline import _review_candidate_details
+            search_html = "<ul>" + "".join(f"<li>{esc(item.name)} · {esc(_review_candidate_details({'requested_name': q}, item.to_dict()))}</li>" for item in found) + "</ul>" if found else "<p>Подходящие товары в активных прайсах не найдены.</p>"
         return page("<h1>Прайсы поставщиков</h1><p><a href='/dashboard/prices/prepared'>Поиск по подготовленным характеристикам</a></p><p>Подтверждённые условия цены участвуют в расчёте. Каталог с неизвестными условиями доступен для проверки.</p>"
             + (f"<p>{esc(message)}</p>" if message else "") + "<section><h2>Загрузить прайс</h2><form method='post' action='/dashboard/prices/upload' enctype='multipart/form-data'>"
             "<div class='grid'><label>Поставщик *<br><input name='supplier' required maxlength='200'></label><label>Название прайса<br><input name='catalog_name' value='Основной' maxlength='200'></label>"
