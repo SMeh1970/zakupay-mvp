@@ -6,8 +6,11 @@
   .value-chip{display:inline-flex;align-items:center;gap:6px;border:1px solid #dcd6c8;border-radius:8px;padding:5px 7px;background:#fff5df}
   .value-chip.matched{background:#e1f3e8;border-color:#78a88a}
   .value-chip.rejected{background:#f6e6dd;color:#8c3020}
-  .value-chip button{min-width:30px;min-height:30px;padding:3px;cursor:pointer}
-  .value-chip button[aria-pressed=true]{font-weight:bold;border:2px solid currentColor}
+  .value-chip button{min-width:22px;min-height:24px;padding:2px;border:0;border-radius:0;background:transparent;box-shadow:none;color:#92978f;font:400 13px/1 'Segoe UI',sans-serif;cursor:pointer}
+  .value-chip button[aria-pressed=true]{font-weight:600;color:#597363;border:0}
+  .value-chip.rejected button[aria-pressed=true]{color:#9a6d62}
+  .value-chip button:hover{color:#273f32;background:transparent}
+  .value-chip button:focus-visible{outline:1px solid #718679;outline-offset:1px;border-radius:3px}
   .value-result{padding-top:20px}
   .value-offer{padding:12px 0;border-top:1px solid #dcd6c8}
   :root{
