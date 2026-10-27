@@ -337,7 +337,7 @@ def select_page(rows, query, reference=None, reference_updated=""):
     return {
         "filters": filters, "errors": errors, "total": len(saved), "matched": len(filtered),
         "page": page, "pages": pages, "size": size,
-        "items": visible,
+        "items": visible, "matching_items": filtered,
         "category_choices": choices, "category_reference_updated": reference_updated,
         "unit_choices": unit_choices,
         "region_choices": sorted({item["region"] for item in saved if item["region"]}, key=str.casefold),

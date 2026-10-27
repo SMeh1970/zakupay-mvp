@@ -282,6 +282,8 @@ def _initialize_schema(conn) -> None:
         conn.execute(FILTER_PREFERENCES_SCHEMA)
         from invoice_preferences import SCHEMA as INVOICE_PREFERENCES_SCHEMA
         conn.execute(INVOICE_PREFERENCES_SCHEMA)
+        from order_actuality import SCHEMA as ACTUALITY_SCHEMA
+        conn.execute(ACTUALITY_SCHEMA)
         conn.commit()
         _initialized_database_key = key
 
@@ -2015,6 +2017,8 @@ def _save_api_order_for_manual_start(order: dict, conn) -> dict:
     items = list(order.get("orderItems") or [])
     if not order_id or not items:
         raise ValueError("Заявка не содержит ID или позиций")
+    from order_actuality import store, classify
+    store(conn, _execute, order_id, classify(order))
     key = _api_dedupe_key(order_id)
     now = datetime.now(timezone.utc).isoformat()
     pending_result = _pending_search_result(order)
@@ -2132,6 +2136,8 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
     from security import PANEL_USERNAME
     from saved_dashboard import DEFAULTS
     install_preferences(app, _connect, _execute, PANEL_USERNAME)
+    from order_actuality import install as install_actuality
+    install_actuality(app, _connect, _execute, fetch_order_by_id)
     category_lock = threading.Lock()
 
     def refresh_categories(only_if_empty=False):
@@ -2270,6 +2276,11 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
                 "retry": "next_hourly_run",
                 "detail": str(exc.detail),
             })
+        from order_actuality import store, classify
+        with _connect() as conn:
+            for order in orders:
+                if str(order.get('id') or '').isdigit() and int(order['id']) > 0:
+                    store(conn, _execute, order['id'], classify(order))
         prepayment = []
         skipped_payment = skipped_offer = skipped_empty = 0
         for order in orders:
@@ -2374,6 +2385,9 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
         added = duplicates = skipped = 0
         with _lock, _connect() as conn:
             for order in orders:
+                from order_actuality import store, classify
+                if str(order.get('id') or '').isdigit() and int(order['id']) > 0:
+                    store(conn, _execute, order['id'], classify(order))
                 if not _prepayment_confirmed(order):
                     skipped += 1
                     continue
@@ -2615,9 +2629,11 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
             state["csrf"] = csrf_token(request)
             ids = [item["id"] for item in state["items"]]
             listing_details = {item["id"]: item for item in state["items"]}
+            actuality = {str(r['order_id']): dict(r) for r in _execute(conn, 'SELECT * FROM order_actuality').fetchall()}
             page_rows = _execute(conn, "SELECT * FROM automation_jobs WHERE id IN (" + ",".join("?" for _ in ids) + ")", tuple(ids)).fetchall() if ids else []
             by_id = {int(row["id"]): row for row in page_rows}
             rows = [by_id[job_id] for job_id in ids if job_id in by_id]
+        from order_actuality import label as actuality_label, SCRIPT as actuality_script
         cards = []
         has_processing = any(row["status"] == "processing" for row in rows)
         for row in rows:
@@ -2707,12 +2723,13 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
             has_comparison_offers = any(
                 comparison_candidates(item) for item in result.get("items") or []
             )
+            actuality_badge = ("Ручная заявка" if is_manual else actuality_label(actuality.get(str(row['order_id']))))
             cards.append(
-                f"<section class='card {cls} {'offer-created' if offer_created else ''} {'read' if viewed else 'unread'}'><div><a class='title' target='_blank' rel='noopener' href='/dashboard/automation/jobs/{row['id']}/review'>"
+                f"<section class='card {cls} {'offer-created' if offer_created else ''} {'read' if viewed else 'unread'}'><div><a class='title' target='_blank' rel='noopener' href='/dashboard/automation/jobs/{row['id']}/open'>"
                 f"Заявка №{display_number}{order_label}</a>{source_badge}{offer_badge}<div class='meta'>{html.escape(' · '.join(parts))}</div>"
                 f"<div class='meta'><b>Дата заявки:</b> {html.escape(order_date)} · <b>Заказчик:</b> <span title='{html.escape(customer_name, quote=True)}'>{html.escape(short_company_name(customer_name))}</span></div>"
                 f"<div class='meta'><b>Город:</b> {html.escape(location_label)} · <b>Рубрики:</b> <span title='{html.escape(card_details.get('category') or '', quote=True)}'>{html.escape(category_label)}</span></div>"
-                f"{quantity_label}"
+                f"<div class='meta' data-actuality-job='{row['id']}'>{html.escape(actuality_badge)}</div>{quantity_label}"
                 f"{progress_bar}"
                 f"<div class='meta'><b>Поставщики:</b> {html.escape(suppliers_label)}</div>"
                 f"<div class='meta'>Статус: {'счёт выставлен в Закупай' if offer_created else 'поиск цен не запускался' if pending else html.escape(STATUSES.get(row['status'], 'Требуется проверка'))} · счёт: {row['invoice_number'] or '—'}</div></div>"
@@ -2745,6 +2762,7 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
                 "ничего не удалено. Повторите синхронизацию позже."
                 "</p>"
             )
+        check_jobs = [item['id'] for item in state['matching_items'] if item['source'] != 'manual']
         script_nonce = uuid.uuid4().hex
         response = Response(content=(
             "<!doctype html><html lang='ru'><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
@@ -2755,6 +2773,7 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
             + CATEGORY_PICKER_CSS + "</style>"
             "<main><a style='float:right' href='/logout'>Выйти</a><h1>Заявки</h1><p>Откройте заявку и проверьте её состав. Поиск цен запускается только кнопкой внутри заявки; отправка счёта подтверждается отдельно.</p>"
             "<div class='actions'><form method='post' action='/dashboard/automation/sync'><button class='button' type='submit'>Получить из Закупай</button></form>"
+            f"<button type='button' id='check-actuality' data-jobs='{html.escape(json.dumps(check_jobs), quote=True)}' disabled>Проверить актуальность заявок</button><span id='actuality-progress' role='status' aria-live='polite'></span>"
             "<form method='post' action='/dashboard/automation/categories/sync'><button class='button secondary' type='submit'>Обновить категории</button></form>"
             "<a class='button secondary' href='/dashboard/automation/manual'>+ Добавить вручную</a>"
             "<a class='button secondary' href='/dashboard/prices'>Прайсы</a>"
@@ -2764,9 +2783,9 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
             + sync_report + filter_form(state)
             + ("<p class='muted'>Есть заявки в обработке. Обновите страницу, чтобы увидеть результат поиска.</p>" if has_processing else "")
             + ("".join(cards) if cards else "<p class='empty'>Нет заявок по выбранным фильтрам. Сбросьте фильтры, загрузите заявки из Закупай или добавьте заявку вручную.</p>")
-            + pagination(state) + "</main>" + category_picker_script(script_nonce) + filter_highlight_script(script_nonce) + "</html>"
+            + pagination(state) + "</main>" + f"<script nonce='{script_nonce}'>{actuality_script}</script>" + category_picker_script(script_nonce) + filter_highlight_script(script_nonce) + "</html>"
         ), media_type="text/html", headers={"Cache-Control": "no-store, max-age=0", "Pragma": "no-cache",
-            "Content-Security-Policy": f"default-src 'none'; script-src 'nonce-{script_nonce}'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"})
+            "Content-Security-Policy": f"default-src 'none'; connect-src 'self'; script-src 'nonce-{script_nonce}'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"})
 
         response.set_cookie("panel_filter_csrf", state["csrf"], secure=True, httponly=True,
                             samesite="strict", path="/dashboard/automation", max_age=31536000)

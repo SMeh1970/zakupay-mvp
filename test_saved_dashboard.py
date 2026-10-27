@@ -19,7 +19,7 @@ from zakupay_categories import load_categories, save_categories
 
 
 ORDER = {
-    "id": 123, "name": "Трубы для школы", "creationDate": "2026-09-28T21:30:00Z",
+    "id": 123, "actualityStatus": "ACTUAL", "name": "Трубы для школы", "creationDate": "2026-09-28T21:30:00Z",
     "finishDate": "2026-10-10", "delay": 0, "region": {"name": "Москва"},
     "customer": {"name": "ООО Строитель", "inn": "7716997861"},
     "orderItems": [{"goodName": "Труба стальная", "count": 2, "unit": {"name": "шт"},
@@ -58,7 +58,7 @@ class SavedDashboardTests(unittest.TestCase):
     def ids(self, **params):
         response = self.client.get("/dashboard/automation", params=params)
         self.assertEqual(response.status_code, 200)
-        return re.findall(r"<a class='title'[^>]*href='/dashboard/automation/jobs/(\d+)/review'", response.text)
+        return re.findall(r"<a class='title'[^>]*href='/dashboard/automation/jobs/(\d+)/open'", response.text)
 
     def test_sort_is_request_date_not_insertion_order_and_unknown_dates_are_last(self):
         with pipeline._connect() as conn:
