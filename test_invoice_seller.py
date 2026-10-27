@@ -1,5 +1,6 @@
 """Seller choices survive reload/search and agree with downloaded invoices."""
 import copy
+import gc
 import json
 import os
 import tempfile
@@ -19,6 +20,8 @@ class SavedInvoiceSellerTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
+        # sqlite connection contexts commit but close only when collected on Windows.
+        self.addCleanup(gc.collect)
         db = patch.multiple(pipeline, DB_PATH=os.path.join(self.tmp.name, 'jobs.db'), DATABASE_URL='', _initialized_database_key=None)
         db.start()
         self.addCleanup(db.stop)
@@ -187,6 +190,7 @@ class SavedInvoiceSellerTests(unittest.TestCase):
         page = self.client.get(f'/dashboard/automation/jobs/{self.job}/review')
         self.assertIn("id='invoice-default' type='checkbox' checked", page.text)
         self.assertIn("id='invoice-seller-options' hidden", page.text)
+        self.assertIn(f"data-save-url='/dashboard/automation/jobs/{self.job}/seller-default'", page.text)
         with pipeline._connect() as conn:
             original = conn.execute('SELECT result_json FROM automation_jobs WHERE id=?', (self.job,)).fetchone()[0]
         self.assertNotIn('seller', json.loads(original))
@@ -208,6 +212,25 @@ class SavedInvoiceSellerTests(unittest.TestCase):
         self.assertIn('20%', cells)
         self.assertEqual(pipeline.load_automation_offer_context(43)['result']['seller'], self.sv)
         self.assertEqual(pipeline.load_automation_offer_context(43)['result']['vat_rate'], 0.2)
+
+    def test_default_survives_database_reinitialization_and_new_authenticated_session(self):
+        import security
+        self.assertEqual(self.default_choice().status_code, 200)
+        pipeline._initialized_database_key = None
+        app = FastAPI()
+        pipeline.install_automation_pipeline(app, Mock())
+        security.install_security(app)
+        with TestClient(app) as client:
+            url = f'/dashboard/automation/jobs/{self.job}/review'
+            self.assertEqual(client.get(url, follow_redirects=False).status_code, 303)
+            client.cookies.set(security.SESSION_COOKIE, security._session_token())
+            page = client.get(url)
+            self.assertEqual(page.status_code, 200)
+            self.assertIn("id='invoice-seller-options' hidden", page.text)
+            self.assertIn(self.sv['inn'], page.text)
+            self.assertEqual(client.post(f'/dashboard/automation/jobs/{self.job}/seller-default',
+                headers={'X-Requested-With': 'invoice-preferences'},
+                data={'enabled': '1', 'seller_id': 'saved', 'vat_rate': '0.2'}).status_code, 200)
 
     def test_default_does_not_replace_existing_saved_or_sent_invoice(self):
         pipeline.save_invoice_settings(self.job, SELLER, 'avior-account', 0.22)

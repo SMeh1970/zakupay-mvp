@@ -19,11 +19,12 @@ const assert = require('node:assert/strict');
  await page.locator('[name=include_2]').uncheck();assert.equal(await page.locator('#search-selected-sniper').isDisabled(),true);
  assert.deepEqual(errors,[]);assert.equal(requests,0);
  console.log('PASS: priced-only selection, no requests, manual selection including missing prices, exact Sniper positions, dropdown updates, empty selection disabled, no JS errors');
- const sellerHtml = `<meta charset="utf-8"><form id="review-form"></form><div id="invoice-default-summary" hidden><b id="invoice-default-name"></b></div><div id="invoice-seller-options"><select name="invoice_seller_id" form="review-form"><option value="">Choose</option><option value="sv">ООО СВ · ИНН 5638073633</option></select><select name="invoice_vat_rate" form="review-form"><option value="0.2">20%</option></select></div><input id="invoice-default" type="checkbox"><small id="invoice-default-error"></small>`;
+ const sellerHtml = `<meta charset="utf-8"><form id="review-form"></form><div id="invoice-default-summary" hidden><b id="invoice-default-name"></b></div><div id="invoice-seller-options"><select name="invoice_seller_id" form="review-form"><option value="">Choose</option><option value="sv">ООО СВ · ИНН 5638073633</option></select><select name="invoice_vat_rate" form="review-form"><option value="0.2">20%</option></select></div><input id="invoice-default" type="checkbox" data-save-url="/dashboard/automation/jobs/1/seller-default"><small id="invoice-default-error"></small>`;
  await page.unroute('**/*');
  let savedBodies=[];let fail=false;
  await page.route('**/*', async route=>{
   if(route.request().method()==='POST'){
+   assert.equal(new URL(route.request().url()).pathname,'/dashboard/automation/jobs/1/seller-default');
    savedBodies.push(route.request().postData());
    assert.equal(route.request().headers()['x-requested-with'],'invoice-preferences');
    await route.fulfill({status:fail?500:200,contentType:'application/json',body:'{"saved":true}'});

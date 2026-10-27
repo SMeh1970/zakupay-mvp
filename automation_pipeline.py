@@ -1347,11 +1347,14 @@ _INVOICE_DEFAULT_SCRIPT = """
         seller.disabled = true;
         vat.disabled = true;
         try {
-            const response = await fetch(location.pathname + '/seller-default', {
+            const response = await fetch(fixed.dataset.saveUrl, {
                 method: 'POST', headers: {'X-Requested-With': 'invoice-preferences'},
                 body: new URLSearchParams({enabled: checked ? '1' : '0', seller_id: seller.value, vat_rate: vat.value})
             });
+            if (response.redirected) throw new Error('Сессия истекла. Войдите в панель и повторите действие.');
             if (!response.ok) throw new Error('Не удалось сохранить настройку. Повторите действие.');
+            const saved = await response.json();
+            if (saved.saved !== true) throw new Error('Не удалось сохранить настройку. Повторите действие.');
             options.hidden = checked;
             summary.hidden = !checked;
             document.getElementById('invoice-default-name').textContent = seller.selectedOptions[0].textContent.split(' · ИНН')[0];
@@ -3031,7 +3034,7 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
             f"<label>НДС <select form='review-form' name='invoice_vat_rate' {seller_disabled}>{vat_options}</select></label>"
             "<p>Выбор применяется при сохранении или формировании счёта.</p>"
             "<a href='/dashboard/tiles/sellers'>Реквизиты наших фирм</a></div>"
-            f"<label><input id='invoice-default' type='checkbox' {'checked' if default_fixed else ''} {seller_disabled}> Использовать по умолчанию</label>"
+            f"<label><input id='invoice-default' type='checkbox' {'checked' if default_fixed else ''} data-save-url='/dashboard/automation/jobs/{job_id}/seller-default' {seller_disabled}> Использовать по умолчанию</label>"
             "<small id='invoice-default-error' role='alert'></small></section>"
         )
         invoice_link = (
