@@ -175,6 +175,87 @@ class SavedInvoiceSellerTests(unittest.TestCase):
                 self.assertEqual(pipeline.latest_offer_submission(self.job)['status'], 'unknown')
                 self.assertFalse(pipeline.load_automation_offer_context(42)['result'].get('live_offer_created'))
 
+    def default_choice(self, enabled='1', seller=None, vat='0.2'):
+        from porcelain import save_seller
+        key = save_seller(seller or self.sv)
+        return self.client.post(f'/dashboard/automation/jobs/{self.job}/seller-default',
+            headers={'X-Requested-With': 'invoice-preferences'},
+            data={'enabled': enabled, 'seller_id': key, 'vat_rate': vat})
+
+    def test_default_firm_survives_reload_and_is_used_in_new_invoice(self):
+        self.assertEqual(self.default_choice().status_code, 200)
+        page = self.client.get(f'/dashboard/automation/jobs/{self.job}/review')
+        self.assertIn("id='invoice-default' type='checkbox' checked", page.text)
+        self.assertIn("id='invoice-seller-options' hidden", page.text)
+        with pipeline._connect() as conn:
+            original = conn.execute('SELECT result_json FROM automation_jobs WHERE id=?', (self.job,)).fetchone()[0]
+        self.assertNotIn('seller', json.loads(original))
+        # A second request without an explicit seller adopts the durable preference on save.
+        order = copy.deepcopy(self.order)
+        order['id'] = 43
+        result = copy.deepcopy(self.result)
+        result['order_id'] = 43
+        with pipeline._connect() as conn:
+            new_job = conn.execute('INSERT INTO automation_jobs(dedupe_key,order_id,event_type,status,order_json,result_json,created_at,updated_at,invoice_number) VALUES(?,?,?,?,?,?,?,?,?)',
+                ('new-default', 43, 'api_order', 'ready_for_review', json.dumps(order), json.dumps(result), 'now', 'now', 279)).lastrowid
+        response = self.client.post(f'/dashboard/automation/jobs/{new_job}/review', data={
+            'review_action': 'download', 'include_1': '1', 'quantity_1': '2', 'price_1': '100'})
+        self.assertEqual(response.status_code, 200)
+        workbook = load_workbook(BytesIO(response.content))
+        cells = ' '.join(str(c.value or '') for r in workbook.active for c in r)
+        self.assertIn(self.sv['inn'], cells)
+        self.assertNotIn(SELLER['inn'], cells)
+        self.assertIn('20%', cells)
+        self.assertEqual(pipeline.load_automation_offer_context(43)['result']['seller'], self.sv)
+        self.assertEqual(pipeline.load_automation_offer_context(43)['result']['vat_rate'], 0.2)
+
+    def test_default_does_not_replace_existing_saved_or_sent_invoice(self):
+        pipeline.save_invoice_settings(self.job, SELLER, 'avior-account', 0.22)
+        with pipeline._connect() as conn:
+            before = conn.execute('SELECT result_json FROM automation_jobs WHERE id=?', (self.job,)).fetchone()[0]
+        self.assertEqual(self.default_choice().status_code, 200)
+        page = self.client.get(f'/dashboard/automation/jobs/{self.job}/review')
+        self.assertNotIn("id='invoice-seller-options' hidden", page.text)
+        response = self.client.get(f'/dashboard/automation/jobs/{self.job}/invoice.xlsx')
+        self.assertIn(SELLER['inn'], load_workbook(BytesIO(response.content)).active['A7'].value)
+        with pipeline._connect() as conn:
+            self.assertEqual(before, conn.execute('SELECT result_json FROM automation_jobs WHERE id=?', (self.job,)).fetchone()[0])
+            sent = json.loads(before)
+            sent['live_offer_created'] = True
+            conn.execute('UPDATE automation_jobs SET result_json=?, status=? WHERE id=?', (json.dumps(sent), 'offer_created', self.job))
+        self.client.get(f'/dashboard/automation/jobs/{self.job}/review')
+        self.assertEqual(pipeline.load_automation_offer_context(42)['result']['seller'], SELLER)
+
+    def test_default_can_be_disabled_and_replaced_and_is_account_scoped(self):
+        self.assertEqual(self.default_choice().status_code, 200)
+        from invoice_preferences import load
+        with pipeline._connect() as conn:
+            self.assertIsNone(load(conn, pipeline._execute, 'another-user'))
+        self.assertEqual(self.default_choice(enabled='0').status_code, 200)
+        page = self.client.get(f'/dashboard/automation/jobs/{self.job}/review')
+        self.assertNotIn("id='invoice-seller-options' hidden", page.text)
+        self.assertEqual(self.default_choice(seller=SELLER, vat='0').status_code, 200)
+        page = self.client.get(f'/dashboard/automation/jobs/{self.job}/review')
+        self.assertIn("id='invoice-seller-options' hidden", page.text)
+        self.assertIn("value='0' selected", page.text)
+
+    def test_unpin_keeps_current_choice_available_for_invoice_save(self):
+        self.assertEqual(self.default_choice().status_code, 200)
+        self.assertEqual(self.default_choice(enabled='0').status_code, 200)
+        response = self.client.post(f'/dashboard/automation/jobs/{self.job}/review', data={
+            'invoice_seller_id': 'saved', 'invoice_vat_rate': '0.2', 'review_action': 'download',
+            'include_1': '1', 'quantity_1': '2', 'price_1': '100'})
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(self.sv['inn'], load_workbook(BytesIO(response.content)).active['A7'].value)
+
+    def test_invalid_or_cross_site_default_update_leaves_preference_unchanged(self):
+        self.assertEqual(self.default_choice().status_code, 200)
+        self.assertEqual(self.default_choice(vat='nan').status_code, 422)
+        self.assertEqual(self.client.post(f'/dashboard/automation/jobs/{self.job}/seller-default', data={'enabled': '0'}).status_code, 403)
+        page = self.client.get(f'/dashboard/automation/jobs/{self.job}/review')
+        self.assertIn("value='0.2' selected", page.text)
+        self.assertIn("id='invoice-seller-options' hidden", page.text)
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -280,6 +280,8 @@ def _initialize_schema(conn) -> None:
         conn.execute(CATEGORY_SCHEMA)
         from filter_preferences import SCHEMA as FILTER_PREFERENCES_SCHEMA
         conn.execute(FILTER_PREFERENCES_SCHEMA)
+        from invoice_preferences import SCHEMA as INVOICE_PREFERENCES_SCHEMA
+        conn.execute(INVOICE_PREFERENCES_SCHEMA)
         conn.commit()
         _initialized_database_key = key
 
@@ -1316,6 +1318,53 @@ def _gmail_draft_payload(result: dict, job_id: int) -> dict:
         payload["attachment_name"] = invoice_filename(result)
         payload["attachment_base64"] = base64.b64encode(invoice).decode("ascii")
     return payload
+
+
+_INVOICE_DEFAULT_SCRIPT = """
+(() => {
+    const fixed = document.getElementById('invoice-default');
+    if (!fixed) return;
+    const options = document.getElementById('invoice-seller-options');
+    const summary = document.getElementById('invoice-default-summary');
+    const seller = document.querySelector('[name="invoice_seller_id"]');
+    const vat = document.querySelector('[name="invoice_vat_rate"]');
+    document.getElementById('review-form').addEventListener('submit', event => {
+        if (event.currentTarget.dataset.savingDefault) event.preventDefault();
+    });
+    fixed.addEventListener('change', async () => {
+        const checked = fixed.checked;
+        const error = document.getElementById('invoice-default-error');
+        error.textContent = '';
+        if (checked && !seller.value) {
+            fixed.checked = false;
+            error.textContent = ' Сначала выберите нашу фирму.';
+            return;
+        }
+        fixed.disabled = true;
+        document.getElementById('review-form').dataset.savingDefault = '1';
+        seller.disabled = true;
+        vat.disabled = true;
+        try {
+            const response = await fetch(location.pathname + '/seller-default', {
+                method: 'POST', headers: {'X-Requested-With': 'invoice-preferences'},
+                body: new URLSearchParams({enabled: checked ? '1' : '0', seller_id: seller.value, vat_rate: vat.value})
+            });
+            if (!response.ok) throw new Error('Не удалось сохранить настройку. Повторите действие.');
+            options.hidden = checked;
+            summary.hidden = !checked;
+            document.getElementById('invoice-default-name').textContent = seller.selectedOptions[0].textContent.split(' · ИНН')[0];
+        } catch (e) {
+            fixed.checked = !checked;
+            error.textContent = ' ' + e.message;
+        } finally {
+            fixed.disabled = false;
+            delete document.getElementById('review-form').dataset.savingDefault;
+            seller.disabled = false;
+            vat.disabled = false;
+        }
+    });
+})();
+"""
 
 
 _REVIEW_SELECTION_SCRIPT = """
@@ -2921,6 +2970,12 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
             + "<p><label><input type='checkbox' name='confirm_customer' value='CONFIRMED' required> Реквизиты сверены с заявкой или сообщением плательщика</label></p>"
             + "<button type='submit'>Сохранить реквизиты плательщика</button></form></section>"
         )
+        from invoice_preferences import load as load_invoice_preference, apply as apply_invoice_preference
+        with _connect() as conn:
+            invoice_preference = load_invoice_preference(conn, _execute, PANEL_USERNAME)
+        result = apply_invoice_preference(result, invoice_preference)
+        default_fixed = bool(invoice_preference and result.get('seller') == invoice_preference['seller']
+                             and result.get('vat_rate') == invoice_preference['vat_rate'])
         seller_options = ''.join(
             f"<option value='{html.escape(str(key), quote=True)}' {'selected' if key == 'saved' else ''}>"
             f"{html.escape(str(profile['name']))} · ИНН {html.escape(str(profile['inn']))} · р/с {html.escape(str(profile['account']))}</option>"
@@ -2934,11 +2989,15 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
         seller_disabled = 'disabled' if offer_created else ''
         seller_controls = (
             "<section style='padding:14px;background:#eef4ff;border-radius:8px;margin:14px 0'><h2>Наша фирма в счёте</h2>"
+            f"<div id='invoice-default-summary' {'' if default_fixed else 'hidden'}><b id='invoice-default-name'>{html.escape(str((result.get('seller') or {}).get('name') or ''))}</b></div>"
+            f"<div id='invoice-seller-options' {'hidden' if default_fixed else ''}>"
             f"<label>Фирма <select form='review-form' name='invoice_seller_id' required {seller_disabled}>"
             f"<option value=''>Выберите нашу фирму</option>{seller_options}</select></label> "
             f"<label>НДС <select form='review-form' name='invoice_vat_rate' {seller_disabled}>{vat_options}</select></label>"
             "<p>Выбор применяется при сохранении или формировании счёта.</p>"
-            "<a href='/dashboard/tiles/sellers'>Реквизиты наших фирм</a></section>"
+            "<a href='/dashboard/tiles/sellers'>Реквизиты наших фирм</a></div>"
+            f"<label><input id='invoice-default' type='checkbox' {'checked' if default_fixed else ''} {seller_disabled}> Использовать по умолчанию</label>"
+            "<small id='invoice-default-error' role='alert'></small></section>"
         )
         invoice_link = (
             "<p><b>Формирование счёта заблокировано до заполнения реквизитов плательщика.</b></p>"
@@ -3006,11 +3065,11 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
                 "<th>Статус подбора</th><th>Замена</th><th>Наличие</th><th>Срок</th><th>Решение</th></tr>"
                 + "".join(table_rows) + "</table>" + save_control + invoice_link + offer_link
                 + f"<p><a href='/dashboard/prices/match-order/{job_id}'>Подобрать по характеристикам из прайсов</a> · <a href='/dashboard/automation/jobs/{job_id}/catalog-sale'>Сохранить успешную продажу в наш каталог</a> · <a href='/dashboard/prices'>Прайсы</a> · <a href='/dashboard/catalog'>Наш каталог</a> · <a href='/dashboard/automation/jobs/{job_id}/tiles'>Подобрать керамогранит с доставкой</a> · <a href='/dashboard/sniper?job_id={job_id}'>Найти поставщиков через Sniper</a></p>"
-                + f"<script nonce='{review_script_nonce}'>{_REVIEW_SELECTION_SCRIPT}</script>"
+                + f"<script nonce='{review_script_nonce}'>{_REVIEW_SELECTION_SCRIPT}{_INVOICE_DEFAULT_SCRIPT}</script>"
                 + "</main></body></html>"
             ),
             media_type="text/html",
-            headers={"Cache-Control": "no-store, max-age=0", "Pragma": "no-cache", "Content-Security-Policy": f"default-src 'none'; script-src 'nonce-{review_script_nonce}'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"},
+            headers={"Cache-Control": "no-store, max-age=0", "Pragma": "no-cache", "Content-Security-Policy": f"default-src 'none'; connect-src 'self'; script-src 'nonce-{review_script_nonce}'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"},
         )
 
     @app.post("/dashboard/automation/jobs/{job_id}/customer")
@@ -3152,6 +3211,31 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
             )
         return Response(status_code=303, headers={"Location": f"/dashboard/automation/jobs/{job_id}/review"})
 
+    @app.post("/dashboard/automation/jobs/{job_id}/seller-default")
+    async def invoice_default_save(job_id: int, request: Request):
+        if request.headers.get('x-requested-with') != 'invoice-preferences':
+            raise HTTPException(403, 'Обновите страницу и повторите действие.')
+        from invoice_preferences import load, apply, save, selected_profile
+        form = await request.form()
+        with _lock, _connect() as conn:
+            row = _execute(conn, "SELECT * FROM automation_jobs WHERE id=?", (job_id,)).fetchone()
+            if not row:
+                raise HTTPException(404, 'Заявка не найдена')
+            result = invoice_result_for_job(json.loads(row['result_json'] or '{}'), job_id)
+            result = apply(result, load(conn, _execute, PANEL_USERNAME))
+            if form.get('enabled') == '1':
+                try:
+                    seller = validate_seller(selected_profile(result, str(form.get('seller_id') or ''), _invoice_seller_profiles(result), conn, _execute, PANEL_USERNAME) or {})
+                    vat = float(form.get('vat_rate', ''))
+                    if vat not in (0, 0.1, 0.2, 0.22):
+                        raise ValueError('Выберите ставку НДС')
+                except (ValueError, TypeError) as exc:
+                    raise HTTPException(422, str(exc))
+                save(conn, _execute, PANEL_USERNAME, dict(seller=seller, vat_rate=vat))
+            else:
+                save(conn, _execute, PANEL_USERNAME, None)
+        return {'saved': True}
+
     @app.post("/dashboard/automation/jobs/{job_id}/review")
     async def automation_review_save(job_id: int, request: Request):
         job_id = editable_revision(job_id)
@@ -3162,12 +3246,14 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
             if not row or not row["result_json"]:
                 raise HTTPException(status_code=404, detail="Заявка не найдена")
             result = invoice_result_for_job(json.loads(row["result_json"]), job_id)
+            from invoice_preferences import load, apply, selected_profile
+            result = apply(result, load(conn, _execute, PANEL_USERNAME))
             submission = _execute(conn, 'SELECT status FROM offer_submissions WHERE job_id=? ORDER BY id DESC LIMIT 1', (job_id,)).fetchone()
             if row['status'] in {'processing', 'offer_created'} or result.get('live_offer_created') or (submission and submission['status'] in {'sending', 'unknown'}):
                 raise HTTPException(409, 'Изменение счёта заблокировано: выполняется обработка или отправка уже начата.')
             if 'invoice_seller_id' in form:
                 try:
-                    profile = _invoice_seller_profiles(result).get(str(form.get('invoice_seller_id') or ''))
+                    profile = selected_profile(result, str(form.get('invoice_seller_id') or ''), _invoice_seller_profiles(result), conn, _execute, PANEL_USERNAME)
                     if not profile:
                         raise ValueError('Выберите нашу фирму из списка.')
                     seller = validate_seller(profile)
