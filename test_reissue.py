@@ -48,9 +48,12 @@ def test_sent_page_keeps_search_and_edit_controls(panel):
     client,job,_=panel
     page=client.get(f'/dashboard/automation/jobs/{job}/review')
     assert page.status_code==200
-    assert 'Искать другие варианты' in page.text
-    assert 'Искать выбранные через Sniper' in page.text
-    assert "name='selected_position' value='2'" in page.text
+    assert 'Искать другие варианты' not in page.text
+    assert '>Искать через Sniper</button>' in page.text
+    assert '>Выбрать все позиции с ценами</button>' in page.text
+    assert "class='search-position'" not in page.text
+    assert '<th>В счёт</th>' not in page.text
+    assert "name='include_2'" in page.text
     assert "class='candidate-select'" in page.text
     assert 'По предыдущему варианту выставлен счёт' in page.text
 
