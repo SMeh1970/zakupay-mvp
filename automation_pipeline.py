@@ -2022,6 +2022,22 @@ def _save_api_order_for_manual_start(order: dict, conn) -> dict:
     key = _api_dedupe_key(order_id)
     now = datetime.now(timezone.utc).isoformat()
     pending_result = _pending_search_result(order)
+    # Refresh only region metadata for every saved occurrence of this request.
+    # Keep commercial snapshots, selected lines, results and job states intact.
+    if "region" in order:
+        saved_rows = _execute(conn, "SELECT * FROM automation_jobs WHERE order_id=? AND event_type != 'manual_order'", (order_id,)).fetchall()
+        for saved_row in saved_rows:
+            saved_result = json.loads(saved_row["result_json"] or "{}")
+            try:
+                snapshot = json.loads(saved_row["order_json"] or "null")
+            except (TypeError, ValueError):
+                snapshot = None
+            if not isinstance(snapshot, dict):
+                snapshot = _order_from_saved_result(saved_row, saved_result)
+            if snapshot is not None and snapshot.get("region") != order["region"]:
+                snapshot["region"] = order["region"]
+                _execute(conn, "UPDATE automation_jobs SET order_json=?, updated_at=? WHERE id=?",
+                         (json.dumps(snapshot, ensure_ascii=False), now, saved_row["id"]))
     existing = _execute(conn, "SELECT * FROM automation_jobs WHERE dedupe_key=?", (key,)).fetchone()
     if existing:
         if existing["status"] == "failed" and not existing["result_json"]:
@@ -2644,7 +2660,7 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
             order_date, customer_name = _order_list_details(row, result)
             from saved_dashboard import short_company_name
             card_details = listing_details[int(row["id"])]
-            location_label = card_details.get("city") or "не указан"
+            location_label = card_details.get("region") or "не указан"
             category_label = card_details.get("category_short") or "не указаны"
             summary = result.get("summary") or {}
             total = summary.get("positions", 0)
@@ -2728,7 +2744,7 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
                 f"<section class='card {cls} {'offer-created' if offer_created else ''} {'read' if viewed else 'unread'}'><div><a class='title' target='_blank' rel='noopener' href='/dashboard/automation/jobs/{row['id']}/open'>"
                 f"Заявка №{display_number}{order_label}</a>{source_badge}{offer_badge}<div class='meta'>{html.escape(' · '.join(parts))}</div>"
                 f"<div class='meta'><b>Дата заявки:</b> {html.escape(order_date)} · <b>Заказчик:</b> <span title='{html.escape(customer_name, quote=True)}'>{html.escape(short_company_name(customer_name))}</span></div>"
-                f"<div class='meta'><b>Город:</b> {html.escape(location_label)} · <b>Рубрики:</b> <span title='{html.escape(card_details.get('category') or '', quote=True)}'>{html.escape(category_label)}</span></div>"
+                f"<div class='meta'><b>Регион:</b> {html.escape(location_label)} · <b>Рубрики:</b> <span title='{html.escape(card_details.get('category') or '', quote=True)}'>{html.escape(category_label)}</span></div>"
                 f"<div class='meta' data-actuality-job='{row['id']}'>{html.escape(actuality_badge)}</div>{quantity_label}"
                 f"{progress_bar}"
                 f"<div class='meta'><b>Поставщики:</b> {html.escape(suppliers_label)}</div>"

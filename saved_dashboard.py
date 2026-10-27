@@ -100,19 +100,12 @@ def short_category_name(value):
     return leaf if len(leaf) <= 70 else leaf[:67].rstrip() + '…'
 
 
-def order_city(order):
-    for key in ('city', 'deliveryCity', 'locality', 'settlement'):
-        value = _name(order.get(key)).strip()
-        if value:
-            return value
-    address = order.get('deliveryAddress') or order.get('address') or ''
-    if isinstance(address, dict):
-        value = order_city(address)
-        if value:
-            return value
-        address = address.get('fullAddress') or address.get('address') or ''
-    match = re.search(r'(?:^|[,;]\s*|\s)(?:город\s+|г\.\s*)([^,;\n]+)', str(address), re.I)
-    return match[1].strip() if match else ''
+def order_region(order):
+    """Use only the source region; a city/address is not a region."""
+    value = order.get("region")
+    if isinstance(value, dict):
+        value = value.get("name")
+    return value.strip() if isinstance(value, str) else ""
 
 
 def _number(value):
@@ -187,7 +180,7 @@ def describe(row):
         "id": int(row["id"]), "order_id": str(row["order_id"]),
         "reference": str(result.get("manual_reference") or ""), "title": title,
         "customer": customer["name"], "inn": customer["inn"],
-        "customer_short": short_company_name(customer["name"]), "city": order_city(order),
+        "customer_short": short_company_name(customer["name"]),
         "category_short": " · ".join(dict.fromkeys(short_category_name(v) for v in categories.values())),
         "source": "manual" if row["event_type"] == "manual_order" else "zakupay",
         "status": "offer_created" if result.get("live_offer_created") else row["status"],
@@ -195,7 +188,7 @@ def describe(row):
         "date": order_datetime(order.get("creationDate") or order.get("publicDate") or result.get("order_creation_date")),
         "finish": order_datetime(order.get("finishDate")),
         "positions": len(items) if items else summary.get("positions") or len(legacy_items),
-        "region": _name(order.get("region")), "category": category, "categories": categories,
+        "region": order_region(order), "category": category, "categories": categories,
         "delay": _number(order.get("delay")), "terms": str(order.get("paymentTerms") or ""),
         "competitors": max(known_competitors) if known_competitors else None,
         "search": search_text,

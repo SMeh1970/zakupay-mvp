@@ -14,7 +14,7 @@ from fastapi.testclient import TestClient
 
 import automation_pipeline as pipeline
 import security
-from saved_dashboard import listing_query
+from saved_dashboard import listing_query, order_region
 from zakupay_categories import load_categories, save_categories
 
 
@@ -59,6 +59,67 @@ class SavedDashboardTests(unittest.TestCase):
         response = self.client.get("/dashboard/automation", params=params)
         self.assertEqual(response.status_code, 200)
         return re.findall(r"<a class='title'[^>]*href='/dashboard/automation/jobs/(\d+)/open'", response.text)
+
+    def test_region_import_storage_and_existing_card_display(self):
+        order = {**copy.deepcopy(ORDER), "id": 999, "region": {"id": 50, "name": "Московская <область>"},
+                 "city": "Химки", "deliveryAddress": "г. Химки"}
+        with patch.object(pipeline, "build_vi_draft") as search:
+            saved = pipeline.save_api_order_for_manual_start(order)
+            with pipeline._connect() as conn:
+                row = conn.execute("SELECT * FROM automation_jobs WHERE id=?", (saved["job_id"],)).fetchone()
+                self.assertEqual(json.loads(row["order_json"]), order)
+            response = self.client.get("/dashboard/automation", params={"order_id": "999"})
+            self.assertIn("<b>Регион:</b> Московская &lt;область&gt;", response.text)
+            self.assertNotIn("Город:", response.text)
+            self.assertNotIn("Химки", response.text)
+            search.assert_not_called()
+            self.fetch.assert_not_called()
+
+    def test_region_is_never_inferred_from_city_or_address(self):
+        for value in (None, "", "  ", {}, {"id": 50}, 50, [], {"name": 50}):
+            with self.subTest(value=value):
+                self.assertEqual(order_region({"region": value, "city": "Химки", "deliveryAddress": "г. Химки"}), "")
+        self.assertEqual(order_region({"region": "  Московская область  "}), "Московская область")
+        response = self.client.get("/dashboard/automation", params={"source": "manual"})
+        self.assertIn("<b>Регион:</b> не указан", response.text)
+
+    def test_repeat_import_backfills_legacy_and_email_snapshots(self):
+        with pipeline._connect() as conn:
+            legacy = {"order_name": ORDER["name"], "items": [{"requested_name": "Труба", "quantity": 2, "unit": "шт"}]}
+            conn.execute("UPDATE automation_jobs SET order_json=NULL,result_json=? WHERE id=?", (json.dumps(legacy), self.first["job_id"]))
+            conn.execute("UPDATE automation_jobs SET order_id=123,event_type='new_order',dedupe_key='email-region' WHERE id=?", (self.second["job_id"],))
+        pipeline.save_api_order_for_manual_start({**copy.deepcopy(ORDER), "region": {"name": "Московская область"}})
+        with pipeline._connect() as conn:
+            rows = conn.execute("SELECT order_json FROM automation_jobs WHERE order_id=123").fetchall()
+        self.assertEqual(len(rows), 2)
+        for row in rows:
+            snapshot = json.loads(row["order_json"])
+            self.assertEqual(snapshot["region"], {"name": "Московская область"})
+            self.assertTrue(snapshot["orderItems"])
+
+    def test_repeat_import_refreshes_region_without_changing_processed_job(self):
+        with pipeline._connect() as conn:
+            conn.execute("UPDATE automation_jobs SET status='ready_for_review', viewed_at='2026-10-27' WHERE id=?", (self.first["job_id"],))
+            before = dict(conn.execute("SELECT * FROM automation_jobs WHERE id=?", (self.first["job_id"],)).fetchone())
+        fresh = {**copy.deepcopy(ORDER), "region": {"name": "Московская область"}, "name": "Другое имя"}
+        with patch.object(pipeline, "build_vi_draft") as search:
+            imported = pipeline.save_api_order_for_manual_start(fresh)
+            self.assertTrue(imported["duplicate"])
+            with pipeline._connect() as conn:
+                after = dict(conn.execute("SELECT * FROM automation_jobs WHERE id=?", (self.first["job_id"],)).fetchone())
+            expected_order = json.loads(before["order_json"])
+            expected_order["region"] = fresh["region"]
+            self.assertEqual(json.loads(after["order_json"]), expected_order)
+            for key in before.keys() - {"order_json", "updated_at"}:
+                self.assertEqual(after[key], before[key], key)
+            self.assertEqual(self.ids(region="Московская область"), [str(self.first["job_id"])])
+            # Omitted metadata leaves the stored region; explicit null clears it.
+            pipeline.save_api_order_for_manual_start({k: v for k, v in fresh.items() if k != "region"})
+            self.assertEqual(self.ids(region="Московская область"), [str(self.first["job_id"])])
+            pipeline.save_api_order_for_manual_start({**fresh, "region": None, "city": "Химки"})
+            response = self.client.get("/dashboard/automation", params={"order_id": "123"})
+            self.assertIn("<b>Регион:</b> не указан", response.text)
+            search.assert_not_called()
 
     def test_sort_is_request_date_not_insertion_order_and_unknown_dates_are_last(self):
         with pipeline._connect() as conn:
