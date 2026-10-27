@@ -381,6 +381,24 @@ def model(result, raw=None):
                          value_comparison=comparison,
                          catalog_search=item.get("catalog_search"),
                          rules=[dict(id=k, state=v) for k, v in (settings(item).get("features") or {}).items()]))
+    coverage = {}
+    for row in rows:
+        for name in {v['supplier'] for v in row['value_comparison']['offers'] if v['comparable']}:
+            coverage[name] = coverage.get(name, 0) + 1
+    for row in rows:
+        comparison = row['value_comparison']
+        best = comparison['minimum']
+        suitable = [v for v in comparison['offers'] if v['comparable']]
+        comparison['minima'] = [v for v in suitable if best and math.isclose(v['unit_price'], best['unit_price'], rel_tol=0, abs_tol=1e-9)]
+        near = [v for v in suitable if best and v['unit_price'] <= best['unit_price'] * 1.03 + 1e-9]
+        comparison['recommendation'] = min(near, key=lambda v: (-coverage.get(v['supplier'], 0), v['unit_price'], v['key']), default=None)
+        comparison['coverage'] = coverage
+        variants = {}
+        for offer in suitable:
+            identity = tuple(sorted((f['field'], f['value']) for f in offer['features']))
+            variants.setdefault(identity, []).append(offer)
+        comparison['variant_groups'] = [dict(characteristics=[dict(field=f, value=v) for f, v in identity], offers=offers)
+                                        for identity, offers in variants.items()]
     return dict(revision=revision(raw) if raw is not None else None, order_name=result.get("order_name"),
                 order_id=result.get("order_id"), source_label=result.get("source_label") or "Закупай",
                 read_only=bool(result.get("live_offer_created")), rows=rows,

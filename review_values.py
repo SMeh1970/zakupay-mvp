@@ -15,6 +15,9 @@ def assets(result, raw, request, job_id, nonce):
 
 
 CSS = """
+.review-table .supplier-price{min-width:190px;vertical-align:top}
+.supplier-variant{padding:6px 0;border-bottom:1px solid #eee;font-size:12px}
+.supplier-price .matched{color:#367348}
 .inline-values .value-position{margin:0;padding:0;border:0;background:none}
 .inline-values .value-panel{display:block;font-size:13px;line-height:1.8}
 .inline-values .value-group{display:inline;margin-right:10px}

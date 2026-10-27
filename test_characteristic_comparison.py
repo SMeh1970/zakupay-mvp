@@ -132,3 +132,19 @@ def test_plain_name_words_have_controls_and_can_be_excluded():
     assert row(data)['minimum'] is not None
     decide(data,'Наименование: малярный','малярный','rejected')
     assert row(data)['minimum'] is None
+
+
+def test_equal_minima_and_coverage_recommendation_with_three_percent_boundary():
+    data=result(quote('a',price=100),quote('b',price=100),quote('c',price=103),quote('d',price=103.01))
+    second=copy.deepcopy(data['items'][0]);second['position']=2
+    second['candidates']=[quote('c',price=70),quote('d',price=60)]
+    data['items'].append(second)
+    comparison=row(data)
+    assert {v['supplier'] for v in comparison['minima']}=={'a','b'}
+    assert comparison['minimum']['unit_price']==100
+    assert comparison['recommendation']['supplier']=='c'
+    assert len(comparison['variant_groups'])==1
+    assert len(comparison['variant_groups'][0]['offers'])==4
+    decide(data,'Толщина стенки','4 мм','rejected')
+    assert row(data)['minima']==[]
+    assert row(data)['recommendation'] is None

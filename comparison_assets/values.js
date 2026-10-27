@@ -51,7 +51,56 @@
     }
     return line;
   }
+  function supplierColumns() {
+    const table=document.getElementById('review-table');
+    if(!embedded || !table)return;
+    table.querySelectorAll('[data-supplier-column]').forEach(n=>n.remove());
+    for(const supplier of data.suppliers) {
+      const th=node('th',supplier.name,'supplier-price');th.dataset.supplierColumn='1';
+      table.rows[0].append(th);
+      for(const row of data.rows) {
+        const anchor=table.querySelector(`[data-value-position="${row.position}"]`);
+        if(!anchor)continue;
+        const td=node('td','','supplier-price');td.dataset.supplierColumn='1';
+        const comparison=row.value_comparison;
+        const offers=comparison.offers.filter(v=>v.supplier===supplier.name && v.comparable)
+          .sort((a,b)=>a.unit_price-b.unit_price);
+        const groups=new Map();
+        for(const offer of offers) {
+          const signature=JSON.stringify(offer.features.map(f=>[f.field,f.value]).sort());
+          if(!groups.has(signature))groups.set(signature,[]);
+          groups.get(signature).push(offer);
+        }
+        if(!offers.length)td.append(node('span','—'));
+        let index=0, more=null;
+        for(const variants of groups.values()) {
+          if(index++===10) {more=node('details');more.append(node('summary','Остальные варианты'));td.append(more);}
+          const offer=variants[0], block=node('div','','supplier-variant');
+          const minimum=(comparison.minima||[]).some(v=>v.key===offer.key);
+          block.append(node('strong',`${money(offer.unit_price)} ₽ / ${row.unit}`,minimum?'matched':''));
+          block.append(node('div',offer.name));
+          block.append(node('small',`${offer.availability} · закупка: ${money(offer.quantity)} ${offer.unit}`));
+          if(variants.length>1)block.append(node('small',` · предложений: ${variants.length}`));
+          if(minimum)block.append(node('div','Абсолютный минимум','matched'));
+          if(comparison.recommendation?.key===offer.key)block.append(node('div',`Рекомендуется · охват ${comparison.coverage[supplier.name]} поз.`, 'matched'));
+          (more||td).append(block);
+        }
+        const excluded=comparison.offers.filter(v=>v.supplier===supplier.name && !v.comparable);
+        if(excluded.length) {
+          const details=node('details');details.append(node('summary',`Вне расчёта: ${excluded.length}`));
+          for(const offer of excluded) {
+            details.append(node('div',offer.name));
+            details.append(node('small',offer.comparison_reasons.join(' · ')));
+            if(offer.comparison_reasons.some(r=>/дней|дата|Дата/.test(r)))details.append(node('div','Требует подтверждения наличия и стоимости'));
+          }
+          td.append(details);
+        }
+        anchor.closest('tr').append(td);
+      }
+    }
+  }
   function render() {
+    supplierColumns();
     const root = document.getElementById('value-rows'); if(root)root.replaceChildren();
     for(const row of data.rows) {
       const target = embedded ? document.querySelector(`[data-value-position="${row.position}"]`) : root;
@@ -62,7 +111,9 @@
       if(embedded) {
         section.append(inlineName(row));
         const best=row.value_comparison.minimum;
-        section.append(node('div',best?`${money(best.unit_price)} ₽ / ${row.unit} · ${best.supplier}`:'Сопоставимой цены нет','value-result'));
+        section.append(node('div',best?`Абсолютный минимум: ${money(best.unit_price)} ₽ / ${row.unit} · ${(row.value_comparison.minima||[best]).map(v=>v.supplier+' · '+v.name).join('; ')}`:'Допустимых предложений с сопоставимой ценой нет','value-result'));
+        const recommendation=row.value_comparison.recommendation;
+        if(recommendation && best && recommendation.key!==best.key)section.append(node('div',`Рекомендуется: ${recommendation.supplier} · ${recommendation.name} · ${money(recommendation.unit_price)} ₽ / ${row.unit} · охват ${row.value_comparison.coverage[recommendation.supplier]} поз. (в пределах 3%)`,'value-result'));
         target.append(section);continue;
       }
       const panel = node('div', '', 'value-panel');
