@@ -278,6 +278,8 @@ def _initialize_schema(conn) -> None:
         from tile_autopilot import initialize_schema as initialize_tile_auto_schema
         initialize_tile_auto_schema(conn)
         conn.execute(CATEGORY_SCHEMA)
+        from filter_preferences import SCHEMA as FILTER_PREFERENCES_SCHEMA
+        conn.execute(FILTER_PREFERENCES_SCHEMA)
         conn.commit()
         _initialized_database_key = key
 
@@ -2066,6 +2068,10 @@ def process_api_order(order: dict) -> dict:
 
 
 def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, has_my_offer=None, fetch_categories=None):
+    from filter_preferences import install_preferences, load_preferences, csrf_token
+    from security import PANEL_USERNAME
+    from saved_dashboard import DEFAULTS
+    install_preferences(app, _connect, _execute, PANEL_USERNAME)
     category_lock = threading.Lock()
 
     def refresh_categories(only_if_empty=False):
@@ -2533,8 +2539,20 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
     ):
         with _connect() as conn:
             reference, reference_updated = load_categories(conn)
-            state = select_page(_execute(conn, listing_query(bool(DATABASE_URL))).fetchall(), request.query_params,
+            preferences = load_preferences(conn, _execute, PANEL_USERNAME)
+            explicit = any(key in request.query_params for key in DEFAULTS)
+            unfiltered = request.query_params.get("unfiltered") == "1"
+            query = request.query_params
+            if not explicit and preferences and preferences["enabled"] and not unfiltered:
+                query = {**preferences["filters"], "page": request.query_params.get("page", "1")}
+            state = select_page(_execute(conn, listing_query(bool(DATABASE_URL))).fetchall(), query,
                                 reference, reference_updated)
+            state["listing_filters"] = state["filters"]
+            if preferences and not explicit and (not preferences["enabled"] or unfiltered):
+                state["filters"] = preferences["filters"]
+            state["preferences_enabled"] = bool(preferences and preferences["enabled"] and not unfiltered)
+            state["unfiltered"] = unfiltered
+            state["csrf"] = csrf_token(request)
             ids = [item["id"] for item in state["items"]]
             listing_details = {item["id"]: item for item in state["items"]}
             page_rows = _execute(conn, "SELECT * FROM automation_jobs WHERE id IN (" + ",".join("?" for _ in ids) + ")", tuple(ids)).fetchall() if ids else []
@@ -2668,7 +2686,7 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
                 "</p>"
             )
         script_nonce = uuid.uuid4().hex
-        return Response(content=(
+        response = Response(content=(
             "<!doctype html><html lang='ru'><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
             "<title>Заявки — Закупай MVP</title><style>body{font-family:Arial;margin:0;background:#f4f6f8;color:#202124}main{max-width:1200px;margin:auto;padding:28px}"
             ".filter-panel{background:#fff;border-radius:12px;padding:20px;margin-top:20px}.filters{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:14px;margin-bottom:18px}.filters label{display:block;color:#5f6368;font-size:14px}.filters input,.filters select{width:100%;box-sizing:border-box;margin-top:6px;padding:9px;border:1px solid #c9cdd3;border-radius:7px;background:#fff;color:#202124}details{margin-bottom:18px}summary{cursor:pointer;font-weight:bold;margin-bottom:14px}.pager{display:flex;justify-content:center;align-items:center;gap:18px;margin:22px 0;flex-wrap:wrap}.filter-error{color:#b3261e}.list-count{color:#5f6368}button.button{border:0;cursor:pointer}.empty{background:#fff;padding:24px;border-radius:12px}"
@@ -2689,6 +2707,10 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
             + pagination(state) + "</main>" + category_picker_script(script_nonce) + filter_highlight_script(script_nonce) + "</html>"
         ), media_type="text/html", headers={"Cache-Control": "no-store, max-age=0", "Pragma": "no-cache",
             "Content-Security-Policy": f"default-src 'none'; script-src 'nonce-{script_nonce}'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"})
+
+        response.set_cookie("panel_filter_csrf", state["csrf"], secure=True, httponly=True,
+                            samesite="strict", path="/dashboard/automation", max_age=31536000)
+        return response
 
     @app.head("/dashboard/automation/jobs/{job_id}/review")
     def automation_review_head(job_id: int):

@@ -1,4 +1,5 @@
 import copy
+import gc
 import json
 import os
 import re
@@ -51,6 +52,7 @@ class SavedDashboardTests(unittest.TestCase):
         self.client.close()
         self.session.stop()
         self.settings.stop()
+        gc.collect()  # Release SQLite handles before Windows removes the test directory.
         self.tmp.cleanup()
 
     def ids(self, **params):

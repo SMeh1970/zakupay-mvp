@@ -25,7 +25,7 @@ STATUSES = {
 DEFAULTS = {
     "keyword": "", "title": "", "order_id": "", "customer": "", "inn": "",
     "source": "all", "status": "all", "viewed": "all", "offer": "all",
-    "region": "", "category": "", "category_id": (), "payment": "all",
+    "region": "", "regions": (), "category": "", "category_id": (), "payment": "all",
     "creationDateFrom": "", "creationDateTo": "",
     "finishDateFrom": "", "finishDateTo": "",
     "min_positions": "", "max_positions": "", "max_competitors": "",
@@ -204,7 +204,11 @@ def describe(row):
 
 
 def filters_from_query(query):
-    filters = {key: str(query.get(key, default)).strip() for key, default in DEFAULTS.items() if key != "category_id"}
+    filters = {key: str(query.get(key, default)).strip() for key, default in DEFAULTS.items() if key not in {"category_id", "regions"}}
+    regions = query.getlist("regions") if hasattr(query, "getlist") else query.get("regions", ())
+    if isinstance(regions, str):
+        regions = [regions]
+    filters["regions"] = tuple(dict.fromkeys(str(value).strip() for value in regions if str(value).strip()))
     categories = query.getlist("category_id") if hasattr(query, "getlist") else query.get("category_id", ())
     if isinstance(categories, str):
         categories = [categories]
@@ -253,6 +257,8 @@ def matching_quantity_rows(item, filters, selected_categories=None):
 
 
 def matches(item, filters, selected_categories=None):
+    if filters["regions"] and _norm(item["region"]) not in {_norm(region) for region in filters["regions"]}:
+        return False
     for key, field in (("keyword", "search"), ("title", "title"), ("customer", "customer"), ("inn", "inn"), ("region", "region")):
         if filters[key] and _norm(filters[key]) not in _norm(item[field]):
             return False
@@ -334,6 +340,7 @@ def select_page(rows, query, reference=None, reference_updated=""):
         "items": visible,
         "category_choices": choices, "category_reference_updated": reference_updated,
         "unit_choices": unit_choices,
+        "region_choices": sorted({item["region"] for item in saved if item["region"]}, key=str.casefold),
     }
 
 
@@ -413,6 +420,35 @@ def category_picker(state):
     )
 
 
+def region_picker(state):
+    selected = set(state["filters"]["regions"])
+    choices = sorted(set(state.get("region_choices", ())) | selected, key=str.casefold)
+    options = "".join(
+        f"<label class='category-option'><input type='checkbox' name='regions' value='{html.escape(region, quote=True)}'"
+        f"{' checked' if region in selected else ''}><span>{html.escape(region)}</span></label>"
+        for region in choices
+    )
+    legacy = state["filters"]["region"]
+    return (f"<details class='category-picker'><summary>Регионы · {len(selected) if selected else 'Все'}</summary>"
+            "<p>Отметьте регионы. Без отметок — все регионы. Список взят из сохранённых заявок.</p>"
+            f"<div class='category-options' role='group' aria-label='Регионы'>{options}</div>"
+            + (f"<label>Регион из старой ссылки<input name='region' value='{html.escape(legacy, quote=True)}'></label>" if legacy else "")
+            + "</details>")
+
+
+def preferences_control(state):
+    if "csrf" not in state:
+        return ""
+    checked = " checked" if state.get("preferences_enabled") else ""
+    return (f"<form id='my-filters-toggle' method='post' action='{URL}/filters'>"
+            f"<input type='hidden' name='csrf' value='{state['csrf']}'>"
+            "<input type='hidden' name='action' value='toggle'>"
+            f"<label style='display:inline-flex;align-items:center;gap:10px;background:#ffdf57;color:#302600;padding:12px 16px;border-radius:8px;font-weight:bold'>"
+            f"<input style='width:auto;accent-color:#b58900' type='checkbox' name='enabled'{checked}>Мои фильтры</label>"
+            "<button class='button secondary' id='my-filters-confirm' type='submit'>Применить переключатель</button></form>"
+            "<p>«Применить фильтры» сохраняет выбранные настройки и включает их. Снимите «Мои фильтры», чтобы показать все заявки: настройки сохранятся в вашем аккаунте и восстановятся после входа.</p>")
+
+
 def filter_form(state):
     filters = state["filters"]
     def label_start(key):
@@ -437,7 +473,6 @@ def filter_form(state):
         select("page_size", "На странице", {"25": "25", "50": "50", "100": "100"})
     )
     advanced = (
-        field("region", "Регион") +
         select("payment", "Условия оплаты", {"all": "Все", "prepayment": "Предоплата / без отсрочки", "delay": "Отсрочка"}) +
         field("min_positions", "Минимум позиций", "number") + field("max_positions", "Максимум позиций", "number") +
         field("max_competitors", "Не более конкурентов", "number") +
@@ -460,13 +495,17 @@ def filter_form(state):
         f"<section class='filter-panel' id='request-filters'><h2>Фильтры заявок</h2>"
         "<p>Чтобы показать только заявки Закупай, выберите источник «Закупай». Фильтры применяются к сохранённым заявкам.</p>"
         f"<p>{category_note}</p>"
-        f"<form method='get' action='{URL}'><div class='filters'>{primary}</div>"
+        + preferences_control(state)
+        + (f"<form method='post' action='{URL}/filters'><input type='hidden' name='csrf' value='{state['csrf']}'>"
+           "<input type='hidden' name='enabled' value='on'>" if "csrf" in state else f"<form method='get' action='{URL}'>")
+        + f"<div class='filters'>{primary}</div>"
         + category_picker(state)
         + f"<h3>Количество товара</h3><div class='filters'>{quantity}</div>"
         + "<p class='quantity-help'>При выборе количества текст из поля «Поиск по заявке и товарам», рубрика, единица и диапазон проверяются в одной товарной строке. Например: «керамогранит», от 100 м² — количество других товаров не учитывается. Границы включены; строки не суммируются, единицы не пересчитываются.</p>"
-        + f"<details open><summary>Регион, оплата и другие параметры</summary><div class='filters'>{advanced}</div></details>"
+        + "<details open><summary>Регион, оплата и другие параметры</summary>"
+        + region_picker(state) + f"<div class='filters'>{advanced}</div></details>"
         f"{errors}<div class='actions'><button class='button' type='submit'>Применить фильтры</button>"
-        f"<a class='button secondary' href='{URL}'>Сбросить фильтры</a></div></form></section>"
+        f"<a class='button secondary' href='{URL}?unfiltered=1'>Показать всё временно</a></div></form></section>"
         f"<p class='list-count' role='status'>Сохранено: <b>{state['total']}</b> · По фильтрам: <b>{state['matched']}</b> · Свежие даты сверху</p>"
     )
 
@@ -476,6 +515,11 @@ def filter_highlight_script(nonce):
 (() => {
   const panel = document.getElementById('request-filters');
   if (!panel) return;
+  const toggle = document.getElementById('my-filters-toggle');
+  if (toggle) {
+    document.getElementById('my-filters-confirm').hidden = true;
+    toggle.querySelector('[name=enabled]').addEventListener('change', () => toggle.requestSubmit());
+  }
   panel.querySelectorAll('.filter-cell').forEach(cell => {
     const control = cell.querySelector('input, select');
     const update = () => cell.classList.toggle('active-filter', control.value.trim() !== cell.dataset.filterDefault);
@@ -488,7 +532,9 @@ def filter_highlight_script(nonce):
 
 
 def pagination(state):
-    params = {key: value for key, value in state["filters"].items() if value != DEFAULTS[key]}
+    params = {key: value for key, value in state.get("listing_filters", state["filters"]).items() if value != DEFAULTS[key]}
+    if state.get("unfiltered"):
+        params["unfiltered"] = "1"
     def link(page, text):
         target = URL + "?" + urlencode({**params, "page": page}, doseq=True)
         return f"<a class='button secondary' href='{html.escape(target, quote=True)}'>{text}</a>"
