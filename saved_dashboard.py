@@ -345,6 +345,8 @@ def select_page(rows, query, reference=None, reference_updated=""):
 
 
 CATEGORY_PICKER_CSS = """
+#region-picker.active-filter{background:#fff3bf;border-color:#e0b52c}
+#region-picker.active-filter summary{background:#ffe36b;color:#302600;padding:8px;border-radius:5px}
 .category-picker{border:1px solid #c9cdd3;border-radius:9px;padding:14px;margin:0 0 18px;background:#fafbfc}
 .category-picker summary{color:#202124}.category-help{color:#5f6368;font-size:14px;margin:8px 0 12px}
 .category-tools{display:flex;gap:12px;align-items:end;flex-wrap:wrap;margin-bottom:12px}
@@ -429,7 +431,7 @@ def region_picker(state):
         for region in choices
     )
     legacy = state["filters"]["region"]
-    return (f"<details class='category-picker'><summary>Регионы · {len(selected) if selected else 'Все'}</summary>"
+    return (f"<details id='region-picker' class='category-picker{' active-filter' if selected or legacy else ''}'><summary>Регионы · <span id='region-count'>{len(selected) if selected else 'Все'}</span></summary>"
             "<p>Отметьте регионы. Без отметок — все регионы. Список взят из сохранённых заявок.</p>"
             f"<div class='category-options' role='group' aria-label='Регионы'>{options}</div>"
             + (f"<label>Регион из старой ссылки<input name='region' value='{html.escape(legacy, quote=True)}'></label>" if legacy else "")
@@ -515,6 +517,18 @@ def filter_highlight_script(nonce):
 (() => {
   const panel = document.getElementById('request-filters');
   if (!panel) return;
+  const regions = document.getElementById('region-picker');
+  if (regions) {
+    const updateRegions = () => {
+      const count = regions.querySelectorAll('input[name=regions]:checked').length;
+      const legacy = regions.querySelector('input[name=region]');
+      regions.classList.toggle('active-filter', count > 0 || Boolean(legacy && legacy.value.trim()));
+      document.getElementById('region-count').textContent = count || 'Все';
+    };
+    regions.addEventListener('change', updateRegions);
+    regions.addEventListener('input', updateRegions);
+    updateRegions();
+  }
   const toggle = document.getElementById('my-filters-toggle');
   if (toggle) {
     document.getElementById('my-filters-confirm').hidden = true;
