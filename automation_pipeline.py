@@ -1201,11 +1201,12 @@ def build_vi_draft(order: dict, invoice_number: int | None = None, progress_call
     krep_komp = KrepKompAdapter()
     deferred_suppliers = []
     if krep_komp.enabled:
-        if krep_komp.catalog_ready():
+        try:
+            krep_komp.prepare_catalog()
             suppliers.append(krep_komp)
-        else:
-            krep_komp.warm_catalog_async()
-            deferred_suppliers.append("КРЕП-КОМП: каталог загружается в фоне")
+        except Exception as exc:
+            logger.warning('krep catalogue preparation failed: %s', type(exc).__name__)
+            deferred_suppliers.append('КРЕП-КОМП: ошибка загрузки каталога ('+type(exc).__name__+')')
     items = list(order.get("orderItems") or [])
     positioned_items = {int(item.get("_source_position") or position): item
                         for position, item in enumerate(items, 1)}
@@ -1259,35 +1260,6 @@ def build_vi_draft(order: dict, invoice_number: int | None = None, progress_call
                     len(items),
                     rows_by_position[position],
                 )
-    # A catalogue which finished warming during VI matching must participate in
-    # this result, rather than leaving a permanent "loading" snapshot behind.
-    if deferred_suppliers and krep_komp.catalog_ready():
-        from dataclasses import fields
-        from supplier_adapters import SupplierQuote
-        quote_fields = {f.name for f in fields(SupplierQuote)}
-        def finish_krep(position):
-            previous = rows_by_position[position]
-            saved = [dict(c) for c in _review_candidates(previous) if c.get('supplier') != krep_komp.name]
-            class Saved:
-                code='own_catalog'
-                name='Сохранённые результаты текущего поиска'
-                def search(self, query, limit=8):
-                    class SavedQuote:
-                        def __init__(self,value):
-                            self.value=value
-                            self.quote=SupplierQuote(**{k:v for k,v in value.items() if k in quote_fields})
-                        def __getattr__(self,name):return getattr(self.quote,name)
-                        def to_dict(self):return copy.deepcopy(self.value)
-                    return [SavedQuote(c) for c in saved]
-            return _build_match_row(position,positioned_items[position],[Saved(),krep_komp],feedback_exclusions.get(feedback_keys[position]),session)
-        with ThreadPoolExecutor(max_workers=workers) as pool:
-            pending={pool.submit(finish_krep,p):p for p in rows_by_position}
-            for future in as_completed(pending):
-                position=pending[future]
-                rows_by_position[position]=future.result()
-                if progress_callback:
-                    progress_callback(len(rows_by_position),len(items),rows_by_position[position])
-        deferred_suppliers=[]
     rows = [rows_by_position[position] for position in sorted(rows_by_position)]
     ready = [row for row in rows if row["decision"] == "auto_ready"]
     status = "ready_for_review" if ready else "needs_review"
@@ -3137,8 +3109,8 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
         if result.get("deferred_suppliers"):
             search_report += (
                 "<p style='padding:10px;background:#fff7df;border-radius:7px'>"
-                + "КРЕП-КОМП не участвовал в этом сохранённом результате: каталог не был готов на момент поиска. "
-                + "Это сообщение о прошлом поиске, а не текущий индикатор загрузки. Повторный поиск дополнит предложения, когда каталог готов.</p>"
+                + html.escape("; ".join(result.get("deferred_suppliers") or []))
+                + ". Это состояние сохранённого поиска. Результат не охватывает всех настроенных поставщиков.</p>"
             )
         if result.get("last_search_at"):
             search_report += (

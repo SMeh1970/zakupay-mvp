@@ -5,12 +5,12 @@ from supplier_adapters import KrepKompAdapter
 from supplier_comparison import model, selected_allowed
 
 
-def test_catalog_finished_during_search_is_included_in_same_result():
+def test_cold_catalog_is_prepared_before_search_and_supplier_is_included():
     class Krep:
         enabled=True;name='КРЕП-КОМП'
         def __init__(self):self.ready=False
         def catalog_ready(self):return self.ready
-        def warm_catalog_async(self):self.ready=True
+        def prepare_catalog(self):self.ready=True
     krep=Krep();calls=[];progress=[]
     def match(position,item,suppliers,*args):
         calls.append([getattr(s,'name','saved') for s in suppliers])
@@ -18,8 +18,8 @@ def test_catalog_finished_during_search_is_included_in_same_result():
     order=dict(id=1,name='test',orderItems=[dict(id=1,goodName='Болт М16',count=1,unit=dict(name='шт'))])
     with patch.object(p,'KrepKompAdapter',return_value=krep),patch.object(p,'_build_match_row',side_effect=match),patch.object(p,'_excluded_feedback_keys_many',return_value={}):
         result=p.build_vi_draft(order,progress_callback=lambda completed,total,row:progress.append(row['position']))
-    assert len(calls)==2 and 'КРЕП-КОМП' not in calls[0] and 'КРЕП-КОМП' in calls[1]
-    assert result['deferred_suppliers']==[] and progress==[1,1]
+    assert krep.ready and len(calls)==1 and 'КРЕП-КОМП' in calls[0]
+    assert result['deferred_suppliers']==[] and progress==[1]
 
 
 def test_cable_rank_checks_mark_before_limiting_supplier_candidates():

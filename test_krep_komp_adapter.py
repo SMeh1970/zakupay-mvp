@@ -22,6 +22,9 @@ class KrepKompAdapterTests(unittest.TestCase):
             "KREP_KOMP_STORAGE_NAMES": "КОЛЕДИНО",
         }, clear=False)
         self.env.start()
+        self.cache_load = patch("supplier_catalog_cache.load", return_value=None)
+        self.cache_save = patch("supplier_catalog_cache.save")
+        self.cache_load.start(); self.cache_save.start()
         KrepKompAdapter._token = None
         KrepKompAdapter._token_expires_at = 0
         KrepKompAdapter._catalog = None
@@ -30,6 +33,7 @@ class KrepKompAdapterTests(unittest.TestCase):
         KrepKompAdapter._storage_ids_expires_at = 0
 
     def tearDown(self):
+        self.cache_load.stop(); self.cache_save.stop()
         self.env.stop()
 
     @patch("supplier_adapters.requests.post")

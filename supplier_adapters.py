@@ -1,3 +1,5 @@
+import hashlib
+import logging
 import base64
 import os
 import re
@@ -453,6 +455,17 @@ class KrepKompAdapter(SupplierAdapter):
             raise RuntimeError(f"КРЕП-КОМП {operation}: {info}")
         return payload
 
+    def _catalog_cache_key(self):
+        return 'krep-v1:' + hashlib.sha256((self.base_url+'|'+self.username).encode()).hexdigest()
+
+    def prepare_catalog(self):
+        """Wait in the search worker; a configured supplier is never skipped silently."""
+        try:
+            return self._catalog_items()
+        except Exception as exc:
+            type(self)._catalog_error = type(exc).__name__
+            raise
+
     def _catalog_items(self) -> list[dict[str, Any]]:
         cls = type(self)
         now = time.time()
@@ -462,6 +475,19 @@ class KrepKompAdapter(SupplierAdapter):
             now = time.time()
             if cls._catalog is not None and now < cls._catalog_expires_at:
                 return cls._catalog
+            import supplier_catalog_cache as cache
+            logger = logging.getLogger(__name__)
+            try:
+                saved = cache.load(self._catalog_cache_key(), now)
+            except Exception as exc:
+                logger.warning('krep catalogue cache read failed: %s', type(exc).__name__)
+                saved = None
+            if saved is not None:
+                cls._catalog, cls._catalog_expires_at = saved
+                cls._catalog_error = None
+                logger.info('krep catalogue restored records=%s', len(cls._catalog))
+                return cls._catalog
+            started = time.monotonic()
             items: list[dict[str, Any]] = []
             page = 1
             while True:
@@ -473,9 +499,17 @@ class KrepKompAdapter(SupplierAdapter):
                 last_page = int(meta.get("last_page") or page)
                 if page >= last_page:
                     break
+                if page == 1 or page % 10 == 0:
+                    logger.info('krep catalogue loading page=%s total_pages=%s records=%s', page, last_page, len(items))
                 page += 1
             cls._catalog = items
-            cls._catalog_expires_at = now + max(self.catalog_ttl, 300)
+            cls._catalog_expires_at = time.time() + max(self.catalog_ttl, 300)
+            cls._catalog_error = None
+            try:
+                cache.save(self._catalog_cache_key(), items, cls._catalog_expires_at)
+            except Exception as exc:
+                logger.warning('krep catalogue cache write failed: %s', type(exc).__name__)
+            logger.info('krep catalogue ready pages=%s records=%s seconds=%.3f', page, len(items), time.monotonic()-started)
             return items
 
     @classmethod
