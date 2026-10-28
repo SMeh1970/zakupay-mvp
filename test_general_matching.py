@@ -38,6 +38,11 @@ def test_identity_then_requested_parameters(requested,correct,wrong):
 
 def test_context_product_is_not_the_requested_product():
     assert not allowed(result('наконечник 4 (для кабеля КГ 3х4)',['Кабель КГ 3х4 мм²']))
+    requested='наконечник 4 (для кабеля КГ 3х4)'
+    queries=_search_variants(requested)
+    assert 'наконечник 4' in queries
+    assert not any(q.lower().startswith('кабель') for q in queries)
+    assert not _hard_conflicts(requested,dict(name='Наконечник кабельный 4 мм²'))
 
 
 def test_missing_required_parameter_is_not_inferred():

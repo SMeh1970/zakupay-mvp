@@ -65,7 +65,9 @@ def records(name, candidate=None):
     if not candidate.get("catalog_prepared"):
         from supplier_comparison import attributes
         known = {r["field"] for r in result}
-        for field, values in attributes(name).items():
+        import re
+        attribute_name = re.split(r"\(\s*для\b", str(name), maxsplit=1, flags=re.I)[0] if product_kind == "наконечник" else name
+        for field, values in attributes(attribute_name).items():
             if field in typed_fields or (product_kind in {"бита", "рулетка", "плоскогубцы", "очиститель пены", "монтажная пена", "гофрированная труба"} and field in {"Размер 1", "Размер 2", "Длина", "Ширина", "Толщина", "Наружный диаметр", "Толщина стенки"}):
                 continue
             if extract(name)['category'] == 'Кабели' and field in {'Размер 1', 'Размер 2', 'Длина', 'Ширина', 'Толщина'}:

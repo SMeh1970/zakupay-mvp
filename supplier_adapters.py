@@ -6,6 +6,7 @@ import re
 import threading
 import time
 from functools import lru_cache
+from itertools import islice
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
 from typing import Any
@@ -380,7 +381,10 @@ class KrepKompAdapter(SupplierAdapter):
 
     @classmethod
     def _rank(cls, query: str, item: dict[str, Any]) -> tuple[int, float, str]:
-        q = cls._norm(query)
+        return cls._rank_normalized(cls._norm(query), item)
+
+    @classmethod
+    def _rank_normalized(cls, q, item):
         text, text_tokens, article = cls._indexed_item(*(str(item.get(k) or '') for k in (
             'Наименование', 'ПолноеНаименование', 'Артикул', 'Категория')))
         q_tokens = set(q.split())
@@ -630,22 +634,23 @@ class KrepKompAdapter(SupplierAdapter):
         if not self.enabled:
             return [SupplierQuote(supplier=self.name, name=query, error="API КРЕП-КОМП не настроен")]
         try:
+            normalized_query = self._norm(query)
             ranked = sorted(
                 self._catalog_items(),
-                key=lambda item: self._rank(query, item),
+                key=lambda item: self._rank_normalized(normalized_query, item),
                 reverse=True,
             )
             from cable_identity import identity, conflicts
-            if identity(query):
+            from product_identity import kind
+            if kind(query) == "кабель" and identity(query):
                 ranked = [item for item in ranked if identity(item.get('ПолноеНаименование') or item.get('Наименование'))]
                 ranked.sort(key=lambda item: bool(conflicts(query,item.get('ПолноеНаименование') or item.get('Наименование'))))
-            query_tokens = set(self._norm(query).split())
-            candidates = [
+            query_tokens = set(normalized_query.split())
+            candidates = list(islice((
                 item for item in ranked
-                if query_tokens & set(self._norm(" ".join(str(item.get(k) or "") for k in (
-                    "Наименование", "ПолноеНаименование", "Артикул", "Категория"
-                ))).split())
-            ][:min(max(int(limit), 1), 20)]
+                if query_tokens & self._indexed_item(*(str(item.get(k) or '') for k in (
+                    'Наименование', 'ПолноеНаименование', 'Артикул', 'Категория')))[1]
+            ), min(max(int(limit), 1), 20)))
             return self._enrich(candidates)
         except (requests.RequestException, RuntimeError, ValueError) as exc:
             return [SupplierQuote(supplier=self.name, name=query, error=f"Ошибка API КРЕП-КОМП: {exc}")]

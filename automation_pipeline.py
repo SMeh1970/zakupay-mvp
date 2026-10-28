@@ -553,18 +553,20 @@ def _norm_keep_decimals(text: str) -> str:
 
 def _search_variants(requested: str) -> list[str]:
     """Search exact identifiers first, then progressively broader text variants."""
+    from product_identity import kind, models
+    product_kind = kind(requested)
     from cable_identity import queries as cable_queries
-    cable_variants = cable_queries(requested)
+    cable_variants = cable_queries(requested) if product_kind == "кабель" else []
     if cable_variants:
         return list(dict.fromkeys([*cable_variants, requested]))
     from extinguisher_identity import queries as extinguisher_queries
     extinguisher_variants = extinguisher_queries(requested)
     if extinguisher_variants:
         return extinguisher_variants
-    from product_identity import kind, models
-    product_kind = kind(requested)
     precise_models = models(requested) if product_kind in {'пила','угловая шлифмашина','пистолет для пены'} else set()
     variants = [requested, *[product_kind+' '+model for model in sorted(precise_models)], *sorted(precise_models)] if precise_models else []
+    if product_kind == "наконечник":
+        variants.extend([requested.split("(",1)[0].strip(), requested])
     if "хомут" in requested.lower():
         # Keep the original inch notation and mounting range intact.
         variants.append(requested.strip())
@@ -894,7 +896,8 @@ def _review_candidates(item: dict) -> list[dict]:
         if not candidate.get("name") or candidate.get("error"):
             continue
         from cable_identity import identity
-        if identity(item.get('requested_name')) and not identity(candidate.get('name')):
+        from product_identity import kind
+        if kind(item.get('requested_name')) == 'кабель' and identity(item.get('requested_name')) and not identity(candidate.get('name')):
             continue
         key = _candidate_key(candidate)
         if key not in seen:
@@ -943,7 +946,10 @@ def _review_delivery_date(value) -> str:
 
 def _hard_conflicts(requested: str, selected: dict) -> list[str]:
     from cable_identity import conflicts as cable_conflicts
-    conflicts = [*(selected.get("characteristic_conflicts") or []), *cable_conflicts(requested, selected.get('name'))]
+    from product_identity import kind
+    conflicts = list(selected.get("characteristic_conflicts") or [])
+    if kind(requested) == "кабель":
+        conflicts.extend(cable_conflicts(requested, selected.get("name")))
     from extinguisher_identity import conflicts as extinguisher_conflicts
     conflicts.extend(extinguisher_conflicts(requested, selected.get("name")))
     candidate_text = " ".join(str(selected.get(key) or "") for key in (
