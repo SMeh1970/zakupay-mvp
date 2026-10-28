@@ -2985,7 +2985,7 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
                 purchase_price = candidate.get("price")
                 offer_price = round(float(purchase_price) / pack_size * (1 + DEFAULT_MARKUP), 2) if purchase_price is not None else ""
                 candidate_options.append(
-                    f"<option value='{idx}' data-price='{offer_price}' data-price-missing='{'1' if purchase_price is None else '0'}' "
+                    f"<option value='{idx}' data-key='{html.escape(key,quote=True)}' data-price='{offer_price}' data-price-missing='{'1' if purchase_price is None else '0'}' "
                     f"data-supplier='{html.escape(str(candidate.get('supplier') or 'ВсеИнструменты.ру'), quote=True)}' data-price-note='{html.escape(_review_missing_price_note(candidate), quote=True)}' "
                     f"data-url='{html.escape(_review_source_url(candidate), quote=True)}' title='{html.escape(str(candidate.get('name') or ''), quote=True)}' "
                     f"data-details='{html.escape(details, quote=True)}' {'selected' if key == selected_key else ''}>"
@@ -3005,7 +3005,7 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
                 f"<td><label><input form='review-form' type='checkbox' name='include_{pos}' value='1' aria-label='Выбрать позицию {pos}' data-bulk-allowed='{'1' if selected_allowed(item) else '0'}' {checked} {disabled}> {pos}</label></td>"
                 f"<td>{html.escape(str(item.get('requested_name') or ''))}</td>"
                 f"<td><div class='inline-values' data-value-position='{pos}'></div>"
-                f"<details class='invoice-candidate'><summary>Наименование для счёта</summary><select form='review-form' class='candidate-select' data-position='{pos}' name='candidate_{pos}' title='{html.escape(str(selected.get('name') or ''), quote=True)}' {disabled}>{''.join(candidate_options)}</select>"
+                f"<details class='invoice-candidate' hidden><summary>Наименование для счёта</summary><select form='review-form' class='candidate-select' data-position='{pos}' name='candidate_{pos}' title='{html.escape(str(selected.get('name') or ''), quote=True)}' {disabled}>{''.join(candidate_options)}</select>"
                 f"{clarification_html}<a class='candidate-source' href='{html.escape(source_url, quote=True)}' target='_blank' rel='noopener noreferrer' {'' if source_url else 'hidden'}>{html.escape(str(selected.get('supplier') or 'ВсеИнструменты.ру'))} ↗</a>"
                 "</details>"
                 f"<details class='invoice-candidate'><summary>Сведения о подборе</summary>{html.escape(str(item.get('match_status') or '—'))} · "

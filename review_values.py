@@ -15,6 +15,17 @@ def assets(result, raw, request, job_id, nonce):
 
 
 CSS = """
+.supplier-quote{display:block!important;width:100%;text-align:left;background:#fff!important;color:#333!important;border:1px solid #ddd!important;padding:10px!important;border-radius:6px!important;font-weight:400!important}
+.supplier-quote strong,.supplier-quote small,.supplier-quote-name{display:block}
+.supplier-quote-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin:4px 0}
+.supplier-quote.chosen{border:2px solid #367348!important}
+.supplier-choice-dialog{width:min(700px,92vw);max-height:85vh;border:1px solid #ddd;border-radius:10px;padding:20px;color:#333;background:#fff}
+.supplier-choice-dialog::backdrop{background:#0006}
+.supplier-choice-header{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.supplier-choice-header h2{margin:0;font-size:19px}
+.supplier-choice-option{border-top:1px solid #ddd;padding:14px 0}
+.supplier-choice-option p{margin:5px 0;font-size:13px}
+.supplier-choice-error{color:#a00}
 .review-table .supplier-price{min-width:190px;vertical-align:top}
 .supplier-variant{padding:6px 0;border-bottom:1px solid #eee;font-size:12px}
 .supplier-price .matched{color:#367348}

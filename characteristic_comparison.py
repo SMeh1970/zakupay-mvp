@@ -2,7 +2,7 @@
 from datetime import date, datetime, timezone
 
 
-def build(item, views, enabled=lambda supplier: True, today=None):
+def build(item, views, enabled=lambda supplier: True, today=None, respect_row_exclusion=True):
     from supplier_comparison import feature_id, settings, lexical_tokens, norm
     today = today or datetime.now(timezone.utc).date()
     from product_characteristics import extract
@@ -54,7 +54,7 @@ def build(item, views, enabled=lambda supplier: True, today=None):
             passed = all(allowed(i) for i in ids) if field in {'Слово в наименовании', 'Нет слова из заявки', 'Проверка прайса'} else any(allowed(i) for i in ids)
             if not passed:
                 reasons.append('Не разрешено: ' + field)
-        if not view['enabled'] or not enabled(view['supplier']) or item.get('decision') == 'excluded':
+        if not view['enabled'] or not enabled(view['supplier']) or (respect_row_exclusion and item.get('decision') == 'excluded' and not settings(item).get('value_workflow')):
             reasons.append('Предложение, поставщик или позиция исключены')
         if not view['factor']:
             reasons.append('Нет коэффициента пересчёта единиц')

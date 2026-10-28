@@ -7,6 +7,67 @@
   let busy = false;
   const node = (tag, text, cls) => { const n = document.createElement(tag); n.textContent = text ?? ''; if(cls)n.className=cls; return n; };
   const money = value => Number(value).toLocaleString('ru-RU', {maximumFractionDigits:6});
+  let activeDialog=null, dialog=null, choiceError='';
+  function closeChoices() { if(dialog?.open)dialog.close();activeDialog=null; }
+  function showChoices(position,supplier) {
+    activeDialog={position,supplier};
+    choiceError='';
+    if(!dialog) {
+      dialog=node('dialog','','supplier-choice-dialog');
+      dialog.setAttribute('aria-label','Выбор товара поставщика');
+      dialog.addEventListener('close',()=>{activeDialog=null;});
+      document.body.append(dialog);
+    }
+    renderChoices();
+    if(!dialog.open)dialog.showModal();
+  }
+  function renderChoices() {
+    if(!activeDialog||!dialog)return;
+    const row=data.rows.find(r=>r.position===activeDialog.position);
+    if(!row){closeChoices();return;}
+    const supplier=activeDialog.supplier;
+    dialog.replaceChildren();
+    const header=node('div','','supplier-choice-header');header.append(node('h2',supplier));
+    const close=node('button','✕');close.type='button';close.setAttribute('aria-label','Закрыть выбор товара');close.onclick=closeChoices;header.append(close);dialog.append(header);
+    dialog.append(node('p',`${row.name} · ${money(row.quantity)} ${row.unit}`));
+    const choices=row.value_comparison.offers.filter(v=>v.supplier===supplier&&v.comparable).sort((a,b)=>a.unit_price-b.unit_price);
+    if(!choices.length)dialog.append(node('p','Нет товаров с разрешёнными характеристиками. Измените ✓/✕ в строке заявки.'));
+    const list=node('div','','supplier-choice-list');
+    for(const offer of choices) {
+      const line=node('article','','supplier-choice-option');line.append(node('strong',offer.name));
+      if(offer.sku)line.append(node('p',`Артикул: ${offer.sku}`));
+      line.append(node('p',`${money(offer.unit_price)} ₽ / ${row.unit} · исходная цена ${money(offer.price)} ₽ / ${offer.unit}`));
+      line.append(node('p',`Закупка: ${money(offer.quantity)} ${offer.unit} = ${money(offer.converted_quantity)} ${row.unit} · ${money(offer.total)} ₽`));
+      line.append(node('p',offer.availability));
+      const href=offer.product_url||offer.url;
+      if(href){const link=node('a','Карточка товара');link.href=href;link.target='_blank';link.rel='noopener noreferrer';line.append(link);}
+      if(offer.shortage>0)line.append(node('p',`Не хватает ${money(offer.shortage)} ${row.unit}`));
+      const choose=node('button',row.invoice?.key===offer.key&&row.invoice?.included?'Выбрано в счёт':'Выбрать в счёт');choose.type='button';
+      choose.disabled=busy||data.selection_read_only||offer.shortage>0||!offer.quantity;
+      choose.onclick=async()=>{if(await save({action:'value_select',position:row.position,key:offer.key}))closeChoices();};
+      line.append(choose);list.append(line);
+    }
+    dialog.append(list,node('p',data.selection_read_only?'Отправленный счёт доступен только для просмотра.':'Выбор товара изменяет строку счёта. Отправка выполняется отдельно.'));
+    const error=node('p',choiceError,'supplier-choice-error');error.setAttribute('role','alert');dialog.append(error);
+  }
+  function syncInvoice(position,force=false) {
+    if(data.selection_read_only)return;
+    const row=data.rows.find(r=>r.position===position), tr=document.querySelector(`[data-value-position="${position}"]`)?.closest('tr');
+    if(!row||!tr)return;
+    const select=tr.querySelector('.candidate-select'),invoice=row.invoice;
+    if(!invoice)return;
+    const currentKey=select?.selectedOptions[0]?.dataset.key||null;
+    if(!force&&currentKey===(invoice.key||null))return;
+    if(select) {
+      let option=Array.from(select.options).find(o=>invoice.key?o.dataset.key===invoice.key:o.value==='none');
+      if(!option&&invoice.key){option=node('option','Выбран в сравнительной таблице');option.value='current';option.dataset.key=invoice.key;select.append(option);}
+      select.value=option?.value||'none';
+    }
+    const price=tr.querySelector('.price'),quantity=tr.querySelector('.qty'),include=tr.querySelector('input[name^="include_"]');
+    if(price)price.value=invoice.key?invoice.price??'':'';
+    if(quantity)quantity.value=invoice.quantity??'';
+    if(include){include.checked=!!invoice.included;include.dataset.bulkAllowed=invoice.key?'1':'0';include.dispatchEvent(new Event('change',{bubbles:true}));}
+  }
   function inlineName(row) {
     const line=node('div','','value-panel');
     line.setAttribute('aria-label','Наименование с выбором значений позиции '+row.position);
@@ -90,36 +151,14 @@
         const comparison=row.value_comparison;
         const offers=comparison.offers.filter(v=>v.supplier===supplier.name && v.comparable)
           .sort((a,b)=>a.unit_price-b.unit_price);
-        const groups=new Map();
-        for(const offer of offers) {
-          const signature=JSON.stringify(offer.features.map(f=>[f.field,f.value]).sort());
-          if(!groups.has(signature))groups.set(signature,[]);
-          groups.get(signature).push(offer);
-        }
-        if(!offers.length)td.append(node('span','—'));
-        let index=0, more=null;
-        for(const variants of groups.values()) {
-          if(index++===10) {more=node('details');more.append(node('summary','Остальные варианты'));td.append(more);}
-          const offer=variants[0], block=node('div','','supplier-variant');
-          const minimum=(comparison.minima||[]).some(v=>v.key===offer.key);
-          block.append(node('strong',`${money(offer.unit_price)} ₽ / ${row.unit}`,minimum?'matched':''));
-          block.append(node('div',offer.name));
-          block.append(node('small',`${offer.availability} · закупка: ${money(offer.quantity)} ${offer.unit}`));
-          if(variants.length>1)block.append(node('small',` · предложений: ${variants.length}`));
-          if(minimum)block.append(node('div','Абсолютный минимум','matched'));
-          if(comparison.recommendation?.key===offer.key)block.append(node('div',`Рекомендуется · охват ${comparison.coverage[supplier.name]} поз.`, 'matched'));
-          (more||td).append(block);
-        }
-        const excluded=comparison.offers.filter(v=>v.supplier===supplier.name && !v.comparable);
-        if(excluded.length) {
-          const details=node('details');details.append(node('summary',`Вне расчёта: ${excluded.length}`));
-          for(const offer of excluded) {
-            details.append(node('div',offer.name));
-            details.append(node('small',offer.comparison_reasons.join(' · ')));
-            if(offer.comparison_reasons.some(r=>/дней|дата|Дата/.test(r)))details.append(node('div','Требует подтверждения наличия и стоимости'));
-          }
-          td.append(details);
-        }
+        const selected=offers.find(v=>row.invoice?.included&&row.invoice.key===v.key), offer=selected||offers[0];
+        const button=node('button','','supplier-quote'+(selected?' chosen':''));button.type='button';
+        button.setAttribute('aria-label',`Выбрать товар: ${supplier.name}, позиция ${row.position}`);
+        if(offer) {
+          button.append(node('strong',`${money(offer.unit_price)} ₽ / ${row.unit}`),node('span',offer.name,'supplier-quote-name'),node('small',`${offers.length} вариантов · Выбрать ›`));
+          if(selected)button.append(node('small','Выбрано в счёт','matched'));
+        } else button.append(node('span','Нет допустимых вариантов'),node('small','Посмотреть ›'));
+        button.onclick=()=>showChoices(row.position,supplier.name);td.append(button);
         anchor.closest('tr').append(td);
       }
     }
@@ -139,6 +178,8 @@
         section.append(node('div',best?`Абсолютный минимум: ${money(best.unit_price)} ₽ / ${row.unit} · ${(row.value_comparison.minima||[best]).map(v=>v.supplier+' · '+v.name).join('; ')}`:'Допустимых предложений с сопоставимой ценой нет','value-result'));
         const recommendation=row.value_comparison.recommendation;
         if(recommendation && best && recommendation.key!==best.key)section.append(node('div',`Рекомендуется: ${recommendation.supplier} · ${recommendation.name} · ${money(recommendation.unit_price)} ₽ / ${row.unit} · охват ${row.value_comparison.coverage[recommendation.supplier]} поз. (в пределах 3%)`,'value-result'));
+        const chosen=row.value_comparison.offers.find(v=>row.invoice?.included&&row.invoice.key===v.key);
+        section.append(node('div',chosen?`В счёт: ${chosen.supplier} · ${chosen.name}`:'Для счёта товар не выбран','value-result'));
         target.append(section);continue;
       }
       const panel = node('div', '', 'value-panel');
@@ -187,6 +228,7 @@
       }
       result.append(details);section.append(result);target.append(section);
     }
+    if(activeDialog)renderChoices();
   }
   async function save(payload) {
     if(busy || data.read_only)return;
@@ -196,8 +238,9 @@
       if(response.redirected || !response.headers.get('content-type')?.includes('application/json'))throw new Error('Обновите страницу и войдите заново.');
       const next=await response.json();if(!response.ok)throw new Error(next.detail || 'Не удалось сохранить решение');
       data=next;message.textContent='Решение сохранено. Минимум пересчитан.';
-    } catch(error) { message.textContent=error.message; }
-    finally {busy=false;render();}
+      syncInvoice(payload.position,payload.action==='value_select');return true;
+    } catch(error) { message.textContent=error.message;choiceError=error.message;return false; }
+    finally {busy=false;render();if(activeDialog)renderChoices();}
   }
   render();
 })();

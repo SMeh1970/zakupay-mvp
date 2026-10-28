@@ -304,7 +304,7 @@ class ComparisonRouteTests(unittest.TestCase):
         self.assertEqual(result,self.result)
         self.assertEqual(row['status'],'needs_review')
 
-    def test_value_panel_and_decision_reload_without_changing_invoice(self):
+    def test_value_panel_rejection_clears_draft_choice_and_survives_reload(self):
         data = self.data()
         feature = next(v for g in data['rows'][0]['value_comparison']['groups']
                        for v in g['values'] if v['value'] == '4 мм')
@@ -317,10 +317,29 @@ class ComparisonRouteTests(unittest.TestCase):
         with pipeline._connect() as conn:
             stored = conn.execute('SELECT result_json,status,invoice_number FROM automation_jobs WHERE id=?',(self.job,)).fetchone()
         item = json.loads(stored['result_json'])['items'][0]
-        item.pop('comparison'); item.pop('comparison_source')
-        self.assertEqual(item, self.result['items'][0])
+        self.assertIsNone(item['selected'])
+        self.assertFalse(item['operator_included'])
+        self.assertEqual(item['proposed_unit_price'],0)
+        self.assertEqual(item['quantity'],self.result['items'][0]['quantity'])
         self.assertEqual(stored['status'], 'needs_review')
         self.assertIsNone(stored['invoice_number'])
+
+    def test_value_choice_is_saved_and_sent_invoice_blocks_choice(self):
+        from datetime import datetime, timezone
+        offer=quote(price_date=datetime.now(timezone.utc).date().isoformat())
+        result=result_with(offer)
+        with pipeline._connect() as conn:
+            conn.execute('UPDATE automation_jobs SET result_json=? WHERE id=?',(json.dumps(result),self.job))
+        response=self.post(action='value_select',position=1,key=comparison.quote_key(offer))
+        self.assertEqual(response.status_code,200,response.text)
+        self.assertEqual(response.json()['rows'][0]['invoice']['key'],comparison.quote_key(offer))
+        self.assertTrue(self.data()['rows'][0]['invoice']['included'])
+        with pipeline._connect() as conn:
+            row=conn.execute('SELECT result_json,invoice_number FROM automation_jobs WHERE id=?',(self.job,)).fetchone()
+            sent=json.loads(row['result_json']);sent['live_offer_created']=True
+            conn.execute("UPDATE automation_jobs SET result_json=?,status='offer_created' WHERE id=?",(json.dumps(sent),self.job))
+        self.assertIsNotNone(row['invoice_number'])
+        self.assertEqual(self.post(action='value_select',position=1,key=comparison.quote_key(offer)).status_code,409)
 
     def test_review_embeds_value_controls_in_supplier_cell(self):
         response = self.client.get(f'/dashboard/automation/jobs/{self.job}/review')

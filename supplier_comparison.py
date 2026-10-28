@@ -350,6 +350,18 @@ def supplier_enabled(result, supplier):
 
 def selected_allowed(item):
     """Used by the invoice/procurement path, not just visual highlighting."""
+    if settings(item).get('value_workflow'):
+        candidate = item.get('selected')
+        if not candidate or item.get('comparison_supplier_disabled'):
+            return False
+        from characteristic_comparison import build
+        view = next((v for v in build(item, [offer_view(item,c) for c in candidates(item)])['offers']
+                     if v['key'] == quote_key(candidate) and v['comparable']), None)
+        source = item.get('comparison_source') or item
+        return bool(view and settings(item).get('value_selected_key') == view['key']
+                    and number(item.get('quantity')) == number(source.get('quantity'))
+                    and number(item.get('purchase_units')) == view['quantity']
+                    and number(item.get('pack_size')) == view['factor'])
     if not item.get("comparison"):
         return True
     if 'values' in settings(item) and set(settings(item)) <= {'request_signature', 'values'}:
@@ -384,11 +396,14 @@ def model(result, raw=None):
                 v["reasons"].append("Поставщик выключен")
         source = item.get("comparison_source") or item
         from characteristic_comparison import build
-        comparison = build(item, views, lambda name: supplier_enabled(result, name))
+        comparison = build(item, views, lambda name: supplier_enabled(result, name), respect_row_exclusion=False)
         rows.append(dict(position=item.get("position"), name=source.get("requested_name"), quantity=source.get("quantity"),
                          unit=source.get("unit"), offers=views, active=bool(item.get("comparison")),
                          value_comparison=comparison,
                          catalog_search=item.get("catalog_search"),
+                         invoice=dict(key=quote_key(item['selected']) if item.get('selected') else None,
+                                      included=item.get('decision') in {'approved','auto_ready'} and selection_valid,
+                                      price=item.get('proposed_unit_price'), quantity=item.get('quantity')),
                          rules=[dict(id=k, state=v) for k, v in (settings(item).get("features") or {}).items()]))
     coverage = {}
     for row in rows:
@@ -410,7 +425,7 @@ def model(result, raw=None):
                                         for identity, offers in variants.items()]
     return dict(revision=revision(raw) if raw is not None else None, order_name=result.get("order_name"),
                 order_id=result.get("order_id"), source_label=result.get("source_label") or "Закупай",
-                read_only=bool(result.get("live_offer_created")), rows=rows,
+                read_only=bool(result.get("live_offer_created")), selection_read_only=bool(result.get("live_offer_created")), rows=rows,
                 suppliers=[dict(name=n, enabled=supplier_enabled(result, n)) for n in sorted(names)],
                 mode=(result.get("comparison") or {}).get("mode", "sum"))
 
@@ -444,10 +459,34 @@ def apply_selection(item, candidate, result):
     item["comparison"]["applied_quantity_id"] = view["quantity_id"]
 
 
+def apply_value_selection(item, candidate, result):
+    from characteristic_comparison import build
+    from automation_pipeline import DEFAULT_MARKUP
+    from catalog_comparison import effective_quote
+    state = activate(item)
+    state['value_workflow'] = True
+    offers = build(item, [offer_view(item,c) for c in candidates(item)], lambda s: supplier_enabled(result,s))['offers']
+    view = next((v for v in offers if v['key'] == quote_key(candidate)), None)
+    if not view or not view['comparable']:
+        raise ValueError('Товар не соответствует разрешённым характеристикам или не имеет сопоставимой цены.')
+    if not view['quantity'] or view['quantity'] <= 0 or view['shortage'] is None or view['shortage'] > 0:
+        raise ValueError('Предложение не покрывает количество заявки.')
+    candidate = effective_quote(candidate,state,quote_key(candidate))
+    item.update(selected=copy.deepcopy(candidate), purchase_price=view['price'], purchase_units=view['quantity'],
+                pack_size=view['factor'], proposed_unit_price=round(view['unit_price']*(1+result.get('markup',DEFAULT_MARKUP)),2),
+                decision='approved', operator_included=True, selection_rule='operator_value_comparison',
+                match_status='подтверждено оператором', availability_status=view['availability'],
+                stock_confirmed=view['stock'] is not None and view['stock'] >= view['quantity'],
+                pickup_date=candidate.get('pickup_date'), courier_date=candidate.get('courier_date'))
+    state['value_selected_key'] = view['key']
+
+
 def reconcile(result):
     """Any disallowed selection is removed from commercial totals immediately."""
     for item in result.get("items") or []:
         if not item.get("comparison"):
+            continue
+        if settings(item).get('value_workflow') and not item.get('selected'):
             continue
         if 'values' in settings(item) and set(settings(item)) <= {'request_signature', 'values'}:
             continue
@@ -455,6 +494,9 @@ def reconcile(result):
         item["comparison_supplier_disabled"] = not supplier_enabled(result, str(selected.get("supplier") or "ВсеИнструменты.ру"))
         if not selected_allowed(item):
             item.update(decision="excluded", operator_included=False)
+            if settings(item).get('value_workflow'):
+                item.update(selected=None,purchase_price=None,proposed_unit_price=0,purchase_units=0)
+                settings(item).pop('value_selected_key',None)
 
 
 def preserve_comparison(new, old):
@@ -524,8 +566,20 @@ def mutate(result, payload, conn=None):
             if identifier not in known or decision not in {'accepted', 'rejected'}:
                 raise ValueError("Характеристика не найдена")
             state.setdefault('values', {})[identifier] = decision
-            # Value comparison does not rewrite procurement/invoice decisions.
+            if not result.get('live_offer_created'):
+                state['value_workflow'] = True
+                # Preserve a still-suitable existing choice; never substitute one.
+                if item.get('selected'):
+                    state.setdefault('value_selected_key',quote_key(item['selected']))
+                reconcile(result)
+                from automation_pipeline import _refresh_summary
+                _refresh_summary(result)
             return
+        elif action == 'value_select':
+            candidate = next((c for c in candidates(item) if quote_key(c) == payload.get('key')),None)
+            if candidate is None:
+                raise ValueError('Предложение не найдено')
+            apply_value_selection(item,candidate,result)
         elif action == "feature":
             identifier, decision = payload.get("feature"), payload.get("decision")
             if decision not in {"accepted", "rejected", "pending"} or not any(f["id"] == identifier for v in views for f in v["features"]):
@@ -673,13 +727,14 @@ def install_supplier_comparison(app):
             except ValueError as exc:
                 raise HTTPException(400, str(exc))
             invoice_number = row["invoice_number"]
-            if payload.get("action") == "select" and invoice_number is None:
+            if payload.get("action") in {"select", "value_select"} and invoice_number is None:
                 from automation_pipeline import INVOICE_NUMBER_START
                 last = _execute(conn, "SELECT MAX(invoice_number) AS maximum FROM automation_jobs").fetchone()
                 invoice_number = max(INVOICE_NUMBER_START, (last["maximum"] or INVOICE_NUMBER_START - 1) + 1)
                 result["invoice_number"] = invoice_number
             raw = json.dumps(result, ensure_ascii=False, allow_nan=False)
-            cursor = _execute(conn, "UPDATE automation_jobs SET result_json=?,status=?,invoice_number=?,updated_at=? WHERE id=? AND result_json=? AND status=?", (raw, row["status"] if payload.get("action") in {"prototype_state", "value"} else result["status"], invoice_number, datetime.now(timezone.utc).isoformat(), job_id, row["result_json"], row["status"]))
+            keep_status = payload.get('action') == 'prototype_state' or (payload.get('action') == 'value' and result.get('live_offer_created'))
+            cursor = _execute(conn, "UPDATE automation_jobs SET result_json=?,status=?,invoice_number=?,updated_at=? WHERE id=? AND result_json=? AND status=?", (raw, row["status"] if keep_status else result["status"], invoice_number, datetime.now(timezone.utc).isoformat(), job_id, row["result_json"], row["status"]))
             if cursor.rowcount != 1:
                 raise HTTPException(409, "Заявка изменена. Обновите страницу.")
         if payload.get("action") == "prototype_state":
