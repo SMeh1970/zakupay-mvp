@@ -130,7 +130,7 @@ def test_plain_name_words_have_controls_and_can_be_excluded():
     data=result(quote('a','Скотч малярный'))
     data['items'][0]['requested_name']='Скотч малярный'
     assert row(data)['minimum'] is not None
-    decide(data,'Наименование: малярный','малярный','rejected')
+    decide(data,'Тип ленты','Малярная','rejected')
     assert row(data)['minimum'] is None
 
 

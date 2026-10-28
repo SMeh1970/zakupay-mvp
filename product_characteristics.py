@@ -69,7 +69,7 @@ def extract(name):
         item = identity(text)
         for key, label in [("model", "Модель огнетушителя"), ("charging", "Тип исполнения"), ("classes", "Классы пожара")]:
             if item and item[key]:
-                pattern = {"model": r"ОП\s*[-–]?\s*\d+", "charging": r"\(\s*з\s*\)|/\s*з\b", "classes": r"[АA][ВB][СC][ЕE]"}[key]
+                pattern = {"model": r"ОП\s*[-–]?\s*\d+", "charging": r"\(\s*з\s*\)|/\s*з\b|\bзакачн\w*|(?<= )з\b", "classes": r"[АA][ВB][СC][ЕE]"}[key]
                 evidence = re.search(pattern, text, re.I)
                 add(label, item[key], None, evidence)
     if category == "Трубы":

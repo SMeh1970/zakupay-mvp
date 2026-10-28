@@ -232,13 +232,12 @@ class ComparisonLogicTests(unittest.TestCase):
             result=result_with(a)
             self.assertFalse(comparison.offer_view(result["items"][0],a)["eligible"])
 
-    def test_arbitrary_word_rule_matches_whole_word_only(self):
-        a=quote(name="Болт усиленный" )
+    def test_extra_title_words_do_not_create_mandatory_filters(self):
+        a=quote(name="Болт усиленный")
         result=result_with(a,name="Болт")
-        feature=next(f for f in comparison.offer_view(result["items"][0],a)["features"] if f["value"]=="усиленный")
-        comparison.mutate(result,dict(action="feature",position=1,feature=feature["id"],decision="rejected"))
-        b=quote("Б",name="Болт сверхусиленный")
-        self.assertFalse(any(f["state"]=="rejected" for f in comparison.offer_view(result["items"][0],b)["features"]))
+        features=comparison.offer_view(result["items"][0],a)["features"]
+        self.assertFalse(any(f['field'] in {'Слово в наименовании','Нет слова из заявки'} for f in features))
+        self.assertTrue(comparison.offer_view(result['items'][0],a)['eligible'])
 
     def test_sent_result_and_nonpositive_conversion_cannot_be_mutated(self):
         result=result_with(quote())
@@ -250,6 +249,27 @@ class ComparisonLogicTests(unittest.TestCase):
 
 
 class ComparisonRouteTests(unittest.TestCase):
+    def test_reopen_and_refresh_clear_legacy_invalid_price_and_include(self):
+        from datetime import datetime, timezone
+        bad=quote(name='Труба 89х2 мм',price_date=datetime.now(timezone.utc).date().isoformat())
+        result=result_with(bad)
+        result['items'][0].update(selected=bad,decision='approved',operator_included=True,proposed_unit_price=105)
+        order=dict(id=123,orderItems=[dict(id=1,goodName='Труба 89х4 мм',count=10,unit=dict(name='м'))])
+        with pipeline._connect() as conn:
+            conn.execute('UPDATE automation_jobs SET result_json=?,order_json=? WHERE id=?',(json.dumps(result),json.dumps(order),self.job))
+        for refresh in [False,True]:
+            if refresh:
+                with patch.object(pipeline,'build_vi_draft',return_value=copy.deepcopy(result)):
+                    response=self.client.post(f'/dashboard/automation/jobs/{self.job}/refresh',follow_redirects=False)
+                    self.assertEqual(response.status_code,303)
+            self.assertEqual(self.client.get(f'/dashboard/automation/jobs/{self.job}/review').status_code,200)
+            with pipeline._connect() as conn:
+                saved=json.loads(conn.execute('SELECT result_json FROM automation_jobs WHERE id=?',(self.job,)).fetchone()[0])['items'][0]
+            self.assertIsNone(saved['selected'])
+            self.assertEqual(saved['proposed_unit_price'],0)
+            self.assertFalse(saved['operator_included'])
+            self.assertEqual(saved['decision'],'excluded')
+
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory()
         self.patch=patch.multiple(pipeline,DB_PATH=os.path.join(self.tmp.name,"test.db"),DATABASE_URL="",_initialized_database_key=None)

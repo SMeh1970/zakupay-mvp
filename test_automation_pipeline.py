@@ -223,7 +223,7 @@ class PipelineTests(unittest.TestCase):
 
         def results(query, limit=8):
             if "Маркер" in query:
-                return [SupplierQuote(supplier="ВИ", name="Маркер черный 1 мм", price=100, stock=10)]
+                return [SupplierQuote(supplier="ВИ", name="Маркер черный 1 мм", price=100, stock=10, unit="шт", price_observed_at=pipeline.datetime.now(pipeline.timezone.utc).isoformat())]
             return [SupplierQuote(supplier="ВИ", name="Ковер 40x60 см", price=200, stock=10)]
 
         search.side_effect = results

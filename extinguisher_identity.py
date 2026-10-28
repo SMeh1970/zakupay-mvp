@@ -7,7 +7,7 @@ def identity(text):
     if not re.search(r'\bОГНЕТУШИТЕЛ\w*', text):
         return None
     model = re.search(r'(?<!\w)ОП\s*[-–]?\s*(\d+)(?!\d)', text)
-    charging = re.search(r'\(\s*З\s*\)|ОП\s*[-–]?\s*\d+\s*/\s*З\b', text)
+    charging = re.search(r'\bЗАКАЧН\w*|ОП\s*[-–]?\s*\d+\s+З(?!\w)|\(\s*З\s*\)|ОП\s*[-–]?\s*\d+\s*/\s*З\b', text)
     classes = re.search(r'(?<![А-ЯA-Z])([АA][ВB][СC][ЕE])(?![А-ЯA-Z])', text)
     return dict(model=('ОП-' + str(int(model[1]))) if model else None,
                 charging='Закачной' if charging else None,

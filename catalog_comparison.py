@@ -46,11 +46,17 @@ def records(name, candidate=None):
         raw = candidate["characteristics"]
     else:
         raw = extract(name)["attributes"]
+    from product_identity import kind, records as identity_records
+    identity = identity_records(name)
+    product_kind = kind(name)
+    typed_fields = {r["field"] for r in identity}
     result = []
     for a in raw:
         if not isinstance(a, dict) or not a.get("parameter"):
             continue
         field = ALIASES.get(a["parameter"], a["parameter"])
+        if field in typed_fields or (product_kind == "наконечник" and field in {"Марка кабеля", "Число жил", "Сечение жилы"}):
+            continue
         result.append(dict(field=field, value=label(a.get("value"), a.get("unit")),
             raw_value=a.get("value"), unit=a.get("unit"), evidence=str(a.get("evidence") or ""),
             origin=a.get("origin") or "name", ambiguous=bool(a.get("ambiguous") or a.get("needs_review"))))
@@ -60,6 +66,8 @@ def records(name, candidate=None):
         from supplier_comparison import attributes
         known = {r["field"] for r in result}
         for field, values in attributes(name).items():
+            if field in typed_fields or (product_kind in {"бита", "рулетка", "плоскогубцы", "очиститель пены", "монтажная пена", "гофрированная труба"} and field in {"Размер 1", "Размер 2", "Длина", "Ширина", "Толщина", "Наружный диаметр", "Толщина стенки"}):
+                continue
             if extract(name)['category'] == 'Кабели' and field in {'Размер 1', 'Размер 2', 'Длина', 'Ширина', 'Толщина'}:
                 continue
             field = ALIASES.get(field, field)
@@ -71,7 +79,7 @@ def records(name, candidate=None):
     if candidate.get("brand") and not any(r["field"] == "Бренд" for r in result):
         result.append(dict(field="Бренд", value=str(candidate["brand"]), raw_value=candidate["brand"],
             unit=None, evidence=str(candidate["brand"]), origin="supplier", ambiguous=False))
-    return result
+    return result + identity
 
 
 def without_evidence(name, attrs):

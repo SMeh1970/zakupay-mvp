@@ -561,7 +561,10 @@ def _search_variants(requested: str) -> list[str]:
     extinguisher_variants = extinguisher_queries(requested)
     if extinguisher_variants:
         return extinguisher_variants
-    variants = []
+    from product_identity import kind, models
+    product_kind = kind(requested)
+    precise_models = models(requested) if product_kind in {'пила','угловая шлифмашина','пистолет для пены'} else set()
+    variants = [requested, *[product_kind+' '+model for model in sorted(precise_models)], *sorted(precise_models)] if precise_models else []
     if "хомут" in requested.lower():
         # Keep the original inch notation and mounting range intact.
         variants.append(requested.strip())
@@ -955,8 +958,13 @@ def _hard_conflicts(requested: str, selected: dict) -> list[str]:
             + ", найдено "
             + "/".join(sorted(candidate_types))
         )
-    requested_ids = _identifiers(requested)
-    candidate_ids = _identifiers(candidate_text)
+    from product_identity import kind, models
+    requested_kind, offered_kind = kind(requested), kind(selected.get('name'))
+    if requested_kind and offered_kind and requested_kind != offered_kind:
+        conflicts.append('не совпадает тип товара')
+    typed_model = requested_kind in {'пила','угловая шлифмашина','пистолет для пены'} and models(requested)
+    requested_ids = models(requested) if typed_model else _identifiers(requested)
+    candidate_ids = models(selected.get('name')) if typed_model else _identifiers(candidate_text)
     relation = _range_relation(requested, candidate_text)
     if (_features(requested) & _negative_features(candidate_text)
             or _negative_features(requested) & _features(candidate_text)):
@@ -2869,6 +2877,17 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
         if not result:
             raise HTTPException(status_code=409, detail=row["error"] or "Расчёт ещё не готов")
         result = invoice_result_for_job(result, job_id)
+        if not result.get('live_offer_created') and row['status'] not in {'processing','offer_created'}:
+            from supplier_comparison import reconcile
+            before_reconcile = json.dumps(result, ensure_ascii=False)
+            reconcile(result)
+            if json.dumps(result, ensure_ascii=False) != before_reconcile:
+                _refresh_summary(result)
+                cleaned = json.dumps(result, ensure_ascii=False)
+                with _lock, _connect() as conn:
+                    _execute(conn, "UPDATE automation_jobs SET result_json=? WHERE id=? AND result_json=? AND status != 'processing'", (cleaned,job_id,row['result_json']))
+                row = dict(row)
+                row['result_json'] = cleaned
         is_manual = row["event_type"] == "manual_order"
         request_heading = (
             f"Ручная заявка {html.escape(str(result.get('manual_reference') or 'без номера'))}"

@@ -196,14 +196,14 @@ def offer_view(item, candidate):
     found_records = records(candidate.get("name"), candidate)
     required, found = {}, {}
     for record in required_records:
-        required.setdefault(record["field"], []).append(record["value"])
+        required.setdefault(record["field"], []).append(norm(record["value"]) if record["field"] == "Бренд" else record["value"])
     for record in found_records:
         found.setdefault(record["field"], []).append(record)
     features = []
     for field in sorted(set(required) | set(found)):
         for record in found.get(field) or [dict(value="Не указано", unit=None, ambiguous=True, evidence="", origin="missing")]:
-            value = record["value"]
-            ambiguous = record["ambiguous"] or any(r["ambiguous"] for r in required_records if r["field"] == field)
+            value = norm(record["value"]) if field == "Бренд" else record["value"]
+            ambiguous = (record["ambiguous"] and field in required) or any(r["ambiguous"] for r in required_records if r["field"] == field)
             identifier = feature_id(field, value)
             if ambiguous:
                 identifier += ":" + feature_id("Предложение", key + fingerprint(original_candidate))
@@ -213,8 +213,10 @@ def offer_view(item, candidate):
                 state=decisions.get(identifier, "pending" if differs else "matched"), differs=differs,
                 unit=record.get("unit"), evidence=record.get("evidence"), origin=record.get("origin"),
                 ambiguous=ambiguous, offer_specific=ambiguous))
-    if candidate.get("catalog_prepared") and (candidate.get("category") == "Не определена" or
-            "Категория требует ручной проверки" in candidate.get("match", {}).get("missing", [])):
+    from product_identity import kind
+    typed_kind = kind(source.get("requested_name"))
+    if not typed_kind or (candidate.get("catalog_prepared") and not kind(candidate.get("name")) and (candidate.get("category") == "Не определена" or
+            "Категория требует ручной проверки" in candidate.get("match", {}).get("missing", []))):
         identifier = feature_id("Проверка категории", key + fingerprint(original_candidate))
         features.append(dict(id=identifier, field="Проверка категории", value=candidate.get("category") or "Не определена",
             required=[], state=decisions.get(identifier, "pending"), differs=True, ambiguous=True, offer_specific=True,
@@ -224,28 +226,14 @@ def offer_view(item, candidate):
     # this offer so accepting a warning cannot approve a different product.
     for warning in dict.fromkeys([*(candidate.get("characteristic_conflicts") or []),
                                   *(candidate.get("characteristic_missing") or [])]):
+        if typed_kind and warning in {'Категория требует ручной проверки', 'Обязательные характеристики не выделены', 'Категория заявки не определена'}:
+            continue
         identifier = feature_id("Проверка прайса", key + fingerprint(original_candidate) + warning)
         features.append(dict(id=identifier, field="Проверка прайса", value=warning,
             required=[], state=decisions.get(identifier, "pending"), differs=True,
             ambiguous=True, offer_specific=True, evidence=warning, origin="parser"))
-    # A fallback for arbitrary products/parameters. Whole tokens avoid substring
-    # exclusions (e.g. 20 must not reject 200). Unknown text remains reviewable.
-    wanted = set(lexical_tokens(source.get("requested_name"), required_records))
-    offered_words = lexical_tokens(candidate.get("name"), found_records)
-    from cable_identity import identity as cable_identity
-    cable_request = cable_identity(source.get('requested_name'))
-    from extinguisher_identity import identity as extinguisher_identity
-    typed_identity = cable_request or extinguisher_identity(source.get("requested_name"))
-    extras = [] if typed_identity else [t for t in dict.fromkeys(offered_words) if t not in wanted and len(t) > 1]
-    for token in extras:
-        field, value = "Слово в наименовании", token
-        identifier = feature_id(field, value)
-        features.append(dict(id=identifier, field=field, value=value, required=[],
-                             state=decisions.get(identifier, "pending"), differs=True))
-    for token in sorted(wanted - set(offered_words)):
-        identifier = feature_id("Нет слова из заявки", token)
-        features.append(dict(id=identifier, field="Нет слова из заявки", value=token, required=[token],
-                             state=decisions.get(identifier, "pending"), differs=True))
+    # Product identity and typed parameters define correspondence. Extra brand
+    # words and word order never create new mandatory characteristics.
     factor, factor_source = conversion(item, candidate)
     price, need = number(candidate.get("price")), number(source.get("quantity"))
     supplier_unit = str(candidate.get("unit") or "не указана")
@@ -364,13 +352,17 @@ def selected_allowed(item):
                     and number(item.get('quantity')) == number(source.get('quantity'))
                     and number(item.get('purchase_units')) == view['quantity']
                     and number(item.get('pack_size')) == view['factor'])
-    if not item.get("comparison"):
-        from cable_identity import identity, conflicts
-        if item.get('selected') and identity(item.get('requested_name')) and conflicts(item.get('requested_name'),item['selected'].get('name')):
+    # A deliberately approved manual invoice line may have a sale price without
+    # supplier quote metadata. It is not an automatic supplier minimum.
+    if not item.get('comparison') and item.get('decision') == 'approved' and item.get('selected') and number(item.get('proposed_unit_price')) and all(not c.get('unit') and not c.get('source_type') and not c.get('price_date') and not c.get('price_observed_at') for c in candidates(item)):
+        return True
+    if not item.get("comparison") or ('values' in settings(item) and set(settings(item)) <= {'request_signature', 'values'}):
+        candidate = item.get('selected')
+        if not candidate or item.get('comparison_supplier_disabled'):
             return False
-        return True
-    if 'values' in settings(item) and set(settings(item)) <= {'request_signature', 'values'}:
-        return True
+        from characteristic_comparison import build
+        return any(v['key'] == quote_key(candidate) and v['comparable']
+                   for v in build(item, [offer_view(item,c) for c in candidates(item)], respect_row_exclusion=False)['offers'])
     candidate = item.get("selected")
     if not candidate or item.get("comparison_supplier_disabled"):
         return False
@@ -406,11 +398,11 @@ def model(result, raw=None):
                          unit=source.get("unit"), offers=views, active=bool(item.get("comparison")),
                          value_comparison=comparison,
                          catalog_search=item.get("catalog_search"),
-                         invoice=dict(key=quote_key(item['selected']) if item.get('selected') else None,
+                         invoice=dict(key=quote_key(item['selected']) if item.get('selected') and (selection_valid or result.get('live_offer_created')) else None,
                                       included=item.get('decision') in {'approved','auto_ready'} and (selection_valid or bool(result.get('live_offer_created'))),
                                       previous_name=(item.get('selected') or {}).get('name'),
                                       requires_review=bool(item.get('selected') and not selection_valid and not result.get('live_offer_created')),
-                                      price=item.get('proposed_unit_price'), quantity=item.get('quantity')),
+                                      price=item.get('proposed_unit_price') if selection_valid or result.get('live_offer_created') else None, quantity=item.get('quantity')),
                          rules=[dict(id=k, state=v) for k, v in (settings(item).get("features") or {}).items()]))
     coverage = {}
     for row in rows:
@@ -489,20 +481,22 @@ def apply_value_selection(item, candidate, result):
 
 
 def reconcile(result):
-    """Any disallowed selection is removed from commercial totals immediately."""
+    """One commercial invariant on reopen, re-search and filter changes."""
+    if result.get('live_offer_created'):
+        return
     for item in result.get("items") or []:
-        if not item.get("comparison"):
+        selected = item.get('selected')
+        if not selected and not item.get('proposed_unit_price') and not item.get('operator_included') and item.get('decision') not in {'approved','auto_ready'}:
             continue
-        if settings(item).get('value_workflow') and not item.get('selected'):
-            continue
-        if 'values' in settings(item) and set(settings(item)) <= {'request_signature', 'values'}:
-            continue
-        selected = item.get("selected") or {}
-        item["comparison_supplier_disabled"] = not supplier_enabled(result, str(selected.get("supplier") or "ВсеИнструменты.ру"))
-        if not selected_allowed(item):
-            item.update(decision="excluded", operator_included=False)
-            if settings(item).get('value_workflow'):
-                item.update(selected=None,purchase_price=None,proposed_unit_price=0,purchase_units=0)
+        disabled = bool(selected) and not supplier_enabled(result, str(selected.get('supplier') or 'ВсеИнструменты.ру'))
+        if disabled or 'comparison_supplier_disabled' in item:
+            item['comparison_supplier_disabled'] = disabled
+        if not selected or not selected_allowed(item):
+            if selected:
+                item['previous_invalid_selection'] = copy.deepcopy(selected)
+            item.update(selected=None, purchase_price=None, proposed_unit_price=0,
+                        purchase_units=0, pack_size=0, decision='excluded', operator_included=False)
+            if item.get('comparison'):
                 settings(item).pop('value_selected_key',None)
 
 

@@ -5,27 +5,12 @@ from datetime import date, datetime, timezone
 def build(item, views, enabled=lambda supplier: True, today=None, respect_row_exclusion=True):
     from supplier_comparison import feature_id, settings, lexical_tokens, norm
     today = today or datetime.now(timezone.utc).date()
-    from product_characteristics import extract
+    from product_identity import kind
     source = item.get('comparison_source') or item
-    category = extract(source.get('requested_name') or '')['category']
+    requested_kind = kind(source.get('requested_name'))
     all_views = views
-    if category != 'Не определена':
-        views = [v for v in views if extract(v['name'])['category'] == category]
-    covered = {norm(value) for view in views for feature in view['features'] for value in feature['required']}
-    words = sorted({w for w in lexical_tokens(source.get('requested_name')) if len(w)>1 and w not in covered})
-    enriched = []
-    for view in views:
-        features = list(view['features'])
-        offered = set(lexical_tokens(view['name']))
-        for word in words:
-            field = 'Наименование: '+word
-            present = word in offered
-            value = word if present else 'Не указано'
-            identifier = feature_id(field, value) + ('' if present else ':'+feature_id('Предложение', view['key']))
-            features.append(dict(id=identifier,field=field,value=value,required=[word],
-                differs=not present,ambiguous=not present,offer_specific=not present))
-        enriched.append({**view,'features':features})
-    views = enriched
+    if requested_kind:
+        views = [v for v in views if kind(v['name']) == requested_kind]
     decisions = {**settings(item).get('features', {}), **settings(item).get('values', {})}
     groups = {}
     for view in views:
