@@ -5,6 +5,31 @@
   const embedded = !!data.embedded;
   const actionUrl = data.action_url || location.pathname+'/action';
   let busy = false;
+  const pendingValues = new Map();
+  function valueCheck(row, group, value) {
+    const input=node('input');input.type='checkbox';input.disabled=busy||data.read_only;
+    input.setAttribute('aria-label','Выделить: '+group.field+' '+value.value);
+    const ids=value.ids||[value.id];
+    input.checked=ids.every(id=>pendingValues.get(row.position)?.has(id));
+    input.onchange=()=>{if(!pendingValues.has(row.position))pendingValues.set(row.position,new Set());
+      const values=pendingValues.get(row.position);for(const id of ids){if(input.checked)values.add(id);else values.delete(id);}};
+    return input;
+  }
+  function batchControls(row) {
+    const bar=node('div','','value-batch');
+    bar.style.cssText='display:flex;gap:4px;margin-bottom:4px';
+    for(const [symbol,text,decision] of [['✕','Исключить выбранные','rejected'],['✓','Разрешить выбранные','accepted']]) {
+      const button=node('button',symbol);button.type='button';button.disabled=busy||data.read_only;
+      button.title=text+' значения и пересчитать предложения';
+      button.setAttribute('aria-label',text);
+      button.style.cssText='display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;min-width:26px;padding:0;margin:0;border:1px solid #cbd5ce;border-radius:4px;background:#fff;color:'+ (decision==='rejected'?'#9b4039':'#28633d')+';font:16px/1 Arial';
+      button.onclick=async()=>{const features=[...(pendingValues.get(row.position)||[])];
+        if(!features.length){document.getElementById('message').textContent='Сначала выделите значения.';return;}
+        if(await save({action:'value',position:row.position,features,decision})){pendingValues.delete(row.position);render();}};
+      bar.append(button);
+    }
+    return bar;
+  }
   const node = (tag, text, cls) => { const n = document.createElement(tag); n.textContent = text ?? ''; if(cls)n.className=cls; return n; };
   const money = value => Number(value).toLocaleString('ru-RU', {maximumFractionDigits:6});
   let activeDialog=null, dialog=null, choiceError='';
@@ -32,6 +57,12 @@
     dialog.append(node('p',`${row.name} · ${money(row.quantity)} ${row.unit} · только разрешённые варианты`,'supplier-choice-subtitle'));
     const choices=row.value_comparison.offers.filter(v=>v.supplier===supplier&&v.comparable).sort((a,b)=>a.unit_price-b.unit_price);
     if(!choices.length)dialog.append(node('p','Нет товаров с разрешёнными характеристиками. Измените ✓/✕ в строке заявки.'));
+    if(!choices.length) {
+      const excluded=row.value_comparison.offers.filter(v=>v.supplier===supplier&&!v.comparable);
+      const reasons=[...new Set(excluded.flatMap(v=>v.comparison_reasons))];
+      if(reasons.length)dialog.append(node('p','Причины: '+reasons.join('; '),'supplier-choice-detail'));
+      if(excluded.some(v=>v.comparison_reasons.some(r=>/дней|дата|Дата/.test(r))))dialog.append(node('p','Сохранённые цены требуют подтверждения наличия и стоимости.','supplier-choice-detail'));
+    }
     const list=node('div','','supplier-choice-list');
     for(const offer of choices) {
       const line=node('article','','supplier-choice-option'),description=node('div','','supplier-choice-description');description.append(node('div',offer.name,'supplier-choice-name'));
@@ -44,7 +75,9 @@
       if(offer.shortage>0)description.append(node('p',`Не хватает ${money(offer.shortage)} ${row.unit}`));
       const choose=node('button',row.invoice?.key===offer.key&&row.invoice?.included?'Выбрано в счёт':'Выбрать в счёт');choose.type='button';
       choose.disabled=busy||data.selection_read_only||offer.shortage>0||!offer.quantity;
-      choose.onclick=async()=>{if(await save({action:'value_select',position:row.position,key:offer.key}))closeChoices();};
+      const selected=row.invoice?.key===offer.key&&row.invoice?.included;
+      if(selected){choose.textContent='✓ Выбрано в счёт';line.style.background='#e7f5ec';choose.disabled=true;}
+      choose.onclick=()=>save({action:'value_select',position:row.position,key:offer.key});
       line.append(description,choose);list.append(line);
     }
     dialog.append(list,node('p',data.selection_read_only?'Отправленный счёт доступен только для просмотра.':'Выбор применяется к строке счёта. Разрешённые характеристики сохраняются.','supplier-choice-footer'));
@@ -78,12 +111,7 @@
       const span=node('span','','value-chip '+(allowed?'matched':value.state));
       span.title=group.field+': '+value.value+(value.offer_label?' · '+value.offer_label:'');
       span.append(node('span',label??value.value));
-      for(const [symbol,decision,title] of [['✓','accepted','Разрешить'],['✕','rejected','Исключить']]) {
-        const b=node('button',symbol);b.type='button';b.disabled=busy||data.read_only;
-        b.setAttribute('aria-label',title+': '+group.field+' '+value.value);
-        b.setAttribute('aria-pressed',String(decision==='accepted'?allowed:value.state==='rejected'));
-        b.onclick=()=>save({action:'value',position:row.position,feature:value.id,decision});span.append(b);
-      }
+      span.prepend(valueCheck(row,group,value));
       return span;
     };
     for(const group of row.value_comparison.groups) {
@@ -118,14 +146,13 @@
       for(const [label,items] of byValue) {
         if(items.length===1)block.append(chip(group,items[0],label+(items[0].offer_label?' · '+items[0].offer_label:'')));
         else {
-          const offers=node('details');offers.append(node('summary',`${label} · предложений: ${items.length}`));
-          for(const value of items)offers.append(chip(group,value,value.offer_label||label));
-          block.append(offers);
+          block.append(chip(group,{...items[0],ids:items.map(v=>v.id),offer_label:'',
+            state:items.every(v=>['matched','accepted'].includes(v.state))?'accepted':items.every(v=>v.state==='rejected')?'rejected':'pending'},label));
         }
       }
       extra.append(block);
     }
-    if(extra.children.length>1)line.append(extra);
+    // Keep the request cell compact; supplier details belong in the chooser.
     return line;
   }
   function supplierColumns() {
@@ -171,15 +198,10 @@
       if(!target)continue;
       if(embedded)target.replaceChildren();
       const section = node('div', '', 'value-position');
+      section.append(batchControls(row));
       if(!embedded)section.append(node('h2', `${row.position}. ${row.name}`));
       if(embedded) {
         section.append(inlineName(row));
-        const best=row.value_comparison.minimum;
-        section.append(node('div',best?`Абсолютный минимум: ${money(best.unit_price)} ₽ / ${row.unit} · ${(row.value_comparison.minima||[best]).map(v=>v.supplier+' · '+v.name).join('; ')}`:'Допустимых предложений с сопоставимой ценой нет','value-result'));
-        const recommendation=row.value_comparison.recommendation;
-        if(recommendation && best && recommendation.key!==best.key)section.append(node('div',`Рекомендуется: ${recommendation.supplier} · ${recommendation.name} · ${money(recommendation.unit_price)} ₽ / ${row.unit} · охват ${row.value_comparison.coverage[recommendation.supplier]} поз. (в пределах 3%)`,'value-result'));
-        const chosen=row.value_comparison.offers.find(v=>row.invoice?.included&&row.invoice.key===v.key);
-        section.append(node('div',chosen?`В счёт: ${chosen.supplier} · ${chosen.name}`:'Для счёта товар не выбран','value-result'));
         target.append(section);continue;
       }
       const panel = node('div', '', 'value-panel');
@@ -191,14 +213,7 @@
           const chip = node('span', '', 'value-chip ' + (allowed ? 'matched' : value.state));
           const labelValue=value.value + (value.offer_label ? ' · '+value.offer_label : '');
           chip.append(node('span', labelValue));
-          for(const [symbol, decision, label] of [['✓','accepted','Разрешить'],['✕','rejected','Исключить']]) {
-            const button = node('button', symbol);
-            button.type='button'; button.disabled=busy || data.read_only;
-            button.setAttribute('aria-label', `${label}: ${group.field} ${labelValue}`);
-            button.setAttribute('aria-pressed', String(decision === 'accepted' ? allowed : value.state === 'rejected'));
-            button.onclick=()=>save({action:'value',position:row.position,feature:value.id,decision});
-            chip.append(button);
-          }
+          chip.prepend(valueCheck(row,group,value));
           if(value.ambiguous)chip.title='Неизвестное или неоднозначное значение; решение относится к этому предложению';
           block.append(chip);
         }
@@ -243,4 +258,5 @@
     finally {busy=false;render();if(activeDialog)renderChoices();}
   }
   render();
+  for(const row of data.rows)syncInvoice(row.position);
 })();

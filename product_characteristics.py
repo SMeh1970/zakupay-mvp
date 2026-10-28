@@ -8,6 +8,7 @@ import re
 VERSION = "2026-10-22.4"
 N = r"\d+(?:[.,]\d+)?"
 CATEGORIES = [
+    (r"\bогнетушител\w*", "Огнетушители"),
     (r"\bкабел\w*", "Кабели"),
     (r"фанер", "Фанера"), (r"зенков", "Зенковки"),
     (r"труба\s+профильн", "Профильные трубы"),
@@ -29,7 +30,7 @@ CATEGORIES = [
 
 # These categories currently have dedicated dimensional/identity extraction.
 # Recognising a noun or colour alone in other categories is not confirmation.
-MATCH_CATEGORIES = {"Кабели", "Фанера", "Зенковки", "Трубы", "Профильные трубы", "Крепёж", "Сверла", "Отводы", "Переходы", "Тройники"}
+MATCH_CATEGORIES = {"Огнетушители", "Кабели", "Фанера", "Зенковки", "Трубы", "Профильные трубы", "Крепёж", "Сверла", "Отводы", "Переходы", "Тройники"}
 
 
 def extract(name):
@@ -63,6 +64,14 @@ def extract(name):
     m = re.search(r"\b(?:сталь\b|ст\.)\s*([0-9А-Яа-яA-Za-z]+)", text, re.I)
     if m:
         add("Марка стали", m[1].upper(), None, m)
+    if category == "Огнетушители":
+        from extinguisher_identity import identity
+        item = identity(text)
+        for key, label in [("model", "Модель огнетушителя"), ("charging", "Тип исполнения"), ("classes", "Классы пожара")]:
+            if item and item[key]:
+                pattern = {"model": r"ОП\s*[-–]?\s*\d+", "charging": r"\(\s*з\s*\)|/\s*з\b", "classes": r"[АA][ВB][СC][ЕE]"}[key]
+                evidence = re.search(pattern, text, re.I)
+                add(label, item[key], None, evidence)
     if category == "Трубы":
         m = re.search(r"(" + N + r")\s*[хx×*]\s*(" + N + r")\s*(мм|см)?", text, re.I)
         if m:

@@ -321,6 +321,7 @@ class KrepKompAdapter(SupplierAdapter):
     _catalog: list[dict[str, Any]] | None = None
     _catalog_expires_at = 0.0
     _catalog_loading = False
+    _catalog_error: str | None = None
     _catalog_warm_lock = threading.Lock()
     _storage_ids: list[str] | None = None
     _storage_ids_expires_at = 0.0
@@ -351,6 +352,9 @@ class KrepKompAdapter(SupplierAdapter):
             "price_field": "Цена",
             "price_semantics": "Индивидуальная цена ООО «АВИОР»",
             "storages": sorted(self.storage_names),
+            "catalog_ready": type(self).catalog_ready(),
+            "catalog_loading": type(self)._catalog_loading,
+            "catalog_error": type(self)._catalog_error,
             "read_only": True,
         })
         return data
@@ -491,10 +495,9 @@ class KrepKompAdapter(SupplierAdapter):
         def warm():
             try:
                 self._catalog_items()
-            except Exception:
-                # Interactive VI matching must continue even if this optional
-                # catalogue cannot be warmed at the moment.
-                pass
+                cls._catalog_error = None
+            except Exception as exc:
+                cls._catalog_error = type(exc).__name__
             finally:
                 cls._catalog_loading = False
 
@@ -594,6 +597,10 @@ class KrepKompAdapter(SupplierAdapter):
                 key=lambda item: self._rank(query, item),
                 reverse=True,
             )
+            from cable_identity import identity, conflicts
+            if identity(query):
+                ranked = [item for item in ranked if identity(item.get('ПолноеНаименование') or item.get('Наименование'))]
+                ranked.sort(key=lambda item: bool(conflicts(query,item.get('ПолноеНаименование') or item.get('Наименование'))))
             query_tokens = set(self._norm(query).split())
             candidates = [
                 item for item in ranked

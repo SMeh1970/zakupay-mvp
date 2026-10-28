@@ -234,7 +234,9 @@ def offer_view(item, candidate):
     offered_words = lexical_tokens(candidate.get("name"), found_records)
     from cable_identity import identity as cable_identity
     cable_request = cable_identity(source.get('requested_name'))
-    extras = [] if cable_request else [t for t in dict.fromkeys(offered_words) if t not in wanted and len(t) > 1]
+    from extinguisher_identity import identity as extinguisher_identity
+    typed_identity = cable_request or extinguisher_identity(source.get("requested_name"))
+    extras = [] if typed_identity else [t for t in dict.fromkeys(offered_words) if t not in wanted and len(t) > 1]
     for token in extras:
         field, value = "Слово в наименовании", token
         identifier = feature_id(field, value)
@@ -363,6 +365,9 @@ def selected_allowed(item):
                     and number(item.get('purchase_units')) == view['quantity']
                     and number(item.get('pack_size')) == view['factor'])
     if not item.get("comparison"):
+        from cable_identity import identity, conflicts
+        if item.get('selected') and identity(item.get('requested_name')) and conflicts(item.get('requested_name'),item['selected'].get('name')):
+            return False
         return True
     if 'values' in settings(item) and set(settings(item)) <= {'request_signature', 'values'}:
         return True
@@ -402,7 +407,9 @@ def model(result, raw=None):
                          value_comparison=comparison,
                          catalog_search=item.get("catalog_search"),
                          invoice=dict(key=quote_key(item['selected']) if item.get('selected') else None,
-                                      included=item.get('decision') in {'approved','auto_ready'} and selection_valid,
+                                      included=item.get('decision') in {'approved','auto_ready'} and (selection_valid or bool(result.get('live_offer_created'))),
+                                      previous_name=(item.get('selected') or {}).get('name'),
+                                      requires_review=bool(item.get('selected') and not selection_valid and not result.get('live_offer_created')),
                                       price=item.get('proposed_unit_price'), quantity=item.get('quantity')),
                          rules=[dict(id=k, state=v) for k, v in (settings(item).get("features") or {}).items()]))
     coverage = {}
@@ -562,10 +569,11 @@ def mutate(result, payload, conn=None):
         if action == "value":
             from characteristic_comparison import build
             identifier, decision = payload.get("feature"), payload.get("decision")
+            identifiers = payload.get('features', [identifier])
             known = {v['id'] for g in build(item, views)['groups'] for v in g['values']}
-            if identifier not in known or decision not in {'accepted', 'rejected'}:
+            if not isinstance(identifiers, list) or not identifiers or len(identifiers) > 1000 or any(not isinstance(i, str) or i not in known for i in identifiers) or decision not in {'accepted', 'rejected'}:
                 raise ValueError("Характеристика не найдена")
-            state.setdefault('values', {})[identifier] = decision
+            state.setdefault('values', {}).update({i: decision for i in identifiers})
             if not result.get('live_offer_created'):
                 state['value_workflow'] = True
                 # Preserve a still-suitable existing choice; never substitute one.

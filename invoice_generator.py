@@ -119,7 +119,7 @@ def build_invoice_xlsx(draft: dict) -> bytes:
         raise ValueError('Выберите ставку НДС для счёта')
     all_rows = draft.get("items") or []
     from supplier_comparison import selected_allowed
-    rows = [row for row in all_rows if row.get("decision") in {"auto_ready", "approved"} and selected_allowed(row)]
+    rows = [row for row in all_rows if row.get("decision") in {"auto_ready", "approved"} and (draft.get('live_offer_created') or selected_allowed(row))]
     if not rows:
         raise ValueError("Счёт нельзя сформировать: нет ни одной подтверждённой позиции")
     customer_text = _customer_text(draft.get("customer"))

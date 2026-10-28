@@ -201,8 +201,8 @@ class CustomerWorkflowTests(unittest.TestCase):
         with pipeline._connect() as conn:
             conn.execute("UPDATE automation_jobs SET result_json=? WHERE id=?", (json.dumps(result), self.job_id))
         response = self.client.get(f"/dashboard/automation/jobs/{self.job_id}/review")
-        self.assertIn("<option value='0' data-price='42.0' selected>", response.text)
-        self.assertIn("<option value='1' data-price='105.0' >", response.text)
+        self.assertRegex(response.text, r"<option value='0'[^>]* data-price='42.0'[^>]* selected>")
+        self.assertRegex(response.text, r"<option value='1'[^>]* data-price='105.0'[^>]*>")
         response = self.client.post(f"/dashboard/automation/jobs/{self.job_id}/review", data={
             "candidate_1": "1", "quantity_1": "2", "price_1": "105", "include_1": "1",
         }, follow_redirects=False)

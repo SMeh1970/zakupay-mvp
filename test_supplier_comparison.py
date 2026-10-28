@@ -348,7 +348,7 @@ class ComparisonRouteTests(unittest.TestCase):
         self.assertIn('Наименование для счёта', response.text)
         for title in ('Статус подбора', 'Замена', 'Наличие', 'Срок', 'Решение'):
             self.assertNotIn('<th>'+title+'</th>', response.text)
-        self.assertIn('Сведения о подборе', response.text)
+        self.assertNotIn('<summary>Сведения о подборе</summary>', response.text)
         data = json.loads(re.search(r'id="comparison-data">(.*?)</script>', response.text, re.S)[1])
         self.assertTrue(data['embedded'])
         self.assertEqual(data['action_url'], self.url+'/action')

@@ -39,6 +39,20 @@ def test_forged_ineligible_choice_cannot_bypass_filter():
         mutate(result,dict(action='value_select',position=1,key=quote_key(b)))
 
 
+def test_batch_filter_changes_all_values_with_one_reconciliation():
+    result=data()
+    values=[v['id'] for g in model(result)['rows'][0]['value_comparison']['groups']
+            if g['field']=='Толщина стенки' for v in g['values']]
+    mutate(result,dict(action='value',position=1,features=values,decision='accepted'))
+    assert model(result)['rows'][0]['value_comparison']['minimum']['supplier']=='Б'
+    mutate(result,dict(action='value',position=1,features=values,decision='rejected'))
+    assert model(result)['rows'][0]['value_comparison']['minimum'] is None
+    before=copy.deepcopy(result['items'][0]['comparison']['values'])
+    with pytest.raises(ValueError):
+        mutate(result,dict(action='value',position=1,features=[values[0],'forged'],decision='accepted'))
+    assert result['items'][0]['comparison']['values']==before
+
+
 def test_pack_rounding_keeps_requested_quantity_and_price_basis():
     result=data();item=result['items'][0];item.update(unit='шт',quantity=12)
     offer=item['candidates'][0];offer.update(unit='упак',pack_quantity=10,price=500)

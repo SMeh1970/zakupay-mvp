@@ -60,8 +60,10 @@ def build(item, views, enabled=lambda supplier: True, today=None, respect_row_ex
             reasons.append('Нет коэффициента пересчёта единиц')
         if not view['pricing_ready'] or view['currency'] != 'RUB':
             reasons.append('Нет сопоставимой цены в рублях с известными условиями НДС')
-        if view['unit_price'] is None or view['unit_price'] <= 0:
+        if view['price'] is None or view['price'] <= 0:
             reasons.append('Нет положительной цены')
+        elif view['unit_price'] is None:
+            reasons.append('Цена есть, но не пересчитана: единица поставщика ' + str(view['unit']))
         try:
             age = (today - date.fromisoformat(str(view['source_date'])[:10])).days
             if not 0 <= age <= 30:
