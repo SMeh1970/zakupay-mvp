@@ -960,6 +960,8 @@ def _hard_conflicts(requested: str, selected: dict) -> list[str]:
         )
     from product_identity import kind, models
     requested_kind, offered_kind = kind(requested), kind(selected.get('name'))
+    if requested_kind and not offered_kind:
+        conflicts.append('не подтверждён тип товара')
     if requested_kind and offered_kind and requested_kind != offered_kind:
         conflicts.append('не совпадает тип товара')
     typed_model = requested_kind in {'пила','угловая шлифмашина','пистолет для пены'} and models(requested)
