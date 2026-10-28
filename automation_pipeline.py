@@ -553,6 +553,10 @@ def _norm_keep_decimals(text: str) -> str:
 
 def _search_variants(requested: str) -> list[str]:
     """Search exact identifiers first, then progressively broader text variants."""
+    from cable_identity import queries as cable_queries
+    cable_variants = cable_queries(requested)
+    if cable_variants:
+        return list(dict.fromkeys([*cable_variants, requested]))
     variants = []
     if "хомут" in requested.lower():
         # Keep the original inch notation and mounting range intact.
@@ -691,7 +695,9 @@ def _search_candidates(suppliers, requested: str, time_budget_seconds: float | N
                 seen.add(key)
                 quotes.append(quote)
                 if not quote.error:
-                    supplier_found += 1
+                    from cable_identity import identity as cable_identity, conflicts as cable_conflicts
+                    if not cable_identity(requested) or not cable_conflicts(requested, quote.name):
+                        supplier_found += 1
             # A relevant API page already provides enough alternatives for
             # scoring. Avoid issuing every synonym/inflection query needlessly.
             # Do not stop after a generic first page for fasteners: it can
@@ -748,7 +754,9 @@ def _purchase_label(candidate: dict, requested_unit: str) -> str:
     )
     pack_size = _candidate_pack_size(candidate, requested_unit)
     if pack_size > 1:
-        price_basis = f"за упаковку {pack_size} шт."
+        from cable_identity import reel_length
+        price_basis = (f"за бухту {pack_size:g} м" if reel_length(candidate.get('name'), candidate.get('unit'), requested_unit)
+                       else f"за упаковку {pack_size} шт.")
     else:
         supplier_unit = str(candidate.get("unit") or requested_unit or "ед.").strip()
         price_basis = f"за 1 {supplier_unit}"
@@ -762,6 +770,10 @@ def _purchase_label(candidate: dict, requested_unit: str) -> str:
 
 
 def _candidate_pack_size(candidate: dict, requested_unit: str) -> int:
+    from cable_identity import reel_length
+    length = reel_length(candidate.get('name'), candidate.get('unit'), requested_unit)
+    if length:
+        return length
     if candidate.get("source_type") in {"price_list", "own_catalog"} and _norm(candidate.get("unit")) in {"шт", "штука", "штук", "штуки", "ед"}:
         return 1
     if _norm(requested_unit) in {"шт", "штука", "штук", "штуки", "ед"} and candidate.get("pack_quantity"):
@@ -781,6 +793,9 @@ def _price_unit_conflict(candidate: dict, requested_unit: str) -> str | None:
     requested = normalized_unit(requested_unit)
     supplied = normalized_unit(candidate.get("unit"))
     if requested and supplied and requested != supplied:
+        from cable_identity import reel_length
+        if reel_length(candidate.get('name'), candidate.get('unit'), requested_unit):
+            return None
         if requested == "шт" and supplied == "упак" and _candidate_pack_size(candidate, requested_unit) > 1:
             return None
         return f"не совпадает единица цены: {candidate.get('unit')} вместо {requested_unit}"
@@ -868,6 +883,9 @@ def _review_candidates(item: dict) -> list[dict]:
                       *(item.get("rejected_candidates") or []), item.get("selected") or {}]:
         if not candidate.get("name") or candidate.get("error"):
             continue
+        from cable_identity import identity
+        if identity(item.get('requested_name')) and not identity(candidate.get('name')):
+            continue
         key = _candidate_key(candidate)
         if key not in seen:
             result.append(candidate)
@@ -914,7 +932,8 @@ def _review_delivery_date(value) -> str:
 
 
 def _hard_conflicts(requested: str, selected: dict) -> list[str]:
-    conflicts = list(selected.get("characteristic_conflicts") or [])
+    from cable_identity import conflicts as cable_conflicts
+    conflicts = [*(selected.get("characteristic_conflicts") or []), *cable_conflicts(requested, selected.get('name'))]
     candidate_text = " ".join(str(selected.get(key) or "") for key in (
         "name", "article", "sku", "technical_specifications", "breadcrumbs"
     ))

@@ -8,6 +8,7 @@ import re
 VERSION = "2026-10-22.4"
 N = r"\d+(?:[.,]\d+)?"
 CATEGORIES = [
+    (r"\bкабел\w*", "Кабели"),
     (r"фанер", "Фанера"), (r"зенков", "Зенковки"),
     (r"труба\s+профильн", "Профильные трубы"),
     (r"\bтруб[аы]\b", "Трубы"), (r"\bсверл", "Сверла"),
@@ -28,7 +29,7 @@ CATEGORIES = [
 
 # These categories currently have dedicated dimensional/identity extraction.
 # Recognising a noun or colour alone in other categories is not confirmation.
-MATCH_CATEGORIES = {"Фанера", "Зенковки", "Трубы", "Профильные трубы", "Крепёж", "Сверла", "Отводы", "Переходы", "Тройники"}
+MATCH_CATEGORIES = {"Кабели", "Фанера", "Зенковки", "Трубы", "Профильные трубы", "Крепёж", "Сверла", "Отводы", "Переходы", "Тройники"}
 
 
 def extract(name):
@@ -67,6 +68,14 @@ def extract(name):
         if m:
             size("Наружный диаметр", m, 1, 3)
             size("Толщина стенки", m, 2, 3)
+    elif category == "Кабели":
+        from cable_identity import identity
+        cable = identity(text)
+        if cable['mark']:
+            add('Марка кабеля', cable['mark'], None, cable['mark_evidence'])
+        if cable['cores'] is not None:
+            add('Число жил', cable['cores'], None, cable['size_evidence'])
+            add('Сечение жилы', cable['section'], 'мм²', cable['size_evidence'])
     elif category == "Профильные трубы":
         m = re.search(r"(" + N + r")\s*[хx×*]\s*(" + N + r")\s*[хx×*]\s*(" + N + r")\s*(мм|см)?", text, re.I)
         if m:

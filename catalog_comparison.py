@@ -60,6 +60,8 @@ def records(name, candidate=None):
         from supplier_comparison import attributes
         known = {r["field"] for r in result}
         for field, values in attributes(name).items():
+            if extract(name)['category'] == 'Кабели' and field in {'Размер 1', 'Размер 2', 'Длина', 'Ширина', 'Толщина'}:
+                continue
             field = ALIASES.get(field, field)
             if field == "Диаметр" and "Наружный диаметр" in known:
                 continue

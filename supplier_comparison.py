@@ -163,6 +163,10 @@ def conversion(item, candidate):
     if requested and supplied == requested:
         # Name may mention a pack, but a price explicitly per piece is per piece.
         return 1.0, "Одинаковые единицы"
+    from cable_identity import reel_length
+    length = reel_length(candidate.get('name'), candidate.get('unit'), source.get('unit'))
+    if length:
+        return length, 'Длина кабеля в бухте'
     if requested == "шт" and supplied == "упак":
         pack = _candidate_pack_size(candidate, source.get("unit") or "")
         if pack > 1:
@@ -228,7 +232,9 @@ def offer_view(item, candidate):
     # exclusions (e.g. 20 must not reject 200). Unknown text remains reviewable.
     wanted = set(lexical_tokens(source.get("requested_name"), required_records))
     offered_words = lexical_tokens(candidate.get("name"), found_records)
-    extras = [t for t in dict.fromkeys(offered_words) if t not in wanted and len(t) > 1]
+    from cable_identity import identity as cable_identity
+    cable_request = cable_identity(source.get('requested_name'))
+    extras = [] if cable_request else [t for t in dict.fromkeys(offered_words) if t not in wanted and len(t) > 1]
     for token in extras:
         field, value = "Слово в наименовании", token
         identifier = feature_id(field, value)
