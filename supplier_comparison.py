@@ -61,7 +61,7 @@ def attributes(name):
     def add(field, value):
         values.setdefault(field, set()).add(str(value))
 
-    dims = re.search(r"(?<!\d)(" + N + r")\s*[xх×*]\s*(" + N + r")(?:\s*[xх×*]\s*(" + N + r"))?\s*(мм|см|м)?", text, re.I)
+    dims = re.search(r"(?<!\d)(" + N + r")\s*[xх×*]\s*(" + N + r")(?:\s*[xх×*]\s*(" + N + r"))?\s*(?:(мм|см|м)\b)?", text, re.I)
     if dims:
         factor = {"см": 10, "м": 1000}.get((dims[4] or "").lower(), 1)
         nums = [number(dims[i]) * factor for i in (1, 2, 3) if dims[i]]
@@ -105,7 +105,7 @@ def quote_key(candidate):
     return _candidate_key(candidate)
 
 
-def lexical_tokens(name):
+def lexical_tokens(name, records=None):
     """Don't ask twice about a dimension already represented by a typed field."""
     text = str(name or "")
     patterns = [
@@ -123,6 +123,9 @@ def lexical_tokens(name):
     ]
     for pattern in patterns:
         text = re.sub(pattern, " ", text, flags=re.I)
+    if records is not None:
+        from catalog_comparison import without_evidence
+        text = without_evidence(text, records)
     return re.findall(r"[\w]+(?:[./+-][\w]+)*", norm(text))
 
 
@@ -223,8 +226,8 @@ def offer_view(item, candidate):
             ambiguous=True, offer_specific=True, evidence=warning, origin="parser"))
     # A fallback for arbitrary products/parameters. Whole tokens avoid substring
     # exclusions (e.g. 20 must not reject 200). Unknown text remains reviewable.
-    wanted = set(lexical_tokens(without_evidence(source.get("requested_name"), required_records)))
-    offered_words = lexical_tokens(without_evidence(candidate.get("name"), found_records))
+    wanted = set(lexical_tokens(source.get("requested_name"), required_records))
+    offered_words = lexical_tokens(candidate.get("name"), found_records)
     extras = [t for t in dict.fromkeys(offered_words) if t not in wanted and len(t) > 1]
     for token in extras:
         field, value = "Слово в наименовании", token

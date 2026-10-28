@@ -148,3 +148,18 @@ def test_equal_minima_and_coverage_recommendation_with_three_percent_boundary():
     decide(data,'Толщина стенки','4 мм','rejected')
     assert row(data)['minima']==[]
     assert row(data)['recommendation'] is None
+
+
+def test_dimension_unit_does_not_consume_start_of_metal_word():
+    from supplier_comparison import attributes
+    assert attributes('Саморез 4,2х75 металл')['Размер 1']==['4.2 мм']
+    assert attributes('Саморез 4,2х75 металл')['Размер 2']==['75 мм']
+
+
+def test_complete_decimal_dimensions_do_not_leave_false_missing_words():
+    from supplier_comparison import offer_view
+    item=dict(requested_name='Саморез 4,2х75 мм оцинкованный',quantity=105,unit='шт')
+    candidate=quote('a','Саморез 4.2х75 мм оцинкованный',100)
+    candidate['unit']='шт'
+    features=offer_view(item,candidate)['features']
+    assert not [f for f in features if f['field']=='Нет слова из заявки']
