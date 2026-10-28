@@ -2988,16 +2988,14 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
                 f"<td><div class='inline-values' data-value-position='{pos}'></div>"
                 f"<details class='invoice-candidate'><summary>Наименование для счёта</summary><select form='review-form' class='candidate-select' data-position='{pos}' name='candidate_{pos}' title='{html.escape(str(selected.get('name') or ''), quote=True)}' {disabled}>{''.join(candidate_options)}</select>"
                 f"{clarification_html}<a class='candidate-source' href='{html.escape(source_url, quote=True)}' target='_blank' rel='noopener noreferrer' {'' if source_url else 'hidden'}>{html.escape(str(selected.get('supplier') or 'ВсеИнструменты.ру'))} ↗</a>"
-                "</details></td>"
+                "</details>"
+                f"<details class='invoice-candidate'><summary>Сведения о подборе</summary>{html.escape(str(item.get('match_status') or '—'))} · "
+                f"{html.escape(', '.join(item.get('replacement_details') or []) or 'Без замены')} · "
+                f"{html.escape(str(item.get('availability_status') or 'Наличие не подтверждено'))} · "
+                f"{html.escape(_review_delivery_date(item.get('courier_date') or item.get('pickup_date')))}</details></td>"
                 f"<td><input form='review-form' class='qty' name='quantity_{pos}' type='number' step='0.001' value='{html.escape(str(item.get('quantity') or ''))}' {disabled}> {html.escape(str(item.get('unit') or ''))}</td>"
                 f"<td><input form='review-form' id='price-{pos}' class='price' name='price_{pos}' type='number' step='0.01' placeholder='{'Нет цены' if missing_price else ''}' value='{html.escape(str(item.get('proposed_unit_price') or ''))}' {disabled}>"
                 f"<small class='price-note' {'' if missing_price else 'hidden'}>{html.escape(_review_missing_price_note(selected))}</small></td>"
-                f"<td>{html.escape(str(item.get('match_status') or '—'))}<br><small>поиск: {html.escape(str(item.get('search_elapsed_seconds') or '—'))} сек."
-                f"{' · лимит времени' if item.get('search_timed_out') else ''}</small></td>"
-                f"<td>{html.escape(', '.join(item.get('replacement_details') or []) or 'нет')}</td>"
-                f"<td>{html.escape(str(item.get('availability_status') or '—'))}</td>"
-                f"<td title='{html.escape(str(item.get('courier_date') or item.get('pickup_date') or ''), quote=True)}'>{html.escape(_review_delivery_date(item.get('courier_date') or item.get('pickup_date')))}</td>"
-                f"<td>{'В счёте' if _included(item) else 'Исключено'}</td>"
                 "</tr>"
             )
         customer = normalize_customer(result.get("customer"))
@@ -3108,9 +3106,9 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
                 f"{navigation_notice}{sent_notice}{seller_controls}{customer_form}{top_controls}{search_report}"
                 f"<style>{review_value_css}</style><p id='message' role='status'></p>"
                 f"<form id='review-form' method='post' action='/dashboard/automation/jobs/{job_id}/review'></form>"
-                "<table class='review-table' id='review-table'><colgroup><col style='width:76px'><col style='width:22%'><col><col style='width:80px'><col style='width:100px'><col style='width:110px'><col style='width:80px'><col style='width:145px'><col style='width:92px'><col style='width:90px'></colgroup>"
+                "<table class='review-table' id='review-table'><colgroup><col style='width:76px'><col style='width:260px'><col style='width:420px'><col style='width:80px'><col style='width:100px'></colgroup>"
                 "<tr><th>№</th><th>Заявка</th><th>Подбор поставщика<br><small>(закупочная цена)</small></th><th>Кол-во</th><th>Наша цена<br><small>за единицу заявки (+5%)</small></th>"
-                "<th>Статус подбора</th><th>Замена</th><th>Наличие</th><th>Срок</th><th>Решение</th></tr>"
+                "</tr>"
                 + "".join(table_rows) + "</table>" + save_control + invoice_link + offer_link
                 + f"<p><a href='/dashboard/prices/match-order/{job_id}'>Подобрать по характеристикам из прайсов</a> · <a href='/dashboard/automation/jobs/{job_id}/catalog-sale'>Сохранить успешную продажу в наш каталог</a> · <a href='/dashboard/prices'>Прайсы</a> · <a href='/dashboard/catalog'>Наш каталог</a> · <a href='/dashboard/automation/jobs/{job_id}/tiles'>Подобрать керамогранит с доставкой</a> · <a href='/dashboard/sniper?job_id={job_id}'>Найти поставщиков через Sniper</a></p>"
                 + value_assets

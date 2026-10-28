@@ -11,6 +11,7 @@
     const line=node('div','','value-panel');
     line.setAttribute('aria-label','Наименование с выбором значений позиции '+row.position);
     const source=row.name || '', placements=[], used=new Set();
+    const checks=group=>['Слово в наименовании','Нет слова из заявки','Проверка прайса','Проверка категории','Проверка соответствия'].includes(group.field);
     const chip=(group,value,label)=>{
       const allowed=['matched','accepted'].includes(value.state);
       const span=node('span','','value-chip '+(allowed?'matched':value.state));
@@ -39,16 +40,31 @@
     let cursor=0;
     for(const p of placements.sort((a,b)=>a.start-b.start)) {
       line.append(document.createTextNode(source.slice(cursor,p.start)),chip(p.group,p.feature,p.text));
-      for(const alternative of p.group.values)if(alternative.id!==p.feature.id) {
+      for(const alternative of p.group.values)if(!checks(p.group) && alternative.id!==p.feature.id && !alternative.ambiguous && alternative.value!=='Не указано' && !alternative.offer_label) {
         line.append(document.createTextNode(' / '),chip(p.group,alternative,alternative.value.replace(/\s+(мм|см|м|кг|г|л|мл|°)$/u,'')));
       }
       cursor=p.end;
     }
     line.append(document.createTextNode(source.slice(cursor)));
-    for(const group of row.value_comparison.groups)if(!used.has(group)) {
-      line.append(document.createTextNode(' '));
-      for(const value of group.values)line.append(chip(group,value));
+    const extra=node('details','','value-extra');
+    extra.append(node('summary','Другие характеристики и неизвестные значения'));
+    for(const group of row.value_comparison.groups) {
+      const values=group.values.filter(v=>!used.has(group)||checks(group)||v.ambiguous||v.value==='Не указано'||v.offer_label);
+      if(!values.length)continue;
+      const block=node('div','','value-group-details');block.append(node('b',group.field+': '));
+      const byValue=new Map();
+      for(const value of values) {if(!byValue.has(value.value))byValue.set(value.value,[]);byValue.get(value.value).push(value);}
+      for(const [label,items] of byValue) {
+        if(items.length===1)block.append(chip(group,items[0],label+(items[0].offer_label?' · '+items[0].offer_label:'')));
+        else {
+          const offers=node('details');offers.append(node('summary',`${label} · предложений: ${items.length}`));
+          for(const value of items)offers.append(chip(group,value,value.offer_label||label));
+          block.append(offers);
+        }
+      }
+      extra.append(block);
     }
+    if(extra.children.length>1)line.append(extra);
     return line;
   }
   function supplierColumns() {
@@ -59,7 +75,8 @@
     if(columns) {
       columns.children[1].style.width='260px';
       columns.children[2].style.width='420px';
-      table.style.width=(1453+220*data.suppliers.length)+'px';
+      table.style.width=(936+220*data.suppliers.length)+'px';
+      table.style.minWidth=table.style.width;
       table.style.maxWidth='none';
     }
     for(const supplier of data.suppliers) {
