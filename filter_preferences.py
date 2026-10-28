@@ -23,6 +23,11 @@ def load_preferences(conn, execute, username):
 
 
 def install_preferences(app, connect, execute, username):
+    @app.get(URL + "/filters")
+    async def filters_page():
+        # Browser navigation (including returning from login) must not save settings.
+        return RedirectResponse(URL, status_code=303)
+
     @app.post(URL + "/filters")
     async def update_filters(request: Request):
         form = await request.form()
