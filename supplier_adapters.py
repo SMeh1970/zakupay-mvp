@@ -5,6 +5,7 @@ import os
 import re
 import threading
 import time
+from functools import lru_cache
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
 from typing import Any
@@ -371,15 +372,18 @@ class KrepKompAdapter(SupplierAdapter):
         value = value.replace("×", "x").replace("х", "x")
         return " ".join(re.findall(r"[a-zа-я0-9]+", value))
 
+    @staticmethod
+    @lru_cache(maxsize=65536)
+    def _indexed_item(name, full_name, article, category):
+        text = KrepKompAdapter._norm(' '.join((name, full_name, article, category)))
+        return text, frozenset(text.split()), KrepKompAdapter._norm(article)
+
     @classmethod
     def _rank(cls, query: str, item: dict[str, Any]) -> tuple[int, float, str]:
         q = cls._norm(query)
-        text = cls._norm(" ".join(str(item.get(k) or "") for k in (
-            "Наименование", "ПолноеНаименование", "Артикул", "Категория"
-        )))
-        article = cls._norm(item.get("Артикул") or "")
+        text, text_tokens, article = cls._indexed_item(*(str(item.get(k) or '') for k in (
+            'Наименование', 'ПолноеНаименование', 'Артикул', 'Категория')))
         q_tokens = set(q.split())
-        text_tokens = set(text.split())
         overlap = len(q_tokens & text_tokens) / max(len(q_tokens), 1)
         exact_article = bool(article and article in q)
         phrase = bool(q and q in text)

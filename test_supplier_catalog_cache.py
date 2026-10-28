@@ -21,6 +21,16 @@ def test_adapter_restores_catalogue_and_does_not_download_again():
         api.assert_not_called()
 
 
+def test_catalogue_text_index_is_reused_without_changing_rank():
+    KrepKompAdapter._indexed_item.cache_clear()
+    item={'Наименование':'Кабель КГ 3х4', 'Артикул':'кг34'}
+    first=KrepKompAdapter._rank('кабель кг 3х4',item)
+    before=KrepKompAdapter._indexed_item.cache_info()
+    assert KrepKompAdapter._rank('кабель кг 3х4',item)==first
+    after=KrepKompAdapter._indexed_item.cache_info()
+    assert after.misses==before.misses and after.hits==before.hits+1
+
+
 def test_cache_failure_does_not_disable_supplier_and_expiry_starts_after_download():
     adapter = KrepKompAdapter()
     payload = {'data':[{'Код':'x'}], 'meta':{'last_page':1}}
