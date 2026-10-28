@@ -55,7 +55,15 @@
     const table=document.getElementById('review-table');
     if(!embedded || !table)return;
     table.querySelectorAll('[data-supplier-column]').forEach(n=>n.remove());
+    const columns=table.querySelector('colgroup');
+    if(columns) {
+      columns.children[1].style.width='260px';
+      columns.children[2].style.width='420px';
+      table.style.width=(1453+220*data.suppliers.length)+'px';
+      table.style.maxWidth='none';
+    }
     for(const supplier of data.suppliers) {
+      if(columns) {const col=node('col');col.style.width='220px';col.dataset.supplierColumn='1';columns.append(col);}
       const th=node('th',supplier.name,'supplier-price');th.dataset.supplierColumn='1';
       table.rows[0].append(th);
       for(const row of data.rows) {

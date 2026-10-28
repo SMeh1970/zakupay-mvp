@@ -9,12 +9,14 @@ function data(alternative=false) {
   return {embedded:true,read_only:false,csrf:'csrf',revision:'r1',suppliers:['А','Б','В'].map(name=>({name})),rows:[{position:1,name:'Труба 4 мм',unit:'шт',value_comparison:{groups:[{field:'Размер',values:[feature]}],minimum:a,minima:[a,b],recommendation:alternative?c:a,coverage:{А:1,Б:1,В:2},offers:alternative?[a,b,c]:[a,b,{...c,comparable:false,comparison_reasons:['Не разрешено: Размер']}]} }]};
 }
 (async()=>{
-  const dom=new JSDOM(`<p id="message"></p><table id="review-table"><tr><th>Позиция</th></tr><tr><td><div data-value-position="1"></div></td></tr></table><script id="comparison-data" type="application/json">${JSON.stringify(data())}</script>`,{runScripts:'outside-only',url:'https://example.test/review'});
+  const dom=new JSDOM(`<p id="message"></p><table id="review-table"><colgroup>${'<col>'.repeat(10)}</colgroup><tr><th>Позиция</th></tr><tr><td><div data-value-position="1"></div></td></tr></table><script id="comparison-data" type="application/json">${JSON.stringify(data())}</script>`,{runScripts:'outside-only',url:'https://example.test/review'});
   let calls=0;
   dom.window.fetch=async()=>{calls++;return {ok:true,redirected:false,headers:{get:()=> 'application/json'},json:async()=>data(true)}};
   dom.window.eval(fs.readFileSync(__dirname+'/comparison_assets/values.js','utf8'));
   const doc=dom.window.document;
   assert.equal(doc.querySelectorAll('th[data-supplier-column]').length,3);
+  assert.equal(doc.querySelectorAll('col[data-supplier-column]').length,3);
+  assert.equal(doc.querySelector('col[data-supplier-column]').style.width,'220px');
   assert.equal(doc.querySelectorAll('td[data-supplier-column]').length,3);
   assert.match(doc.querySelector('[data-value-position]').textContent,/А · Труба a; Б · Труба b/);
   assert.match(doc.querySelectorAll('td[data-supplier-column]')[2].textContent,/Вне расчёта/);
