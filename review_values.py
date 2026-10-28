@@ -19,12 +19,22 @@ CSS = """
 .supplier-quote strong,.supplier-quote small,.supplier-quote-name{display:block}
 .supplier-quote-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin:4px 0}
 .supplier-quote.chosen{border:2px solid #367348!important}
-.supplier-choice-dialog{width:min(700px,92vw);max-height:85vh;border:1px solid #ddd;border-radius:10px;padding:20px;color:#333;background:#fff}
+.supplier-choice-dialog{width:min(900px,92vw);max-height:85vh;border:1px solid #dbe2dd;border-radius:14px;padding:28px;color:#24312b;background:#fff;font:16px/1.45 Arial,sans-serif}
 .supplier-choice-dialog::backdrop{background:#0006}
 .supplier-choice-header{display:flex;align-items:center;justify-content:space-between;gap:12px}
-.supplier-choice-header h2{margin:0;font-size:19px}
-.supplier-choice-option{border-top:1px solid #ddd;padding:14px 0}
-.supplier-choice-option p{margin:5px 0;font-size:13px}
+.supplier-choice-header h2{margin:0;font-size:22px;font-weight:500}
+.supplier-choice-header button{background:#f3f6f4;color:#24312b;padding:8px 12px;font-weight:400}
+.supplier-choice-subtitle{color:#65736a;margin:8px 0 16px;font-size:14px}
+.supplier-choice-option{border-top:1px solid #dbe2dd;padding:22px 0;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:18px;align-items:center}
+.supplier-choice-option p{margin:6px 0}
+.supplier-choice-name{font-size:17px}
+.supplier-choice-price{font-size:21px;font-weight:500}
+.supplier-choice-detail{font-size:14px;color:#65736a}
+.supplier-choice-option>button{align-self:center;white-space:nowrap;font-size:16px;padding:12px 18px;font-weight:400}
+.supplier-choice-description{min-width:0;overflow-wrap:anywhere}
+.supplier-choice-description a{font-size:13px}
+.supplier-choice-footer{border-top:1px solid #dbe2dd;padding-top:14px;margin:0;font-size:14px;color:#65736a}
+@media(max-width:600px){.supplier-choice-dialog{padding:18px}.supplier-choice-option{grid-template-columns:1fr}.supplier-choice-option>button{justify-self:start}}
 .supplier-choice-error{color:#a00}
 .review-table .supplier-price{min-width:190px;vertical-align:top}
 .supplier-variant{padding:6px 0;border-bottom:1px solid #eee;font-size:12px}

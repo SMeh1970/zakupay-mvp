@@ -29,25 +29,25 @@
     dialog.replaceChildren();
     const header=node('div','','supplier-choice-header');header.append(node('h2',supplier));
     const close=node('button','✕');close.type='button';close.setAttribute('aria-label','Закрыть выбор товара');close.onclick=closeChoices;header.append(close);dialog.append(header);
-    dialog.append(node('p',`${row.name} · ${money(row.quantity)} ${row.unit}`));
+    dialog.append(node('p',`${row.name} · ${money(row.quantity)} ${row.unit} · только разрешённые варианты`,'supplier-choice-subtitle'));
     const choices=row.value_comparison.offers.filter(v=>v.supplier===supplier&&v.comparable).sort((a,b)=>a.unit_price-b.unit_price);
     if(!choices.length)dialog.append(node('p','Нет товаров с разрешёнными характеристиками. Измените ✓/✕ в строке заявки.'));
     const list=node('div','','supplier-choice-list');
     for(const offer of choices) {
-      const line=node('article','','supplier-choice-option');line.append(node('strong',offer.name));
-      if(offer.sku)line.append(node('p',`Артикул: ${offer.sku}`));
-      line.append(node('p',`${money(offer.unit_price)} ₽ / ${row.unit} · исходная цена ${money(offer.price)} ₽ / ${offer.unit}`));
-      line.append(node('p',`Закупка: ${money(offer.quantity)} ${offer.unit} = ${money(offer.converted_quantity)} ${row.unit} · ${money(offer.total)} ₽`));
-      line.append(node('p',offer.availability));
+      const line=node('article','','supplier-choice-option'),description=node('div','','supplier-choice-description');description.append(node('div',offer.name,'supplier-choice-name'));
+      const priceBasis=offer.factor>1?` · ${money(offer.factor)} ${row.unit} = ${money(offer.price)} ₽ / ${offer.unit}`:'';
+      description.append(node('p',`${money(offer.unit_price)} ₽ / ${row.unit}${priceBasis}`,'supplier-choice-price'));
+      description.append(node('p',`Для ${money(row.quantity)} ${row.unit}: ${money(offer.quantity)} ${offer.unit} = ${money(offer.converted_quantity)} ${row.unit} · ${money(offer.total)} ₽`,'supplier-choice-detail'));
+      description.append(node('p',offer.availability,'supplier-choice-detail'));
       const href=offer.product_url||offer.url;
-      if(href){const link=node('a','Карточка товара');link.href=href;link.target='_blank';link.rel='noopener noreferrer';line.append(link);}
-      if(offer.shortage>0)line.append(node('p',`Не хватает ${money(offer.shortage)} ${row.unit}`));
+      if(href){const link=node('a','Карточка товара'+(offer.sku?' · '+offer.sku:''));link.href=href;link.target='_blank';link.rel='noopener noreferrer';description.append(link);}
+      if(offer.shortage>0)description.append(node('p',`Не хватает ${money(offer.shortage)} ${row.unit}`));
       const choose=node('button',row.invoice?.key===offer.key&&row.invoice?.included?'Выбрано в счёт':'Выбрать в счёт');choose.type='button';
       choose.disabled=busy||data.selection_read_only||offer.shortage>0||!offer.quantity;
       choose.onclick=async()=>{if(await save({action:'value_select',position:row.position,key:offer.key}))closeChoices();};
-      line.append(choose);list.append(line);
+      line.append(description,choose);list.append(line);
     }
-    dialog.append(list,node('p',data.selection_read_only?'Отправленный счёт доступен только для просмотра.':'Выбор товара изменяет строку счёта. Отправка выполняется отдельно.'));
+    dialog.append(list,node('p',data.selection_read_only?'Отправленный счёт доступен только для просмотра.':'Выбор применяется к строке счёта. Разрешённые характеристики сохраняются.','supplier-choice-footer'));
     const error=node('p',choiceError,'supplier-choice-error');error.setAttribute('role','alert');dialog.append(error);
   }
   function syncInvoice(position,force=false) {
