@@ -59,6 +59,8 @@ DEFAULT_DELIVERY_INCLUDED = os.getenv("AUTO_OFFER_DELIVERY_INCLUDED", "true").lo
 }
 INVOICE_NUMBER_START = int(os.getenv("AUTO_INVOICE_NUMBER_START", "240"))
 VI_CANDIDATE_LIMIT = int(os.getenv("AUTO_VI_CANDIDATE_LIMIT", "8"))
+VI_PAGE_SIZE = int(os.getenv("AUTO_VI_PAGE_SIZE", "40"))
+VI_MAX_PAGES = int(os.getenv("AUTO_VI_MAX_PAGES", "5"))
 APP_PUBLIC_URL = os.getenv("APP_PUBLIC_URL", "https://zakupay-mvp.onrender.com").rstrip("/")
 GITHUB_OIDC_AUDIENCE = "zakupay-mvp"
 GITHUB_OIDC_ISSUER = "https://token.actions.githubusercontent.com"
@@ -688,12 +690,26 @@ def _search_candidates(suppliers, requested: str, time_budget_seconds: float | N
         # the original request for all characteristic and safety checks.
         queries = [requested] if getattr(supplier, "code", "") in {"krep_komp", "price_lists", "own_catalog"} else _search_variants(requested)[:max_variants]
         supplier_found = 0
+        # VI is an offset-paged API: read whole result pages instead of the first
+        # few relevance-ranked items, and record why reading stopped.
+        deep_paging = (getattr(supplier, "code", "") == "vseinstrumenti" and callable(getattr(supplier, "search_pages", None))
+                       and getattr(supplier, "enabled", False) is True and VI_MAX_PAGES > 1)
+        paging_meta: list[dict] = []
         for query in queries:
             if deadline is not None and time.monotonic() >= deadline:
                 timed_out = True
                 break
             supplier_queries += 1
-            if search_session is None:
+            if deep_paging:
+                if search_session is None:
+                    supplier_quotes, page_meta = supplier.search_pages(
+                        query, page_size=VI_PAGE_SIZE, max_pages=VI_MAX_PAGES, deadline=deadline)
+                else:
+                    supplier_quotes, page_meta, reused = search_session.search_pages(
+                        supplier, query, VI_PAGE_SIZE, VI_MAX_PAGES, deadline)
+                    reused_queries += int(reused)
+                paging_meta.append(page_meta)
+            elif search_session is None:
                 supplier_quotes = supplier.search(query, limit=VI_CANDIDATE_LIMIT)
             else:
                 supplier_quotes, reused = search_session.search(supplier, query, VI_CANDIDATE_LIMIT)
@@ -718,7 +734,11 @@ def _search_candidates(suppliers, requested: str, time_budget_seconds: float | N
                 "саморез" in requested.lower() or "винт самонарезающ" in requested.lower()
             )
             minimum_queries = min(3, len(queries)) if fastener_probe else 1
-            if supplier_found >= enough_candidates and supplier_queries >= minimum_queries:
+            # With paged retrieval the stop rule must not rest on a count of
+            # relevant hits from a truncated window: stop only when the
+            # supplier's result list for this query was read to its end.
+            fully_read = (not deep_paging) or (bool(paging_meta) and paging_meta[-1].get("stopped") == "exhausted")
+            if supplier_found >= enough_candidates and supplier_queries >= minimum_queries and fully_read:
                 break
         elapsed = round(time.monotonic() - supplier_started, 3)
         diagnostics.append({
@@ -731,6 +751,12 @@ def _search_candidates(suppliers, requested: str, time_budget_seconds: float | N
             "seconds": elapsed,
             "errors": list(dict.fromkeys(supplier_errors))[:3],
             "timed_out": timed_out,
+            "paging": {
+                "pages": sum(m.get("pages", 0) for m in paging_meta),
+                "fetched": sum(m.get("fetched", 0) for m in paging_meta),
+                "limits": sorted({m.get("stopped") for m in paging_meta if m.get("stopped") != "exhausted"}),
+                "complete": bool(paging_meta) and all(m.get("stopped") == "exhausted" for m in paging_meta),
+            } if deep_paging else None,
         })
         if timed_out:
             break

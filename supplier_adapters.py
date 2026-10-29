@@ -158,14 +158,15 @@ class VseinstrumentiAdapter(SupplierAdapter):
                 return products
         return []
 
-    def _request_products(self, query: str, limit: int = 5) -> requests.Response:
+    def _request_products(self, query: str, limit: int = 5, offset: int = 0) -> requests.Response:
         limit = min(max(int(limit), 1), 40)
+        offset = max(int(offset), 0)
         url = f"{self.base_url}/v1/products"
         params = {
             "search": query,
             "regionId": self.region_id,
             "limit": limit,
-            "offset": 0,
+            "offset": offset,
         }
         # Matching must use the API's relevance order. Sorting the search by
         # price before matching caused cheap, unrelated products to occupy the
@@ -235,7 +236,7 @@ class VseinstrumentiAdapter(SupplierAdapter):
             diagnostic["payload_preview"] = payload
         return diagnostic
 
-    def search(self, query: str, limit: int = 5) -> list[SupplierQuote]:
+    def search(self, query: str, limit: int = 5, offset: int = 0) -> list[SupplierQuote]:
         query = (query or "").strip()
         if not query:
             return [SupplierQuote(supplier=self.name, name="", error="Пустой поисковый запрос")]
@@ -248,7 +249,7 @@ class VseinstrumentiAdapter(SupplierAdapter):
 
         limit = min(max(int(limit), 1), 40)
         try:
-            response = self._request_products(query, limit)
+            response = self._request_products(query, limit, offset)
         except requests.RequestException as exc:
             return [SupplierQuote(supplier=self.name, name=query, error=f"Ошибка сети API ВИ: {exc}")]
 
@@ -305,6 +306,56 @@ class VseinstrumentiAdapter(SupplierAdapter):
                 price_observed_at=datetime.now(timezone.utc).isoformat(),
             ))
         return result
+
+    def search_pages(self, query: str, page_size: int = 40, max_pages: int | None = None,
+                     deadline: float | None = None) -> tuple[list[SupplierQuote], dict[str, Any]]:
+        """Read consecutive result pages (offset paging) for one query.
+
+        Stops when the API returns a short page (``exhausted``), after
+        ``max_pages`` (``page_cap``), at ``deadline`` (``deadline``) or on the
+        first error (``error``). The returned metadata states which of these
+        happened, so callers can report the real completeness limit instead of
+        implying that the first page was the whole result set.
+        """
+        import time as _time
+        page_size = min(max(int(page_size), 1), 40)
+        if max_pages is None:
+            max_pages = max(1, int(os.getenv("VSEINSTRUMENTI_MAX_PAGES", "5")))
+        quotes: list[SupplierQuote] = []
+        meta: dict[str, Any] = {"pages": 0, "page_size": page_size, "fetched": 0, "stopped": "exhausted"}
+        seen: set[Any] = set()
+        for page in range(max_pages):
+            if deadline is not None and _time.monotonic() >= deadline:
+                meta["stopped"] = "deadline"
+                break
+            batch = self.search(query, limit=page_size, offset=page * page_size)
+            errors = [q for q in batch if q.error]
+            if errors:
+                if not quotes:
+                    quotes.extend(errors)
+                meta["stopped"] = "error"
+                meta["error"] = errors[0].error
+                break
+            meta["pages"] += 1
+            fresh = []
+            for quote in batch:
+                key = quote.sku or quote.article or quote.name
+                if key in seen:
+                    continue
+                seen.add(key)
+                fresh.append(quote)
+            quotes.extend(fresh)
+            meta["fetched"] = len(quotes)
+            if len(batch) < page_size:
+                meta["stopped"] = "exhausted"
+                break
+            if not fresh:
+                # A full page of repeats means the API ignores offset; do not loop.
+                meta["stopped"] = "offset_ignored"
+                break
+        else:
+            meta["stopped"] = "page_cap"
+        return quotes, meta
 
 
 class KrepKompAdapter(SupplierAdapter):
