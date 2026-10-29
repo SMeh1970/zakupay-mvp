@@ -221,17 +221,16 @@ def offer_view(item, candidate):
         features.append(dict(id=identifier, field="Проверка категории", value=candidate.get("category") or "Не определена",
             required=[], state=decisions.get(identifier, "pending"), differs=True, ambiguous=True, offer_specific=True,
             evidence="Правила разбора этой категории неполные", origin="parser"))
-    # Price retrieval warnings must survive into the comparison UI, including
-    # missing parsed attributes and corrected catalogue cards. Bind approval to
-    # this offer so accepting a warning cannot approve a different product.
-    for warning in dict.fromkeys([*(candidate.get("characteristic_conflicts") or []),
-                                  *(candidate.get("characteristic_missing") or [])]):
-        if typed_kind and warning in {'Категория требует ручной проверки', 'Обязательные характеристики не выделены', 'Категория заявки не определена'}:
-            continue
-        identifier = feature_id("Проверка прайса", key + fingerprint(original_candidate) + warning)
-        features.append(dict(id=identifier, field="Проверка прайса", value=warning,
-            required=[], state=decisions.get(identifier, "pending"), differs=True,
-            ambiguous=True, offer_specific=True, evidence=warning, origin="parser"))
+    # Parser diagnostics are not additional product requirements. Once type
+    # and the request's fields are known, the shared value filter below is the
+    # sole matching gate. Keep original warnings on the quote for diagnostics.
+    if not typed_kind:
+        for warning in dict.fromkeys([*(candidate.get("characteristic_conflicts") or []),
+                                      *(candidate.get("characteristic_missing") or [])]):
+            identifier = feature_id("Проверка прайса", key + fingerprint(original_candidate) + warning)
+            features.append(dict(id=identifier, field="Проверка прайса", value=warning,
+                required=[], state=decisions.get(identifier, "pending"), differs=True,
+                ambiguous=True, offer_specific=True, evidence=warning, origin="parser"))
     # Product identity and typed parameters define correspondence. Extra brand
     # words and word order never create new mandatory characteristics.
     factor, factor_source = conversion(item, candidate)

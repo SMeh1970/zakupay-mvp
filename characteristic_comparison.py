@@ -27,6 +27,20 @@ def build(item, views, enabled=lambda supplier: True, today=None, respect_row_ex
             values.setdefault(identifier, dict(id=identifier, field=field, value='Не указано',
                 required=[], state=decisions.get(identifier, 'pending' if required else 'matched'),
                 ambiguous=True, differs=required))
+    # Evaluate requested parameters in their request order, narrowing the same
+    # candidate set at each step. Optional fields follow; their defaults pass.
+    from catalog_comparison import records
+    request_records = records(source.get('requested_name'))
+    order = list(dict.fromkeys(r['field'] for r in request_records))
+    groups = {field: groups[field] for field in [*order, *sorted(set(groups) - set(order))] if field in groups}
+    remaining = list(views)
+    stages = [dict(field='Тип товара', remaining=len(remaining))]
+    for field, values in groups.items():
+        def passes(view):
+            ids = [f['id'] for f in view['features'] if f['field'] == field] or [feature_id(field, 'Не указано')]
+            return any(values[i]['state'] in {'matched', 'accepted'} for i in ids)
+        remaining = [view for view in remaining if passes(view)]
+        stages.append(dict(field=field, remaining=len(remaining)))
     output = []
     for view in views:
         reasons = []
@@ -63,5 +77,6 @@ def build(item, views, enabled=lambda supplier: True, today=None, respect_row_ex
     from catalog_comparison import records
     request_records = records(source.get('requested_name'))
     return dict(groups=[dict(field=field, values=list(values.values()), request_spans=[dict(text=r['evidence'],value=r['value']) for r in request_records if r['field']==field and r['evidence']]) for field, values in sorted(groups.items())],
+                filter_stages=stages,
                 unrelated_count=len(all_views)-len(views),
                 offers=output, minimum=best, suitable_count=len(suitable))

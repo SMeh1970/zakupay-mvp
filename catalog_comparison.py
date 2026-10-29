@@ -55,6 +55,8 @@ def records(name, candidate=None):
         if not isinstance(a, dict) or not a.get("parameter"):
             continue
         field = ALIASES.get(a["parameter"], a["parameter"])
+        if product_kind == "бур" and field in {"Размер 1", "Размер 2", "Длина", "Длина изделия", "Ширина", "Толщина"}:
+            continue
         if field in typed_fields or (product_kind == "наконечник" and field in {"Марка кабеля", "Число жил", "Сечение жилы"}):
             continue
         result.append(dict(field=field, value=label(a.get("value"), a.get("unit")),
@@ -68,7 +70,7 @@ def records(name, candidate=None):
         import re
         attribute_name = re.split(r"\(\s*для\b", str(name), maxsplit=1, flags=re.I)[0] if product_kind == "наконечник" else name
         for field, values in attributes(attribute_name).items():
-            if field in typed_fields or (product_kind in {"бита", "рулетка", "плоскогубцы", "очиститель пены", "монтажная пена", "гофрированная труба"} and field in {"Размер 1", "Размер 2", "Длина", "Ширина", "Толщина", "Наружный диаметр", "Толщина стенки"}):
+            if field in typed_fields or (product_kind in {"бита", "рулетка", "плоскогубцы", "очиститель пены", "монтажная пена", "гофрированная труба", "бур"} and field in {"Размер 1", "Размер 2", "Длина", "Ширина", "Толщина", "Наружный диаметр", "Толщина стенки", "Длина изделия"}):
                 continue
             if extract(name)['category'] == 'Кабели' and field in {'Размер 1', 'Размер 2', 'Длина', 'Ширина', 'Толщина'}:
                 continue

@@ -3,6 +3,7 @@ import re
 from functools import lru_cache
 
 KINDS = [
+ ('бур', r'\b(?:бур(?:а|ы|ов|у|ом)?|квадробур\w*|бур-сверло)\b|\bсверл\w*.*?\bSDS[ -]?(?:plus|max|\+)'),
  ('маркер', r'\bмаркер\w*'),
  ('ковёр', r'\bков[её]р\w*'),
  ('хомут', r'\bхомут\w*'),
@@ -78,6 +79,17 @@ def records(text):
             letters={'M':'[MМ]','C':'[CС]','A':'[AА]','B':'[BВ]','E':'[EЕ]','K':'[KК]','H':'[HН]','O':'[OО]','P':'[PР]','T':'[TТ]','X':'[XХ]'}
             evidence=re.search(r'\s*[-]?\s*'.join(letters.get(c,re.escape(c)) for c in model),text,re.I)
             add('Модель',model,evidence[0] if evidence else '')
+    if product == 'бур':
+        # Catalogue notation: diameter x working/overall length or diameter x
+        # overall x working length. Never use package dimensions as drill size.
+        m = re.search(r'(?<![\d.,])(\d+(?:[.,]\d+)?)\s*[xх×*]\s*(\d+(?:[.,]\d+)?)(?:\s*[/xх×*]\s*(\d+(?:[.,]\d+)?))?', text, re.I)
+        if m:
+            add('Диаметр бура', f'{float(m[1].replace(",", ".")):g} мм', m[1])
+            length = max((v for v in (m[2], m[3]) if v), key=lambda v: float(v.replace(',', '.')))
+            add('Общая длина бура', f'{float(length.replace(",", ".")):g} мм', length)
+        tail = re.search(r'\bSDS\s*[- ]?\s*(plus|max|\+)', text, re.I)
+        if tail:
+            add('Хвостовик', 'SDS-' + ('plus' if tail[1].lower() in {'plus', '+'} else 'max'), tail[0])
     if product == 'бита':
         m=re.search(r'(?<![A-Z])(?:PH|PZ|SL|TX|T)\s*-?\s*\d+(?!\d)',text,re.I)
         if m:add('Профиль биты',re.sub(r'[\s-]','',m[0].upper()),m[0])

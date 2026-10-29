@@ -69,3 +69,25 @@ def test_sent_invoice_is_frozen():
     before=copy.deepcopy(data)
     reconcile(data)
     assert data==before
+
+
+def test_drill_diameter_and_overall_length_are_independent():
+    correct = ['Бур Кратон SDS-plus 14x260 1 02 02 032',
+               'Квадробур с двойной спиралью по бетону (14x260 мм; SDS+) Elitech',
+               'БИБЕР 78143 Бур 14х200/260мм (1шт) (25/50)',
+               'Бур-сверло SDS-plus 14x200x260 мм GEPARD']
+    wrong = ['Бур 10х200/260мм', 'Бур 14х150/210мм',
+             'Сверло спиральное по дереву 14x260 мм']
+    assert set(allowed(result('Бур 14*260', correct + wrong))) == set(correct)
+
+
+def test_parser_warnings_do_not_override_requested_parameter_match():
+    data=result('Бур 14*260', ['Бур БИБЕР 14х200/260мм SDS-plus', 'Бур 10х200/260мм'])
+    for q in data['items'][0]['candidates']:
+        q['characteristic_missing']=['не подтверждена характеристика: Категория требует ручной проверки']
+        q['characteristic_conflicts']=['старый разбор размеров не совпал']
+    assert allowed(data)==['Бур БИБЕР 14х200/260мм SDS-plus']
+    comparison=model(data)['rows'][0]['value_comparison']
+    counts={s['field']:s['remaining'] for s in comparison['filter_stages']}
+    assert counts['Диаметр бура']==1
+    assert counts['Общая длина бура']==1
