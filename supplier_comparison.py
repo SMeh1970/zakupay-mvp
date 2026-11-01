@@ -163,6 +163,10 @@ def conversion(item, candidate):
     if requested and supplied == requested:
         # Name may mention a pack, but a price explicitly per piece is per piece.
         return 1.0, "Одинаковые единицы"
+    from supplier_characteristics import nail_pack_mass
+    mass = nail_pack_mass(candidate, supplied, requested)
+    if mass:
+        return mass, 'Масса фасовки гвоздей из данных товара'
     from cable_identity import reel_length
     length = reel_length(candidate.get('name'), candidate.get('unit'), source.get('unit'))
     if length:
@@ -393,7 +397,11 @@ def model(result, raw=None):
         source = item.get("comparison_source") or item
         from characteristic_comparison import build
         comparison = build(item, views, lambda name: supplier_enabled(result, name), respect_row_exclusion=False)
+        from supplier_search_state import search_states
+        searches = search_states(item, result, views, comparison)
+        names.update(searches)
         rows.append(dict(position=item.get("position"), name=source.get("requested_name"), quantity=source.get("quantity"),
+                         supplier_search=searches,
                          unit=source.get("unit"), offers=views, active=bool(item.get("comparison")),
                          value_comparison=comparison,
                          catalog_search=item.get("catalog_search"),

@@ -11,6 +11,10 @@ def build(item, views, enabled=lambda supplier: True, today=None, respect_row_ex
     all_views = views
     if requested_kind:
         views = [v for v in views if kind(v['name']) == requested_kind]
+    from catalog_comparison import records
+    from supplier_characteristics import primary_match
+    request_records = records(source.get('requested_name'))
+    views = [v for v in views if primary_match(request_records, v['features'], requested_kind)]
     decisions = {**settings(item).get('features', {}), **settings(item).get('values', {})}
     groups = {}
     for view in views:

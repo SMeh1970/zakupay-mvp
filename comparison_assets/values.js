@@ -55,8 +55,23 @@
     const header=node('div','','supplier-choice-header');header.append(node('h2',supplier));
     const close=node('button','✕');close.type='button';close.setAttribute('aria-label','Закрыть выбор товара');close.onclick=closeChoices;header.append(close);dialog.append(header);
     dialog.append(node('p',`${row.name} · ${money(row.quantity)} ${row.unit} · только разрешённые варианты`,'supplier-choice-subtitle'));
+    const search=row.supplier_search?.[supplier];
+    if(search) {
+      dialog.append(node('p',search.label,'supplier-choice-detail'));
+      for(const error of search.errors)dialog.append(node('p',error,'supplier-choice-error'));
+      if(search.rejected.length) {
+        const details=node('details');details.append(node('summary','Найденные товары и причины недопуска: '+search.rejected.length));
+        for(const rejected of search.rejected) {
+          const article=node('article','','supplier-choice-detail');
+          article.append(node('p',rejected.name),node('p',rejected.price==null?'Цена не получена':money(rejected.price)+' ₽'),node('p',rejected.reasons.join('; ')));
+          if(rejected.url){const link=node('a','Карточка товара');link.href=rejected.url;link.target='_blank';link.rel='noopener noreferrer';article.append(link);}
+          details.append(article);
+        }
+        dialog.append(details);
+      }
+    }
     const choices=row.value_comparison.offers.filter(v=>v.supplier===supplier&&v.comparable).sort((a,b)=>a.unit_price-b.unit_price);
-    if(!choices.length)dialog.append(node('p','Нет товаров с разрешёнными характеристиками. Измените ✓/✕ в строке заявки.'));
+    if(!choices.length && !search)dialog.append(node('p','Нет товаров с разрешёнными характеристиками. Проверьте причины недопуска.'));
     if(!choices.length) {
       const excluded=row.value_comparison.offers.filter(v=>v.supplier===supplier&&!v.comparable);
       const reasons=[...new Set(excluded.flatMap(v=>v.comparison_reasons))];
@@ -109,9 +124,16 @@
     const chip=(group,value,label)=>{
       const allowed=['matched','accepted'].includes(value.state);
       const span=node('span','','value-chip '+(allowed?'matched':value.state));
-      span.title=group.field+': '+value.value+(value.offer_label?' · '+value.offer_label:'');
+      span.title=group.field+': '+value.value+(value.offer_label?' · '+value.offer_label:'')+(value.evidence?' · '+value.evidence:'');
       span.append(node('span',label??value.value));
       span.prepend(valueCheck(row,group,value));
+      for(const [symbol,decision,label] of [['✓','accepted','Разрешить'],['✕','rejected','Исключить']]) {
+        const action=node('button',symbol);action.type='button';action.disabled=busy||data.read_only;
+        action.setAttribute('aria-label',label+': '+group.field+' '+value.value);
+        action.title=label+': '+group.field+' '+value.value;
+        action.onclick=()=>save({action:'value',position:row.position,features:value.ids||[value.id],decision});
+        span.append(action);
+      }
       return span;
     };
     for(const group of row.value_comparison.groups) {
@@ -135,8 +157,7 @@
       cursor=p.end;
     }
     line.append(document.createTextNode(source.slice(cursor)));
-    const extra=node('details','','value-extra');
-    extra.append(node('summary','Другие характеристики и неизвестные значения'));
+    const extra=node('div','','supplier-found-values');
     for(const group of row.value_comparison.groups) {
       const values=group.values.filter(v=>!used.has(group)||checks(group)||v.ambiguous||v.value==='Не указано'||v.offer_label);
       if(!values.length)continue;
@@ -152,7 +173,9 @@
       }
       extra.append(block);
     }
-    // Keep the request cell compact; supplier details belong in the chooser.
+    // These are values from all primary-matching supplier products, including
+    // specifications not written in the request or in a supplier product title.
+    if(extra.childNodes.length){extra.prepend(node('div','Значения из найденных товаров','supplier-found-label'));line.append(extra);}
     return line;
   }
   function supplierColumns() {
@@ -184,7 +207,8 @@
         if(offer) {
           button.append(node('strong',`${money(offer.unit_price)} ₽ / ${row.unit}`),node('span',offer.name,'supplier-quote-name'),node('small',`${offers.length} вариантов · Выбрать ›`));
           if(selected)button.append(node('small','Выбрано в счёт','matched'));
-        } else button.append(node('span','Нет допустимых вариантов'),node('small','Посмотреть ›'));
+        } else button.append(node('span',row.supplier_search?.[supplier.name]?.label||'Нет сохранённых результатов поставщика'),node('small','Посмотреть ›'));
+        if(offer && ['error','incomplete'].includes(row.supplier_search?.[supplier.name]?.state))button.append(node('small',row.supplier_search[supplier.name].label));
         button.onclick=()=>showChoices(row.position,supplier.name);td.append(button);
         anchor.closest('tr').append(td);
       }

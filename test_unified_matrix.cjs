@@ -11,6 +11,9 @@ function data(alternative=false) {
 (async()=>{
   const initial=data();
   initial.rows[0].value_comparison.groups[0].values.push(...[1,2,3].map(i=>({id:'unknown'+i,field:'Размер',value:'Не указано',required:['4 мм'],state:'pending',ambiguous:true,offer_label:'Фирма '+i})));
+  initial.rows[0].value_comparison.groups.push({field:'Класс прочности',values:[
+    {id:'strength8',field:'Класс прочности',value:'8',required:['8'],state:'matched',origin:'supplier_api'},
+    {id:'strength10',field:'Класс прочности',value:'10',required:['8'],state:'pending',origin:'supplier_api'}]});
   const dom=new JSDOM(`<p id="message"></p><table id="review-table"><colgroup>${'<col>'.repeat(5)}</colgroup><tr><th>Позиция</th></tr><tr><td><div data-value-position="1"></div></td></tr></table><script id="comparison-data" type="application/json">${JSON.stringify(initial)}</script>`,{runScripts:'outside-only',url:'https://example.test/review'});
   dom.window.HTMLDialogElement.prototype.showModal=function(){this.open=true};
   dom.window.HTMLDialogElement.prototype.close=function(){this.open=false;this.dispatchEvent(new dom.window.Event('close'))};
@@ -23,9 +26,13 @@ function data(alternative=false) {
   assert.equal(doc.querySelector('col[data-supplier-column]').style.width,'220px');
   assert.equal(doc.querySelector('.value-extra'),null);
   assert.equal(doc.querySelectorAll('.value-result').length,0);
-  assert.ok(!Array.from(doc.querySelector('.value-panel').childNodes).filter(n=>n.nodeType===1 && n.tagName!=='DETAILS').some(n=>n.textContent.includes('Не указано')));
+  assert.match(doc.querySelector('.supplier-found-values').textContent,/Класс прочности.*8.*10/);
+  assert.match(doc.querySelector('.supplier-found-values').textContent,/Не указано/);
+  const strengthButton=doc.querySelector('button[aria-label="Разрешить: Класс прочности 10"]');
+  assert.ok(strengthButton && !strengthButton.closest('details'));
+  assert.ok(doc.querySelector('button[aria-label="Исключить: Класс прочности 10"]'));
   assert.equal(doc.querySelectorAll('td[data-supplier-column]').length,3);
-  assert.match(doc.querySelectorAll('td[data-supplier-column]')[2].textContent,/Нет допустимых вариантов/);
+  assert.match(doc.querySelectorAll('td[data-supplier-column]')[2].textContent,/Нет сохранённых результатов поставщика/);
   assert.equal(doc.querySelectorAll('td[data-supplier-column] details').length,0);
   const checkbox=doc.querySelector('.value-panel input[type=checkbox]');checkbox.click();
   assert.equal(calls,0);
@@ -47,5 +54,16 @@ function data(alternative=false) {
   await new Promise(resolve=>setImmediate(resolve));
   assert.equal(doc.querySelector('dialog').open,true);
   assert.match(doc.querySelector('.supplier-choice-option button').textContent,/✓ Выбрано/);
+  const failed=data();
+  doc.querySelectorAll('dialog').forEach(d=>d.remove());
+  failed.rows[0].supplier_search={В:{state:'error',label:'Ошибка интеграции',errors:['HTTP 500'],rejected:[{name:'Клапан Ду125',price:42,url:'https://example.test/product',reasons:['Не совпадает Ду']}]}};
+  doc.getElementById('comparison-data').textContent=JSON.stringify(failed);
+  dom.window.eval(fs.readFileSync(__dirname+'/comparison_assets/values.js','utf8'));
+  assert.match(doc.querySelectorAll('td[data-supplier-column]')[2].textContent,/Ошибка интеграции/);
+  doc.querySelectorAll('td[data-supplier-column] button')[2].click();
+  assert.match(doc.querySelector('dialog').textContent,/HTTP 500/);
+  assert.match(doc.querySelector('dialog details').textContent,/Клапан Ду125.*42.*Не совпадает Ду/);
+  assert.equal(doc.querySelector('dialog details button'),null);
+  assert.equal(doc.querySelector('dialog details a').href,'https://example.test/product');
   console.log('PASS: supplier columns, tied minima, filter refresh, newly allowed supplier, coverage recommendation and separate absolute minimum');
 })();

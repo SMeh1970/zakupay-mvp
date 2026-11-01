@@ -55,7 +55,9 @@ def records(name, candidate=None):
         if not isinstance(a, dict) or not a.get("parameter"):
             continue
         field = ALIASES.get(a["parameter"], a["parameter"])
-        if product_kind == "бур" and field in {"Размер 1", "Размер 2", "Длина", "Длина изделия", "Ширина", "Толщина"}:
+        if product_kind == 'гвозди':
+            field = {'Длина изделия': 'Длина гвоздя', 'Диаметр': 'Диаметр гвоздя'}.get(field, field)
+        if product_kind in {"бур", "гвозди"} and field in {"Размер 1", "Размер 2", "Длина", "Длина изделия", "Ширина", "Толщина"}:
             continue
         if field in typed_fields or (product_kind == "наконечник" and field in {"Марка кабеля", "Число жил", "Сечение жилы"}):
             continue
@@ -70,7 +72,7 @@ def records(name, candidate=None):
         import re
         attribute_name = re.split(r"\(\s*для\b", str(name), maxsplit=1, flags=re.I)[0] if product_kind == "наконечник" else name
         for field, values in attributes(attribute_name).items():
-            if field in typed_fields or (product_kind in {"бита", "рулетка", "плоскогубцы", "очиститель пены", "монтажная пена", "гофрированная труба", "бур"} and field in {"Размер 1", "Размер 2", "Длина", "Ширина", "Толщина", "Наружный диаметр", "Толщина стенки", "Длина изделия"}):
+            if field in typed_fields or (product_kind in {"бита", "рулетка", "плоскогубцы", "очиститель пены", "монтажная пена", "гофрированная труба", "бур", "гвозди"} and field in {"Размер 1", "Размер 2", "Длина", "Ширина", "Толщина", "Наружный диаметр", "Толщина стенки", "Длина изделия"}):
                 continue
             if extract(name)['category'] == 'Кабели' and field in {'Размер 1', 'Размер 2', 'Длина', 'Ширина', 'Толщина'}:
                 continue
@@ -83,7 +85,28 @@ def records(name, candidate=None):
     if candidate.get("brand") and not any(r["field"] == "Бренд" for r in result):
         result.append(dict(field="Бренд", value=str(candidate["brand"]), raw_value=candidate["brand"],
             unit=None, evidence=str(candidate["brand"]), origin="supplier", ambiguous=False))
-    return result + identity
+    combined = result + identity
+    # Saved price-list attributes and API specifications are actual supplier
+    # values, even when absent from the product title. Retain contradictory
+    # evidence for an explicit per-offer decision instead of silently choosing.
+    from supplier_characteristics import api_records
+    api = api_records(candidate)
+    if api and not isinstance(candidate.get('characteristics'), list) and not isinstance(analysis, dict):
+        for record in api:
+            existing = [r for r in combined if r['field'] == record['field']]
+            if any(r['value'] == record['value'] for r in existing):
+                continue
+            if record['field'] == 'Фасовка':
+                # 1 kg and 100 pieces describe the same pack in different
+                # dimensions; they are not a contradiction in its mass.
+                family = lambda u: 'mass' if u in {'кг','г'} else u
+                existing = [r for r in existing if family(r.get('unit')) == family(record.get('unit'))]
+            if existing:
+                record['ambiguous'] = True
+                for r in existing:
+                    r['ambiguous'] = True
+            combined.append(record)
+    return combined
 
 
 def without_evidence(name, attrs):

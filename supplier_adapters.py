@@ -14,6 +14,13 @@ from typing import Any
 import requests
 
 
+def integration_error(exc):
+    """HTTP status and exception type only: never expose auth URLs or bodies."""
+    response = getattr(exc, 'response', None)
+    status = getattr(response, 'status_code', None)
+    return f'HTTP {status} ({type(exc).__name__})' if status is not None else type(exc).__name__
+
+
 @dataclass
 class SupplierQuote:
     supplier: str
@@ -270,6 +277,11 @@ class VseinstrumentiAdapter(SupplierAdapter):
             )]
 
         products = self._extract_products(data)
+        valid = isinstance(data, dict) and (
+            isinstance(data.get('products'), list) or
+            isinstance(data.get('result'), dict) and isinstance(data['result'].get('products'), list))
+        if not valid or any(not isinstance(p, dict) or not p.get('name') for p in products):
+            return [SupplierQuote(supplier=self.name, name=query, error='API ВИ: неожиданная структура ответа products')]
         result: list[SupplierQuote] = []
         for product in products[:limit]:
             prices = product.get("prices") or {}
@@ -522,7 +534,7 @@ class KrepKompAdapter(SupplierAdapter):
         try:
             return self._catalog_items()
         except Exception as exc:
-            type(self)._catalog_error = type(exc).__name__
+            type(self)._catalog_error = integration_error(exc)
             raise
 
     def _catalog_items(self) -> list[dict[str, Any]]:

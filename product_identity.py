@@ -3,6 +3,15 @@ import re
 from functools import lru_cache
 
 KINDS = [
+ ('монтажный клей', r'\bжидк\w*\s+гвозд\w*'),
+ ('дюбель', r'\bдюбел\w*'),
+ ('кляймер', r'\bкляймер\w*'),
+ ('скоба', r'\bскоб\w*'),
+ ('гвозди', r'\bгвозд(?:ь|и|ей|ями|ям|ях|ём|ем)\b'),
+ ('гайка', r'\bгайк\w*'),
+ ('шайба', r'\bшайб\w*'),
+ ('шпилька', r'\bшпильк\w*'),
+ ('клапан', r'\bклапан\w*'),
  ('бур', r'\b(?:бур(?:а|ы|ов|у|ом)?|квадробур\w*|бур-сверло)\b|\bсверл\w*.*?\bSDS[ -]?(?:plus|max|\+)'),
  ('маркер', r'\bмаркер\w*'),
  ('ковёр', r'\bков[её]р\w*'),
@@ -71,6 +80,24 @@ def records(text):
         result.append(dict(field=field,value=str(value),raw_value=value,unit=None,evidence=evidence,origin='name',ambiguous=False))
     if product:
         add('Тип товара',product,'')
+    from supplier_characteristics import name_records
+    result.extend(name_records(text, product))
+    if product == 'клапан':
+        for field, patterns in {
+            'Назначение клапана': [('Балансировочный', r'балансировочн\w*|балансир\.')],
+            'Управление клапаном': [('Ручное', r'ручн\w*'), ('Автоматическое', r'автоматическ\w*')],
+            'Присоединение клапана': [('Фланцевое', r'фланц\w*'), ('Резьбовое', r'резьб\w*|муфтов\w*')],
+            'Материал корпуса клапана': [('Чугун', r'\bчугун\w*\b'), ('Латунь', r'\bлатун\w*\b(?!\s+(?:сердечник|шток|ниппел))')],
+            'Измерительные ниппели': [('Нет', r'без\s+(?:измерит\w*\.?\s*)?ниппел\w*'),
+                                     ('Есть', r'с\s+измерит\w*\.?\s*ниппел\w*')],
+        }.items():
+            for value, pattern in patterns:
+                match = re.search(pattern, text, re.I)
+                if match:
+                    add(field, value, match[0])
+        match = re.search(r'\b(?:Ду|DN)\s*(\d+)\b', text, re.I)
+        if match:
+            add('Условный проход', str(int(match[1])), match[0])
     from vi_order_match import _requested_brands
     for brand in sorted(_requested_brands(text)):
         add('Бренд',brand,'')
@@ -145,3 +172,20 @@ def records(text):
     if product == 'плоскогубцы' and re.search(r'комбинирован\w*',text,re.I):
         add('Исполнение плоскогубцев','Комбинированные','комбинированные')
     return result
+
+
+def valve_checks(requested, offered):
+    """Separate missing evidence from known contradictions for auto matching."""
+    if kind(requested) != 'клапан':
+        return [], []
+    required = {r['field']: r['value'] for r in records(requested)}
+    found = {}
+    for record in records(offered):
+        found.setdefault(record['field'], set()).add(record['value'])
+    conflicts, missing = [], []
+    for field, value in required.items():
+        if field not in found:
+            missing.append('не подтверждено: ' + field)
+        elif found[field] != {value}:
+            conflicts.append('не совпадает ' + field + ': требуется ' + value + ', найдено ' + '/'.join(sorted(found[field])))
+    return conflicts, missing

@@ -594,6 +594,24 @@ def _search_variants(requested: str) -> list[str]:
     # Preserve model punctuation and significant single-digit values before
     # trying lossy word-normalised queries.
     variants.append(cleaned)
+    # Supplier search does not reliably understand specification-column prose.
+    # Retrieve nuts by their identity; matching still receives every requirement.
+    if re.search(r'\bгайк\w*', cleaned, re.I):
+        thread = re.search(r'(?<!\w)[МM]\s*(\d+)(?!\d)', cleaned, re.I)
+        din = re.search(r'\bDIN\s*(\d+)\b', cleaned, re.I)
+        strength = re.search(r'(?:кл\.?\s*пр\.?|класс\s+прочности)\s*(\d+(?:[.,]\d+)?)(?!\d)', cleaned, re.I)
+        if thread and din:
+            identity = f'Гайка М{thread[1]} DIN {din[1]}'
+            variants.append(identity + (f' кл. пр. {strength[1]}' if strength else ''))
+            if re.search(r'гор\.?\s*цинк|горяч\w*\s+цинк', cleaned, re.I):
+                variants.append(identity + ' горячее цинкование')
+    # Retrieval may shorten prose; admission still checks the original request.
+    if re.search(r'балансировочн', cleaned, re.I) and re.search(r'клапан', cleaned, re.I):
+        dn = re.search(r'\b(?:Ду|DN)\s*(\d+)\b', cleaned, re.I)
+        if dn:
+            variants.extend([f'клапан балансировочный Ду {dn[1]}',
+                             f'балансировочный клапан фланцевый DN{dn[1]}'] if re.search('фланц', cleaned, re.I)
+                            else [f'клапан балансировочный Ду {dn[1]}'])
     if key_tokens:
         variants.append(" ".join(key_tokens[:10]))
     # Preserve fastener dimensions as a compact search phrase. The retail site
@@ -709,6 +727,8 @@ def _search_candidates(suppliers, requested: str, time_budget_seconds: float | N
                         supplier, query, VI_PAGE_SIZE, VI_MAX_PAGES, deadline)
                     reused_queries += int(reused)
                 paging_meta.append(page_meta)
+                if page_meta.get('error'):
+                    supplier_errors.append(page_meta['error'])
             elif search_session is None:
                 supplier_quotes = supplier.search(query, limit=VI_CANDIDATE_LIMIT)
             else:
@@ -974,6 +994,10 @@ def _hard_conflicts(requested: str, selected: dict) -> list[str]:
     from cable_identity import conflicts as cable_conflicts
     from product_identity import kind
     conflicts = list(selected.get("characteristic_conflicts") or [])
+    from product_identity import valve_checks
+    conflicts.extend(valve_checks(requested, selected.get('name'))[0])
+    from supplier_characteristics import nail_checks
+    conflicts.extend(nail_checks(requested, selected)[0])
     if kind(requested) == "кабель":
         conflicts.extend(cable_conflicts(requested, selected.get("name")))
     from extinguisher_identity import conflicts as extinguisher_conflicts
@@ -1007,14 +1031,14 @@ def _hard_conflicts(requested: str, selected: dict) -> list[str]:
         conflicts.append("в найденном товаре отсутствует обязательная модель/артикул")
     elif requested_ids and not (requested_ids & candidate_ids):
         conflicts.append("не совпадает модель/артикул")
-    requested_measures = _measurements(requested)
+    requested_measures = set() if requested_kind == 'гвозди' else _measurements(requested)
     candidate_measures = _measurements(candidate_text)
     if requested_measures and not candidate_measures:
         conflicts.append("в найденном товаре отсутствуют обязательные размеры/характеристики: " + ", ".join(sorted(requested_measures)))
     elif requested_measures and not requested_measures.issubset(candidate_measures):
         missing = ", ".join(sorted(requested_measures - candidate_measures))
         conflicts.append(f"не совпадают размеры: {missing}")
-    if relation == "disjoint":
+    if relation == "disjoint" and requested_kind != 'гвозди':
         conflicts.append("диапазон размеров не пересекается с заявкой: "
                          + _format_ranges(_ranges(candidate_text)) + " вместо " + _format_ranges(_ranges(requested)))
     return conflicts
@@ -1048,6 +1072,10 @@ def _range_note(requested: str, candidate: dict | None) -> str | None:
 def _required_clarifications(requested: str, candidate: dict) -> list[str]:
     text = " ".join(str(candidate.get(key) or "") for key in ("name", "article", "sku"))
     reasons = list(candidate.get("characteristic_missing") or [])
+    from product_identity import valve_checks
+    reasons.extend(valve_checks(requested, candidate.get('name'))[1])
+    from supplier_characteristics import nail_checks
+    reasons.extend(nail_checks(requested, candidate)[1])
     note = _range_note(requested, candidate)
     if note:
         reasons.append(note)
@@ -1130,7 +1158,7 @@ def _build_match_row(position: int, item: dict, suppliers, excluded_keys: set[st
     rejected = []
     for quote in quotes:
         if quote.error:
-            rejected.append({"error": quote.error})
+            rejected.append({"supplier": quote.supplier, "error": quote.error})
             continue
         score, reasons = _score_details(requested, quote)
         candidate = quote.to_dict()
@@ -1242,13 +1270,17 @@ def build_vi_draft(order: dict, invoice_number: int | None = None, progress_call
     suppliers = [OwnCatalogAdapter(), PriceListAdapter(), VseinstrumentiAdapter()]
     krep_komp = KrepKompAdapter()
     deferred_suppliers = []
+    supplier_search_errors = []
     if krep_komp.enabled:
         try:
             krep_komp.prepare_catalog()
             suppliers.append(krep_komp)
         except Exception as exc:
-            logger.warning('krep catalogue preparation failed: %s', type(exc).__name__)
-            deferred_suppliers.append('КРЕП-КОМП: ошибка загрузки каталога ('+type(exc).__name__+')')
+            from supplier_adapters import integration_error
+            error = integration_error(exc)
+            logger.warning('krep catalogue preparation failed: %s', error)
+            deferred_suppliers.append('КРЕП-КОМП: ошибка загрузки каталога ('+error+')')
+            supplier_search_errors.append(dict(supplier='КРЕП-КОМП', errors=[error], queries=0))
     items = list(order.get("orderItems") or [])
     positioned_items = {int(item.get("_source_position") or position): item
                         for position, item in enumerate(items, 1)}
@@ -1306,6 +1338,8 @@ def build_vi_draft(order: dict, invoice_number: int | None = None, progress_call
     ready = [row for row in rows if row["decision"] == "auto_ready"]
     status = "ready_for_review" if ready else "needs_review"
     search_metrics = {**session.metrics(), "matching_engine": "deterministic",
+                      "preparation_failures": len(supplier_search_errors),
+                      "search_has_errors": bool(supplier_search_errors) or session.metrics()['failed_calls'] > 0,
                       "preparation_seconds": round(prepared_at - started, 3),
                       "first_result_seconds": first_result_seconds,
                       "total_seconds": round(time.monotonic() - started, 3)}
@@ -1330,6 +1364,7 @@ def build_vi_draft(order: dict, invoice_number: int | None = None, progress_call
         "prepayment_percent": DEFAULT_PREPAYMENT_PERCENT,
         "delivery_included": DEFAULT_DELIVERY_INCLUDED,
         "deferred_suppliers": deferred_suppliers,
+        "supplier_search_errors": supplier_search_errors,
         "search_metrics": search_metrics,
         "summary": {
             "positions": len(rows),
