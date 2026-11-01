@@ -31,19 +31,19 @@ def search_states(item, result, views, comparison):
         elif comparable:
             state, label = 'found', 'Есть допустимые варианты'
         elif offers:
-            conflict_keys = {q.get('candidate_key') for q in raw if q and q.get('hard_conflicts')}
-            if all(v['key'] in conflict_keys for v in offers):
-                state, label = 'rejected', 'Найденные товары не соответствуют требованиям'
+            primary = [v for v in comparison['offers'] if v['supplier'] == name]
+            if not primary:
+                state, label = 'rejected', 'Нет совпадений по основным параметрам'
             else:
-                state, label = 'review', 'Найденные товары требуют проверки'
+                state, label = 'review', 'Найдены варианты: выберите характеристики'
         elif ds and any(d.get('queries', 0) > 0 for d in ds):
             state, label = 'empty', 'Товары не найдены' if not any(d.get('candidates', 0) for d in ds) else 'Найденные товары отклонены'
         else:
             state, label = 'unknown', 'Нет сохранённой диагностики поиска'
         states[name] = dict(state=state, label=label, errors=errors, found=len(offers),
                             diagnostics=ds,
-                            rejected=[dict(name=v['name'], price=v['price'], url=v.get('product_url') or v.get('url'),
+                            rejected=[dict(key=v['key'], name=v['name'], price=v['price'], url=v.get('product_url') or v.get('url'),
                                            reasons=next((c['comparison_reasons'] for c in comparison['offers'] if c['key'] == v['key']),
-                                                        ['Тип товара не соответствует заявке']))
+                                                        ['Не совпадают или не подтверждены основные параметры']))
                                       for v in offers if not any(c['key'] == v['key'] for c in comparable)])
     return states

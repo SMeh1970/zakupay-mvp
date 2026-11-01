@@ -3,6 +3,9 @@ import re
 from functools import lru_cache
 
 KINDS = [
+ ('цепь', r'\bцеп[ьи]\b'),
+ ('пульт', r'\bпульт\w*'),
+ ('таль', r'\bтал(?:ь|и|ей|ью|ям|ями|ях)\b'),
  ('монтажный клей', r'\bжидк\w*\s+гвозд\w*'),
  ('дюбель', r'\bдюбел\w*'),
  ('кляймер', r'\bкляймер\w*'),
@@ -80,6 +83,9 @@ def records(text):
         result.append(dict(field=field,value=str(value),raw_value=value,unit=None,evidence=evidence,origin='name',ambiguous=False))
     if product:
         add('Тип товара',product,'')
+    if product == 'таль':
+        from hoist_identity import records as hoist_records
+        result.extend(hoist_records(text))
     from supplier_characteristics import name_records
     result.extend(name_records(text, product))
     if product == 'клапан':

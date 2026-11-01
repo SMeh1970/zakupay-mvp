@@ -998,6 +998,8 @@ def _hard_conflicts(requested: str, selected: dict) -> list[str]:
     conflicts.extend(valve_checks(requested, selected.get('name'))[0])
     from supplier_characteristics import nail_checks
     conflicts.extend(nail_checks(requested, selected)[0])
+    from hoist_identity import checks as hoist_checks
+    conflicts.extend(hoist_checks(requested, selected)[0])
     if kind(requested) == "кабель":
         conflicts.extend(cable_conflicts(requested, selected.get("name")))
     from extinguisher_identity import conflicts as extinguisher_conflicts
@@ -1023,6 +1025,9 @@ def _hard_conflicts(requested: str, selected: dict) -> list[str]:
     typed_model = requested_kind in {'пила','угловая шлифмашина','пистолет для пены'} and models(requested)
     requested_ids = models(requested) if typed_model else _identifiers(requested)
     candidate_ids = models(selected.get('name')) if typed_model else _identifiers(candidate_text)
+    if requested_kind == 'таль':
+        # Model variants are operator choices after hoist type/capacity match.
+        requested_ids = set()
     relation = _range_relation(requested, candidate_text)
     if (_features(requested) & _negative_features(candidate_text)
             or _negative_features(requested) & _features(candidate_text)):
@@ -1031,14 +1036,14 @@ def _hard_conflicts(requested: str, selected: dict) -> list[str]:
         conflicts.append("в найденном товаре отсутствует обязательная модель/артикул")
     elif requested_ids and not (requested_ids & candidate_ids):
         conflicts.append("не совпадает модель/артикул")
-    requested_measures = set() if requested_kind == 'гвозди' else _measurements(requested)
+    requested_measures = set() if requested_kind in {'гвозди','таль'} else _measurements(requested)
     candidate_measures = _measurements(candidate_text)
     if requested_measures and not candidate_measures:
         conflicts.append("в найденном товаре отсутствуют обязательные размеры/характеристики: " + ", ".join(sorted(requested_measures)))
     elif requested_measures and not requested_measures.issubset(candidate_measures):
         missing = ", ".join(sorted(requested_measures - candidate_measures))
         conflicts.append(f"не совпадают размеры: {missing}")
-    if relation == "disjoint" and requested_kind != 'гвозди':
+    if relation == "disjoint" and requested_kind not in {'гвозди','таль'}:
         conflicts.append("диапазон размеров не пересекается с заявкой: "
                          + _format_ranges(_ranges(candidate_text)) + " вместо " + _format_ranges(_ranges(requested)))
     return conflicts
@@ -1076,6 +1081,8 @@ def _required_clarifications(requested: str, candidate: dict) -> list[str]:
     reasons.extend(valve_checks(requested, candidate.get('name'))[1])
     from supplier_characteristics import nail_checks
     reasons.extend(nail_checks(requested, candidate)[1])
+    from hoist_identity import checks as hoist_checks
+    reasons.extend(hoist_checks(requested, candidate)[1])
     note = _range_note(requested, candidate)
     if note:
         reasons.append(note)

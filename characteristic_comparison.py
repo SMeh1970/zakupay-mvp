@@ -20,8 +20,13 @@ def build(item, views, enabled=lambda supplier: True, today=None, respect_row_ex
     for view in views:
         for feature in view['features']:
             group = groups.setdefault(feature['field'], {})
-            group.setdefault(feature['id'], {**feature, 'offer_label': (view['supplier'] + (' · '+view['sku'] if view['sku'] else '')) if feature.get('offer_specific') else '', 'state': decisions.get(feature['id'],
+            entry = group.setdefault(feature['id'], {**feature, 'sources': [], 'offer_label': (view['supplier'] + (' · '+view['sku'] if view['sku'] else '')) if feature.get('offer_specific') else '', 'state': decisions.get(feature['id'],
                 'matched' if not feature['differs'] else 'pending')})
+            evidence = dict(key=view['key'], supplier=view['supplier'], sku=view['sku'], name=view['name'],
+                            url=view.get('url'), price=view.get('price'), origin=feature.get('origin'),
+                            evidence=feature.get('evidence'), date=view.get('source_date'))
+            if not any(s['key'] == evidence['key'] for s in entry['sources']):
+                entry['sources'].append(evidence)
     # Absence is a value too. Extra, unspecified parameters do not impose a new
     # requirement on products which do not declare them.
     for field, values in groups.items():
@@ -30,7 +35,9 @@ def build(item, views, enabled=lambda supplier: True, today=None, respect_row_ex
             required = field not in {'Слово в наименовании', 'Нет слова из заявки', 'Проверка прайса', 'Проверка категории', 'Проверка соответствия'} and any(f['required'] for f in values.values())
             values.setdefault(identifier, dict(id=identifier, field=field, value='Не указано',
                 required=[], state=decisions.get(identifier, 'pending' if required else 'matched'),
-                ambiguous=True, differs=required))
+                ambiguous=True, differs=required, sources=[dict(key=v['key'],supplier=v['supplier'],sku=v['sku'],
+                    name=v['name'],url=v.get('url'),price=v.get('price'),origin='missing',evidence='Не указано в предложении')
+                    for v in views if not any(f['field']==field for f in v['features'])]))
     # Evaluate requested parameters in their request order, narrowing the same
     # candidate set at each step. Optional fields follow; their defaults pass.
     from catalog_comparison import records

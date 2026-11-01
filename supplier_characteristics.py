@@ -74,7 +74,11 @@ def api_records(candidate):
         if not isinstance(spec, dict) or not spec.get('name') or spec.get('value') is None:
             continue
         field = {'Длина': 'Длина гвоздя', 'Диаметр': 'Диаметр гвоздя'}.get(spec['name'], spec['name']) if product == 'гвозди' else spec['name']
-        field, value, unit = canonical(field, spec['value'], spec.get('unit'))
+        value, unit = spec['value'], spec.get('unit')
+        if product == 'таль':
+            from hoist_identity import api_field
+            field, value, unit = api_field(field, value, unit)
+        field, value, unit = canonical(field, value, unit)
         if not value:
             continue
         if unit and field not in {'Метрическая резьба', 'DIN', 'Класс прочности'}:
@@ -86,9 +90,11 @@ def api_records(candidate):
 
 def primary_match(required_records, found_records, product):
     """Remaining values are choices; primary mismatches never enter that pool."""
-    if product not in {'гайка', 'шайба', 'шпилька', 'гвозди'}:
+    if product not in {'гайка', 'шайба', 'шпилька', 'гвозди', 'таль'}:
         return True
     fields = ['Тип товара', 'Длина гвоздя'] if product == 'гвозди' else ['Тип товара', 'Метрическая резьба', 'DIN']
+    if product == 'таль':
+        fields = ['Тип товара', 'Тип тали', 'Привод тали', 'Грузоподъемность']
     for field in fields:
         required = {r['value'] for r in required_records if r['field'] == field}
         if not required:

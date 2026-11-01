@@ -5,6 +5,7 @@
   .value-group>b{width:100%;font-size:13px}
   .value-chip{display:inline-flex;align-items:center;gap:6px;border:1px solid #dcd6c8;border-radius:8px;padding:5px 7px;background:#fff5df}
   .value-chip.matched{background:#e1f3e8;border-color:#78a88a}
+  .value-chip.available{background:#f8fafc;border-color:#cbd5e1;color:#334155}
   .value-chip.rejected{background:#f6e6dd;color:#8c3020}
   .value-chip button{min-width:22px;min-height:24px;padding:2px;border:0;border-radius:0;background:transparent;box-shadow:none;color:#92978f;font:400 13px/1 'Segoe UI',sans-serif;cursor:pointer}
   .value-chip button[aria-pressed=true]{font-weight:600;color:#597363;border:0}

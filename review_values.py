@@ -45,6 +45,7 @@ CSS = """
 .inline-values .value-group>b{font-weight:400;color:#777;font-size:11px;margin-right:4px}
 .inline-values .value-chip{display:inline-flex;align-items:center;white-space:normal;margin-right:3px;color:#997d43;border:0;border-radius:0;padding:0;background:none;gap:0}
 .inline-values .value-chip.matched{color:#367348;background:none;border:0}
+.inline-values .value-chip.available{color:#334155;background:none;border:0}
 .inline-values .value-chip.rejected{color:#9b6d65;text-decoration:line-through;background:none;border:0}
 .inline-values .value-chip button{min-width:18px;min-height:22px;padding:1px;background:none;border:0;border-radius:0;box-shadow:none;color:#a4aba3;font:400 12px/1 Arial;cursor:pointer}
 .inline-values .value-chip button[aria-pressed=true]{color:#557260;font-weight:600}
