@@ -3,7 +3,7 @@ import requests
 from fastapi import HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse
 
-from browser_prices import best_price_rows_for_order, best_price_value
+from browser_prices import best_price_rows_for_order, best_price_value, price_state, _item_id
 
 
 def _num(v):
@@ -106,14 +106,9 @@ def install_analysis_detail(app, fetch_all_orders, zakupay_headers, zakupay_base
         browser_prices = browser_result.get('prices') or {}
         rows = ''
         for n, item in enumerate(order.get('orderItems') or [], 1):
-            browser_row = browser_prices.get(int(item.get('id'))) if item.get('id') is not None else None
+            browser_row = browser_prices.get(_item_id(item.get('id')))
             price = best_price_value(browser_row)
-            source = 'Закупай' if price is not None else '—'
-            if price is None:
-                pc = extract_best_price(item)
-                price = pc['value'] if pc else None
-                if price is not None:
-                    source = 'API заявки'
+            source = esc(price_state(browser_result, browser_row))
             qty = _num(item.get('count')) or 0
             total = round(price * qty, 2) if price is not None else None
             rows += (
@@ -127,10 +122,8 @@ def install_analysis_detail(app, fetch_all_orders, zakupay_headers, zakupay_base
             )
         delay = order.get('delay')
         payment = 'Предоплата / без отсрочки' if delay == 0 else (f'{delay} дней' if delay is not None else '—')
-        source_state = browser_result.get('errors') or []
-        source_note = 'Цены Закупай подключены.' if browser_result.get('ok') else (
-            'Источник цен Закупай не настроен.' if not browser_result.get('enabled') else f'Ошибка источника цен: {esc(source_state)}'
-        )
+        available = sum(best_price_value(row) is not None for row in browser_prices.values())
+        source_note = f'Лучшая цена получена для {available} позиций. ' + (esc(price_state(browser_result)) if browser_result.get('errors') else 'Цены обновляются при открытии страницы, кеш до 5 минут.')
         html = f"""<!doctype html><html lang='ru'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>
 <title>Заявка {order_id}</title><style>body{{font-family:Arial;margin:24px;background:#f5f5f5;color:#222}}.card{{background:#fff;border-radius:12px;padding:18px;margin-bottom:18px}}table{{width:100%;border-collapse:collapse;font-size:13px}}th{{background:#eee;text-align:left;padding:9px}}td{{padding:9px;border-bottom:1px solid #eee;vertical-align:top}}a{{color:#4c39d4;font-weight:bold;text-decoration:none}}.meta{{display:grid;grid-template-columns:170px 1fr;gap:7px}}.note{{font-size:12px;color:#666}}.offer-btn{{display:inline-block;background:#1677ff;color:#fff;padding:10px 14px;border-radius:8px;margin-left:8px}}</style></head><body>
 <p><a href='/dashboard/analysis'>← Анализ заявок</a> · <a target='_blank' href='/analysis/raw-order/{order_id}'>Сырой JSON позиции</a> · <a target='_blank' href='/analysis/api-discovery/{order_id}'>Диагностика API</a> <a class='offer-btn' href='/dashboard/order/{order_id}/offer'>Создать предложение</a></p>
@@ -146,7 +139,7 @@ def install_analysis_detail(app, fetch_all_orders, zakupay_headers, zakupay_base
         browser_prices = browser_result.get('prices') or {}
         items = []
         for item in order.get('orderItems') or []:
-            browser_row = browser_prices.get(int(item.get('id'))) if item.get('id') is not None else None
+            browser_row = browser_prices.get(_item_id(item.get('id')))
             items.append({
                 'id': item.get('id'), 'goodName': item.get('goodName'),
                 'bestOfferItem': item.get('bestOfferItem'),
