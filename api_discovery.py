@@ -106,18 +106,8 @@ def install_api_discovery(app, fetch_all_orders, zakupay_headers, zakupay_base_u
             return data
         except requests.RequestException as e:return {'url':url,'error':str(e)}
     def probe_best_prices(item_ids):
-        url='https://prodavay.sel-be.ru/core/supplier/getoffersdeviationpercent'
-        headers=dict(zakupay_headers())
-        headers.update({'Content-Type':'application/json','X-Requested-With':'XMLHttpRequest','Accept':'application/json, text/javascript, */*; q=0.01'})
-        try:
-            r=requests.post(url,headers=headers,json=item_ids,timeout=25)
-            data={'url':url,'status':r.status_code,'content_type':r.headers.get('content-type',''),'size':len(r.content),'request_item_ids':item_ids}
-            body=safe_body(r,20000)
-            data['body']=body
-            if r.ok and isinstance(body,list):
-                data['price_map']={str(x.get('orderItemId')):((x.get('bestPrice') or {}).get('price')) for x in body if isinstance(x,dict) and x.get('orderItemId') is not None}
-            return data
-        except requests.RequestException as e:return {'url':url,'request_item_ids':item_ids,'error':str(e)}
+        from browser_prices import fetch_best_prices
+        return fetch_best_prices(item_ids, force=True)
 
     @app.get('/analysis/api-discovery/{order_id}')
     def discover_price_api(order_id:int):

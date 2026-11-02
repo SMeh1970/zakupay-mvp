@@ -427,6 +427,12 @@ def install_offer_panel(
             draft["items"].append(item)
         return draft
 
+    app.state.tile_gateway = dict(
+        fetch_order=fetch_order_by_id, has_offer=lambda order: bool(order and any(
+            item.get('myOffer') or item.get('myOfferItem') for item in order.get('orderItems') or [])),
+        accounts=_portal_accounts, resolve=_resolve_settings, upload=_upload_invoice,
+        headers=_headers, base=zakupay_base_url)
+
     @app.get("/dashboard/order/{order_id}/offer/accounts", response_class=HTMLResponse)
     def offer_accounts(order_id: int):
         _get_context(order_id)
@@ -631,6 +637,13 @@ def install_offer_panel(
         context = await run_in_threadpool(_get_context, order_id)
         order = context["order"]
         result = context["result"]
+        if getattr(app.state, 'tile_panel_installed', False):
+            from price_lists import database, execute
+            with database() as conn:
+                tile_quote = execute(conn, 'SELECT q.id FROM tile_quotes q JOIN automation_jobs j ON j.id=q.job_id WHERE j.order_id=? ORDER BY q.id DESC LIMIT 1',
+                                     (order_id,)).fetchone()
+            if tile_quote:
+                raise HTTPException(409, 'Для керамогранита отправьте утверждённую версию из раздела Керамогранит; общий подбор не заменяет её счёт.')
         if result.get("live_offer_created"):
             offer_id = result.get("live_offer_id") or "—"
             invoice_number = result.get("invoice_number") or context.get("invoice_number") or "—"

@@ -239,6 +239,7 @@ install_automation_pipeline(
     fetch_categories=fetch_category_reference if ZAKUPAY_API_KEY else None,
 )
 install_procurement(app)
+app.state.tile_gateway['has_offer'] = has_my_offer
 install_porcelain(app, fetch_all_orders=fetch_all_orders)
 install_tile_autopilot(app, fetch_order=fetch_order_by_id, headers=zakupay_headers,
                        base=ZAKUPAY_BASE_URL, has_offer=has_my_offer)

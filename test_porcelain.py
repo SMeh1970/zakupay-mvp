@@ -56,6 +56,22 @@ class PorcelainTests(unittest.TestCase):
                 'address':'Москва, Тестовая, 1','zone':'mkad','unloading':'0','vehicle':'Газель 1,5 т',
                 'transport_confirmed':'yes','seller':'avior','seller_confirmed':'yes','vat':'22','invoice_number':'К-1'}
 
+    def test_discount_quote_uses_server_evidence_and_blocks_missing_price(self):
+        from datetime import datetime, timezone
+        form = self.ready_form()
+        form['discount_pct'] = '7.5'
+        proof = dict(price=1200, checked_at=datetime.now(timezone.utc).isoformat(),
+                     source='zakupay:getoffersdeviationpercent', unit='м²', currency='RUB',
+                     vat_rate=.22, delivery_included=False)
+        quote = tiles.make_quote(ORDER, self.catalog, form, {'101': proof})
+        self.assertEqual(quote['issues'], [])
+        self.assertEqual(quote['lines'][0]['proposed_unit_price'], 1110)
+        self.assertEqual(quote['total'], 49755.2)
+        blocked = tiles.make_quote(ORDER, self.catalog, form)
+        self.assertIsNone(blocked['total'])
+        with self.assertRaises(ValueError):
+            tiles.invoice_draft(blocked)
+
     def test_domain_matching_checks_size_color_design_surface_and_unknown_fields(self):
         check=tiles.assess(ORDER['orderItems'][0]['goodName'],PRODUCT)
         self.assertFalse(check['conflicts']);self.assertIn('Формат совпадает',check['reasons'])

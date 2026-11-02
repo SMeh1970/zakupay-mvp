@@ -1,6 +1,7 @@
 import os
 import hashlib
 import time
+import math
 from threading import Lock
 
 import requests
@@ -22,7 +23,7 @@ def _session_cookie():
 
 
 def browser_price_source_enabled():
-    return bool(_session_cookie())
+    return os.getenv("ZAKUPAY_BROWSER_PRICES_ENABLED", "").lower() == "true" and bool(_session_cookie())
 
 
 def session_revision():
@@ -30,92 +31,99 @@ def session_revision():
     return hashlib.sha256(_session_cookie().encode('utf-8')).hexdigest()
 
 
-def _cached(item_id):
-    now = time.time()
-    with _cache_lock:
-        row = _cache.get(int(item_id))
-        if not row:
-            return None
-        if now - row["ts"] > CACHE_TTL:
-            _cache.pop(int(item_id), None)
-            return None
-        return row["data"]
-
-
-def _store(rows):
-    now = time.time()
-    with _cache_lock:
-        for row in rows:
-            item_id = row.get("orderItemId") if isinstance(row, dict) else None
-            if item_id is not None:
-                _cache[int(item_id)] = {"ts": now, "data": row}
+def _item_id(value):
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int) and value > 0:
+        return value
+    if isinstance(value, str) and value.isascii() and value.isdigit() and int(value) > 0:
+        return int(value)
+    return None
 
 
 def fetch_best_prices(item_ids, force=False):
-    ids = []
-    for value in item_ids or []:
-        try:
-            value = int(value)
-        except (TypeError, ValueError):
-            continue
-        if value not in ids:
-            ids.append(value)
-    if not ids:
-        return {"ok": True, "enabled": browser_price_source_enabled(), "prices": {}, "errors": []}
-
-    prices = {}
-    missing = []
-    if not force:
-        for item_id in ids:
-            row = _cached(item_id)
-            if row is None:
-                missing.append(item_id)
-            else:
-                prices[item_id] = row
-    else:
-        missing = ids[:]
-
+    """Experimental server-side adapter. Never use integration tokens here."""
+    ids = list(dict.fromkeys(i for v in item_ids or [] if (i := _item_id(v)) is not None))
     cookie = _session_cookie()
-    if not missing:
-        return {"ok": True, "enabled": bool(cookie), "prices": prices, "errors": []}
-    if not cookie:
-        return {"ok": False, "enabled": False, "prices": prices, "errors": ["ZAKUPAY_PLAY_SESSION is not configured"]}
-
-    headers = {
-        "Accept": "application/json, text/javascript, */*; q=0.01",
-        "Content-Type": "application/json",
-        "X-Requested-With": "XMLHttpRequest",
-        "Origin": BASE_URL,
-        "Referer": BASE_URL + "/core/supplier/registry",
-        "User-Agent": "Mozilla/5.0",
-    }
+    enabled = browser_price_source_enabled()
+    def result(prices, errors):
+        return {"ok": not errors, "enabled": enabled, "prices": prices, "errors": errors}
+    if not enabled:
+        return result({}, ["not_configured"])
+    if BASE_URL != "https://prodavay.sel-be.ru":
+        return result({}, ["unsupported_origin"])
+    revision = session_revision()
+    prices = {}
+    with _cache_lock:
+        # Session removal/replacement must never expose another account's cache.
+        for key in list(_cache):
+            if key[0] != revision or time.time() - _cache[key]["ts"] >= CACHE_TTL:
+                del _cache[key]
+        if not force:
+            prices = {i: _cache[(revision, i)]["data"] for i in ids if (revision, i) in _cache}
+    missing = [i for i in ids if i not in prices]
     errors = []
-    session = requests.Session()
-    session.cookies.set("PLAY_SESSION", cookie, domain="prodavay.sel-be.ru", path="/")
+    headers = {"Accept": "application/json", "Content-Type": "application/json",
+               "X-Requested-With": "XMLHttpRequest", "Origin": BASE_URL,
+               "Referer": BASE_URL + "/core/supplier/registry"}
+    with requests.Session() as session:
+        session.cookies.set("PLAY_SESSION", cookie, domain="prodavay.sel-be.ru", path="/")
+        for start in range(0, len(missing), max(1, BATCH_SIZE)):
+            batch = missing[start:start + max(1, BATCH_SIZE)]
+            try:
+                response = session.post(PRICE_ENDPOINT, headers=headers, json=batch,
+                                        timeout=30, allow_redirects=False)
+                if response.status_code in (401, 403) or 300 <= response.status_code < 400:
+                    with _cache_lock:
+                        _cache.clear()
+                    return result({}, ["forbidden" if response.status_code == 403 else "unauthorized"])
+                if response.status_code != 200:
+                    errors.append("upstream_error")
+                    continue
+                data = response.json()
+                if not isinstance(data, list):
+                    errors.append("invalid_contract")
+                    continue
+                found = {}
+                invalid = set()
+                for row in data:
+                    item_id = _item_id(row.get("orderItemId")) if isinstance(row, dict) else None
+                    if item_id not in batch:
+                        errors.append("invalid_contract")
+                        continue
+                    if item_id in found:
+                        invalid.add(item_id)
+                        errors.append("invalid_contract")
+                    found[item_id] = row
+                for item_id in invalid:
+                    del found[item_id]
+                with _cache_lock:
+                    for item_id, row in found.items():
+                        _cache[(revision, item_id)] = {"ts": time.time(), "data": row}
+                prices.update(found)
+            except requests.RequestException:
+                errors.append("connection_error")
+            except ValueError:
+                errors.append("invalid_contract")
+    return result(prices, list(dict.fromkeys(errors)))
 
-    for start in range(0, len(missing), max(1, BATCH_SIZE)):
-        batch = missing[start:start + max(1, BATCH_SIZE)]
-        try:
-            r = session.post(PRICE_ENDPOINT, headers=headers, json=batch, timeout=30, allow_redirects=False)
-            if not r.ok:
-                try:
-                    body = r.json()
-                except ValueError:
-                    body = r.text[:1000]
-                errors.append({"status": r.status_code, "body": body})
-                continue
-            data = r.json()
-            if not isinstance(data, list):
-                errors.append({"status": r.status_code, "body": data})
-                continue
-            _store(data)
-            for row in data:
-                if isinstance(row, dict) and row.get("orderItemId") is not None:
-                    prices[int(row["orderItemId"])] = row
-        except Exception as exc:
-            errors.append(f"{type(exc).__name__}: {exc}")
 
-    return {"ok": not errors, "enabled": True, "prices": prices, "errors": errors}
+def price_state(result, row=None):
+    errors = result.get("errors") or []
+    labels = {"not_configured": "Источник лучшей цены не настроен",
+              "unauthorized": "Требуется авторизация в Закупай",
+              "forbidden": "Нет прав на просмотр лучшей цены",
+              "invalid_contract": "Формат ответа Закупай изменился",
+              "connection_error": "Источник цен временно недоступен",
+              "upstream_error": "Источник цен временно недоступен",
+              "unsupported_origin": "Адрес источника цен не поддерживается"}
+    if best_price_value(row) is not None:
+        return "Закупай · bestPrice (экспериментальный источник)"
+    if errors:
+        return labels.get(errors[0], "Лучшая цена недоступна")
+    if isinstance(row, dict) and row.get("offerDeviation") is not None:
+        return "Доступен только коридор цен"
+    return "Лучшая цена не предоставлена"
 
 
 def prefetch_best_prices(orders, force=False):
@@ -151,15 +159,19 @@ def best_price_rows_for_order(order, force=False):
 
 
 def best_price_value(row):
-    if not isinstance(row, dict):
+    if not isinstance(row, dict) or not isinstance(row.get("bestPrice"), dict):
         return None
-    best = row.get("bestPrice")
-    if isinstance(best, dict):
-        value = best.get("priceInDefaultCurrency")
-        if value is None:
-            value = best.get("price")
-        try:
-            return float(value)
-        except (TypeError, ValueError):
+    best = row["bestPrice"]
+    value = best.get("priceInDefaultCurrency")
+    if value is None:
+        # The UI displays rubles; do not silently label foreign currency as RUB.
+        if best.get("currencyCode") not in (None, "RUB", "RUR"):
             return None
-    return None
+        value = best.get("price")
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        return None
+    try:
+        value = float(value)
+        return value if math.isfinite(value) and value > 0 else None
+    except (TypeError, ValueError, OverflowError):
+        return None

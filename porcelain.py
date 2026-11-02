@@ -11,6 +11,7 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from decimal import Decimal, ROUND_CEILING, ROUND_HALF_UP
 from functools import lru_cache
+from zoneinfo import ZoneInfo
 
 from invoice_generator import SELLER, customer_validation_error, validate_seller
 from price_lists import database, execute, norm, number
@@ -43,6 +44,11 @@ def schema_statements(postgres):
         f"""CREATE TABLE IF NOT EXISTS tile_quotes (
             id {serial} PRIMARY KEY{auto}, job_id BIGINT NOT NULL, catalog_id BIGINT NOT NULL,
             snapshot_json TEXT NOT NULL, created_at TEXT NOT NULL)""",
+        f"""CREATE TABLE IF NOT EXISTS tile_invoice_files (
+            quote_id BIGINT PRIMARY KEY, snapshot_hash TEXT NOT NULL, body {blob} NOT NULL)""",
+        """CREATE TABLE IF NOT EXISTS tile_dispatch (
+            order_id BIGINT PRIMARY KEY, quote_id BIGINT NOT NULL, state TEXT NOT NULL,
+            invoice_hash TEXT NOT NULL, file_id TEXT, offer_id TEXT, error TEXT, updated_at TEXT NOT NULL)""",
         "CREATE INDEX IF NOT EXISTS idx_tile_quotes_job ON tile_quotes(job_id,id)",
         """CREATE TABLE IF NOT EXISTS tile_sellers (
             id TEXT PRIMARY KEY, profile_json TEXT NOT NULL, updated_at TEXT NOT NULL)""",
@@ -221,6 +227,12 @@ GROUPS = {
 }
 
 
+def tile_kind(text):
+    if re.search(r'плинтус|ступен|бордюр|декор|мозаик', str(text or ''), re.I):
+        return 'accessory'
+    return 'tile' if is_tile(text) else 'other'
+
+
 def requirements(text):
     text = str(text or '').casefold().replace('ё', 'е')
     result = {key: {name for name, pattern in groups.items() if re.search(pattern, text)} for key, groups in GROUPS.items()}
@@ -298,15 +310,17 @@ def automatic_selection(data, order):
     for i, item in enumerate(order.get('orderItems') or [], 1):
         name = str(item.get('goodName') or item.get('name') or '')
         unit = item.get('unit') or {}
-        if not is_tile(name) or normalize_unit(unit.get('name') if isinstance(unit, dict) else unit) != 'м²':
+        if tile_kind(name) != 'tile' or normalize_unit(unit.get('name') if isinstance(unit, dict) else unit) != 'м²':
             continue
         area = number(item.get('count'))
         if not area or area <= 0:
             continue
         candidates = []
         named = {p['id'] for p in data['products'] if norm(p.get('name')) and re.search(r'\b' + re.escape(norm(p['name'])) + r'\b', norm(name))}
-        for match in find_analogues(data, name, len(data['products'])):
+        for match in find_analogues(data, name + ' ' + str(item.get('comment') or ''), len(data['products'])):
             p = match['product']; price = number(p.get('price_rub_m2')); stock = number(p.get('stock_m2')); box = number(p.get('box_m2'))
+            if tile_kind(p.get('name')) == 'accessory':
+                continue
             if named and p['id'] not in named:
                 continue
             quantity = math.ceil(Decimal(str(area)) / Decimal(str(box))) * box if box and box > 0 else area
@@ -334,7 +348,7 @@ def save_seller(values):
     return key
 
 
-def make_quote(order, catalog, form):
+def make_quote(order, catalog, form, best_prices=None):
     products = {p['id']: p for p in catalog['data']['products']}
     lines, issues, stock_used = [], [], defaultdict(float)
     for index, item in enumerate(order.get('orderItems') or [], 1):
@@ -345,7 +359,7 @@ def make_quote(order, catalog, form):
             raise ValueError(f'Позиция {index}: товар не найден')
         p = products[key]
         requested = str(item.get('goodName') or item.get('name') or '')
-        check = assess(requested + ' ' + str(form.get(f'features_{index}') or ''), p)
+        check = assess(requested + ' ' + str(item.get('comment') or '') + ' ' + str(form.get(f'features_{index}') or ''), p)
         if check['conflicts']:
             raise ValueError(f"Позиция {index}: {', '.join(check['conflicts'])}")
         area = _positive(form.get(f'area_{index}'), f'Позиция {index}: площадь, м²')
@@ -356,6 +370,12 @@ def make_quote(order, catalog, form):
         boxes = math.ceil(Decimal(str(area)) * (1 + Decimal(str(reserve))/100) / Decimal(str(box))) if box and box > 0 else None
         shipped = float(Decimal(str(boxes)) * Decimal(str(box))) if boxes else None
         price = number(form.get(f'price_{index}')) if f'price_{index}' in form else number(p.get('price_rub_m2'))
+        evidence = None
+        discount = form.get('discount_pct')
+        if discount not in (None, ''):
+            from tile_pricing import discounted_price
+            price, evidence = discounted_price(
+                (best_prices or {}).get(str(item.get('id'))), discount, form.get('vat'))
         if price is not None and price <= 0:
             raise ValueError(f'Позиция {index}: цена должна быть больше нуля')
         pallet_area = number(form.get(f'pallet_{index}')) if form.get(f'pallet_{index}') not in (None, '') else number(p.get('pallet_m2')) or number(p.get('pallet_m2_estimate'))
@@ -365,17 +385,23 @@ def make_quote(order, catalog, form):
         pallets = math.ceil(Decimal(str(shipped)) / Decimal(str(pallet_area))) if shipped and pallet_area and pallet_area > 0 else None
         weight = shipped * kg + pallets * (number(p.get('pallet_kg_estimate')) or 30) if shipped and kg and pallets else None
         missing = []
+        if tile_kind(requested) != 'tile':
+            missing.append('Фасонное изделие требует отдельного каталога и единиц; обычная плитка не подходит')
+        if form.get('discount_pct') not in (None, '') and price is None:
+            missing.append('Нет свежей сопоставимой лучшей цены; коридор не используется')
+        if check['unknown'] and form.get(f'technical_{index}') != 'yes':
+            missing.append('Уточните неизвестные технические характеристики и подтвердите проверку')
         if not shipped: missing.append('Нет площади коробки')
         if price is None: missing.append('Нужна продажная цена за м²')
         if p.get('stock_m2') is None: missing.append('Наличие неизвестно')
         if form.get(f'approve_{index}') != 'yes': missing.append('Подтвердите аналог и наличие')
         if not weight: missing.append('Недостаточно данных о весе/паллетах')
         if shipped: stock_used[key] += shipped
-        lines.append({'position': index, 'requested_name': requested, 'product': dict(p), 'required_m2': area,
+        lines.append({'position': index, 'order_item_id': item.get('id'), 'requested_name': requested, 'product': dict(p), 'required_m2': area,
                       'reserve_pct': reserve, 'boxes': boxes, 'quantity': shipped, 'unit': 'м²', 'pallets': pallets,
                       'weight_kg': weight, 'box_m2_used': box, 'kg_m2_used': kg, 'pallet_m2_used': pallet_area,
                       'proposed_unit_price': price, 'amount': money(Decimal(str(shipped))*Decimal(str(price))) if shipped and price else None,
-                      'approved': form.get(f'approve_{index}') == 'yes', 'check': check, 'issues': missing})
+                      'price_evidence': evidence, 'approved': form.get(f'approve_{index}') == 'yes', 'check': check, 'issues': missing})
     if not lines:
         raise ValueError('Выберите хотя бы один товар для предложения')
     for line in lines:
@@ -429,7 +455,7 @@ def make_quote(order, catalog, form):
     if not str(form.get('invoice_number') or '').strip(): issues.append('Укажите номер счёта')
     total = money(sum(l['amount'] for l in lines) + sale_delivery) if all(l['amount'] is not None for l in lines) and sale_delivery is not None else None
     return {'order_id': order.get('id'), 'customer': customer, 'seller': seller, 'vat_rate': int(vat)/100 if vat.isdigit() else None,
-            'invoice_number': str(form.get('invoice_number') or '').strip(), 'address': address, 'lines': lines,
+            'invoice_number': str(form.get('invoice_number') or '').strip(), 'invoice_date': datetime.now(ZoneInfo('Europe/Moscow')).date().isoformat(), 'address': address, 'lines': lines,
             'weight_kg': weight, 'shipping': shipping, 'delivery_price': sale_delivery, 'total': total,
             'issues': list(dict.fromkeys(issues)), 'inputs': dict(form), 'stock_as_of': catalog['data'].get('stock_as_of'),
             'catalog_id': catalog['id'], 'order_snapshot': order, 'created_at': now()}
@@ -454,6 +480,7 @@ def invoice_draft(snapshot):
     rows = [{'decision': 'approved', 'requested_name': line['requested_name'], 'selected': {'name': line['product']['name'] + ' ' + str(line['product'].get('format') or '')},
              'quantity': line['quantity'], 'unit': 'м²', 'proposed_unit_price': line['proposed_unit_price'],
              'product_url': product_page_url(line['product'])} for line in snapshot['lines']]
-    rows.append({'decision': 'approved', 'requested_name': 'Доставка по адресу: ' + snapshot['address'], 'quantity': 1,
+    rows.append({'decision': 'approved', 'requested_name': 'Доставка по адресу: ' + snapshot['address'],
+                 'selected': {'name': 'Доставка по адресу: ' + snapshot['address']}, 'quantity': 1,
                  'unit': 'услуга', 'proposed_unit_price': snapshot['delivery_price']})
-    return {**snapshot, 'items': rows, 'payment_note': 'Оплата: 100% предоплата. Доставка указана отдельной строкой.'}
+    return {**snapshot, 'invoice_date': snapshot.get('invoice_date') or datetime.fromisoformat(snapshot['created_at']).astimezone(ZoneInfo('Europe/Moscow')).date().isoformat(), 'items': rows, 'payment_note': 'Оплата: 100% предоплата. Доставка указана отдельной строкой.'}

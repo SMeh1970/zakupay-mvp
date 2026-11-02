@@ -74,6 +74,22 @@ def required_catalog(catalog_id=None):
     return catalog
 
 
+def priced_quote(order, catalog, form):
+    prices = {}
+    if form.get('discount_pct') not in (None, ''):
+        import browser_prices
+        from tile_offer_policy import competitor_prices
+        ids = [item['id'] for item in order.get('orderItems', []) if item.get('id') is not None]
+        try:
+            result = browser_prices.fetch_best_prices(ids, force=True)
+        except (requests.RequestException, ValueError, TypeError):
+            result = {}
+        if result.get('ok'):
+            rows = [row for key, row in result.get('prices', {}).items() if str(key) in {str(i) for i in ids}]
+            prices = competitor_prices(rows, datetime.now(timezone.utc).isoformat())
+    return tiles.make_quote(order, catalog, form, best_prices=prices)
+
+
 def required_quote(quote_id):
     quote = tiles.load_quote(quote_id)
     if not quote: raise HTTPException(404, 'Черновик не найден')
@@ -142,12 +158,21 @@ def quote_form(quote):
         controls = field(f'area_{i}','Требуется, м²',line['required_m2'],'number') + field(f'reserve_{i}','Запас, %',line['reserve_pct'],'number')
         controls += field(f'box_{i}','м² в коробке',line['box_m2_used'],'number') + field(f'kg_{i}','кг/м² — подтвердить',line['kg_m2_used'],'number')
         controls += field(f'pallet_{i}','м² на паллете — подтвердить',line['pallet_m2_used'],'number') + field(f'price_{i}','Наша продажная цена за м², включая выбранный НДС',line['proposed_unit_price'],'number')
+        from tile_offer_policy import line_match
+        source_item = s['order_snapshot']['orderItems'][i-1]
+        technical_notes = line_match(source_item, p)
+        controls += '<p class=notice>' + esc('; '.join(technical_notes or line['check']['unknown']) or 'Основные характеристики совпадают') + '</p>'
+        proof = line.get('price_evidence')
+        if proof:
+            controls += '<p>Лучшая цена: ' + esc(proof['price']) + ' ₽/м²; проверена: ' + esc(proof['checked_at']) + '; снижение: ' + esc(proof['discount_pct']) + '%.</p>'
+        controls += field(f'technical_source_{i}', 'Документ / ссылка подтверждения специальных требований и согласования аналога', values.get(f'technical_source_{i}', ''))
+        controls += checkbox(f'technical_{i}', 'Я сверил неизвестные характеристики с техническим описанием поставщика', values.get(f'technical_{i}') == 'yes')
         rows.append(f"<section><h2>Позиция {i}: {esc(line['requested_name'])}</h2>{photo(catalog['id'],p)}<p>Предлагаем: <b>{esc(p['name'])} · {esc(p.get('format'))}</b></p><p>Цена в каталоге: {esc(p.get('price_rub_m2') if p.get('price_rub_m2') is not None else 'не заполнена')} ₽/м². Продажную цену укажите отдельно.</p>{hidden}<div class='grid'>{controls}</div>"
             f"<p>К отгрузке: {esc(line['quantity'])} м² · коробок: {esc(line['boxes'])} · паллет, оценка: {esc(line['pallets'])} · вес: {esc(line['weight_kg'])} кг</p>"
             + checkbox(f'approve_{i}','Я проверил аналог, упаковку, количество и актуальное наличие',line['approved']) + '</section>')
     profiles = tiles.sellers()
     firm = select('seller','От какой нашей фирмы выставить счёт',[('', 'Выберите фирму')]+[(k,p['name']+' · ИНН '+p['inn']) for k,p in profiles.items()],values.get('seller',''))
-    controls = firm + select('vat','НДС нашей фирмы',[('', 'Выберите'),('22','22%'),('20','20%'),('10','10%'),('0','Без НДС')],values.get('vat',''))
+    controls = field('discount_pct', 'Снижение от лучшей цены, % (пусто — ручная цена)', values.get('discount_pct', ''), 'number') + firm + select('vat','НДС нашей фирмы',[('', 'Выберите'),('22','22%'),('20','20%'),('10','10%'),('0','Без НДС')],values.get('vat',''))
     controls += field('invoice_number','Номер счёта',s['invoice_number']) + field('address','Адрес доставки из заявки',s['address'])
     customer = normalize_customer(s['customer'])
     buyer = field('customer_name','Покупатель: название',customer['name']) + field('customer_inn','ИНН покупателя',customer['inn'])
@@ -169,7 +194,7 @@ def quote_form(quote):
         + checkbox('transport_confirmed','Я подтвердил массу, паллетоместа, разгрузку, маршрут и итоговую цену с перевозчиком',values.get('transport_confirmed')=='yes')
         + f"<button>Пересчитать и сохранить версию предложения</button></section></form><section><h2>Итого: {esc(total)}</h2>{calculation}"
         f"<p><a target='_blank' rel='noopener' href='{esc(calculator_link(s,catalog))}'>Открыть позиции и адрес в существующем калькуляторе</a></p>"
-        f"{downloads} <a href='{URL}/quotes/{quote['id']}/calculation'>Скачать внутренний расчёт</a><p>Комплект для клиента содержит счёт, описание аналога и имеющиеся фотографии. Закупочные цены и внутренний расчёт в него не попадают.</p></section>")
+        f"{downloads} <a class='button' href='{URL}/quotes/{quote['id']}/send'>Проверить и подтвердить отправку</a> <a href='{URL}/quotes/{quote['id']}/calculation'>Скачать внутренний расчёт</a><p>Комплект для клиента содержит счёт, описание аналога и имеющиеся фотографии. Закупочные цены и внутренний расчёт в него не попадают.</p></section>")
 
 
 def customer_html(s):
@@ -192,7 +217,8 @@ def bundle(quote):
     s=quote['snapshot']; draft=tiles.invoice_draft(s)
     output=io.BytesIO()
     with zipfile.ZipFile(output,'w',zipfile.ZIP_DEFLATED) as z:
-        z.writestr('invoice.xlsx',build_invoice_xlsx(draft))
+        from tile_submission import invoice_body
+        z.writestr('invoice.xlsx',invoice_body(quote))
         z.writestr('proposal.html',customer_html(s).encode())
         for line in s['lines']:
             url=tiles.product_page_url(line['product'])
@@ -207,6 +233,9 @@ def bundle(quote):
 
 
 def install_porcelain(app, fetch_all_orders=None):
+    from tile_submission import install_tile_submission
+    install_tile_submission(app)
+    app.state.tile_panel_installed = True
     @app.get(URL)
     def tile_index(q: str=''):
         catalog=tiles.load_catalog()
@@ -269,30 +298,73 @@ def install_porcelain(app, fetch_all_orders=None):
         with database() as conn:
             previous=execute(conn,'SELECT id,created_at FROM tile_quotes WHERE job_id=? ORDER BY id DESC LIMIT 30',(job_id,)).fetchall()
         history=''.join(f"<li><a href='{URL}/quotes/{r['id']}'>Предложение № {r['id']} — {esc(r['created_at'])}</a></li>" for r in previous)
+        selected_count = 0
+        can_prepare = False
         for i,item in enumerate(order.get('orderItems',[]),1):
             name=item.get('goodName') or item.get('name') or ''
             if not tiles.is_tile(name): continue
-            features=request.query_params.get(f'features_{i}','')
-            found=tiles.find_analogues(catalog['data'],name+' '+features)
-            auto_id=automatic.get(i)
-            if auto_id and not any(r['product']['id']==auto_id for r in found):
-                found += [r for r in tiles.find_analogues(catalog['data'],name+' '+features,len(catalog['data']['products'])) if r['product']['id']==auto_id]
-            options=[('', 'Не включать позицию')]+[(r['product']['id'],r['product']['name']+' · '+str(r['product'].get('format') or '')) for r in found]
             unit=item.get('unit') or {}; unit=unit.get('name') if isinstance(unit,dict) else unit
             from saved_dashboard import normalize_unit
-            area=item.get('count') if normalize_unit(unit)=='м²' else ''
-            rows.append(f"<section><h2>{i}. {esc(name)}</h2><p>Количество в заявке: {esc(item.get('count'))} {esc(unit)}</p>"
+            unsupported = tiles.tile_kind(name) != 'tile' or normalize_unit(unit) != 'м²'
+            if unsupported:
+                reason = ('Это плинтус или другое фасонное изделие. Нужен каталог таких изделий; обычная плитка не заменяет его.'
+                          if tiles.tile_kind(name) != 'tile' else 'Единица заявки не м². Автоматический пересчёт не подтверждён.')
+                rows.append(f"<section><h2>{i}. {esc(name)}</h2><p>{esc(item.get('count'))} {esc(unit)}</p><p class='notice'>{esc(reason)}</p></section>")
+                continue
+            features=request.query_params.get(f'features_{i}','')
+            found=tiles.find_analogues(catalog['data'],name+' '+str(item.get('comment') or '')+' '+features)
+            found=[r for r in found if tiles.tile_kind(r['product'].get('name')) != 'accessory']
+            can_prepare = can_prepare or bool(found)
+            key=automatic.get(i,'')
+            chosen=next((p for p in catalog['data']['products'] if p['id']==key),None)
+            if chosen: selected_count += 1
+            status=(f"Предварительно подобрано: {esc(chosen['name'])}. Цена каталога: {esc(chosen.get('price_rub_m2'))} ₽/м²."
+                    if chosen else 'Подходящего товара с известными характеристиками, ценой и достаточным остатком нет.')
+            if chosen:
+                from tile_offer_policy import line_match
+                notes=line_match(item,chosen)
+                if notes: status += ' Требует проверки: ' + esc('; '.join(notes))
+            options=[('', 'Не включать позицию')]+[(r['product']['id'],r['product']['name']+' · '+str(r['product'].get('format') or '')) for r in found]
+            rows.append(f"<section><h2>{i}. {esc(name)}</h2><p>{esc(item.get('count'))} {esc(unit)}</p><p class='notice'>{status}</p>"
+                + select(f'product_{i}','Выбранный товар',options,request.query_params.get(f'product_{i}',key))
+                + field(f'area_{i}','Требуется, м²',request.query_params.get(f'area_{i}',item.get('count')),'number')
+                + "<details><summary>Проверить характеристики и другие варианты</summary>"
                 + field(f'features_{i}','Уточнить цвет / рисунок / характеристики',features)
-                + f"<button type='submit' formmethod='get' formaction='/dashboard/automation/jobs/{job_id}/tiles'>Обновить варианты</button>"
-                + select(f'product_{i}','Наш предлагаемый аналог',options,request.query_params.get(f'product_{i}',automatic.get(i,'')))
-                + field(f'area_{i}','Требуемая площадь, м² (если в заявке штуки/коробки — укажите пересчёт)',request.query_params.get(f'area_{i}',area),'number')
-                + "<div class='products'>"+''.join(product_card(catalog['id'],r['product'],r) for r in found)+"</div></section>")
-        return page(f"<h1>Подбор аналога к заявке № {esc(order.get('id'))}</h1><p>Адрес доставки: {esc(tiles.delivery_address(order) or 'в заявке не указан')}</p>"
-            + (f"<section><h2>Сохранённые предложения по заявке</h2><ul>{history}</ul></section>" if history else '')
-            + "<p>Автоматически выбирается самый дешёвый вариант с подтверждёнными в каталоге характеристиками и достаточным остатком по сумме строк. Неизвестные характеристики требуют ручного выбора.</p>"
+                + "<div class='products'>"+''.join(product_card(catalog['id'],r['product'],r) for r in found)+"</div></details></section>")
+        price_note = 'Точная лучшая цена не подменяется коридором. При расчёте проверяется источник, м², НДС и доставка; недоступная цена остановит расчёт.'
+        return page(f"<h1>Предложение по заявке № {esc(order.get('id'))}</h1><p>Адрес доставки: {esc(tiles.delivery_address(order) or 'не указан')}</p>"
+            + f"<section><h2>Результат автоматического подбора: {selected_count} поз.</h2><p>{price_note}</p><a href='/dashboard/automation/jobs/{job_id}/tiles/prices'>Проверить текущие конкурентные цены</a>"
+            + ('<p>Подготовьте расчёт по выбранным товарам. Наличие, специальные требования и реквизиты проверяются перед счётом.</p>' if selected_count else '<p class="notice">Автоматическое предложение остановлено. Причины указаны по каждой позиции ниже.</p>') + '</section>'
+            + (f"<section><h2>Сохранённые версии</h2><ul>{history}</ul></section>" if history else '')
             + f"<form method='post' action='/dashboard/automation/jobs/{job_id}/tiles/prepare'><input type='hidden' name='catalog_id' value='{catalog['id']}'>"
-            + ("<input type='hidden' name='seller' value='firm-5638073633-002580'>" if 'firm-5638073633-002580' in tiles.sellers() else '')
-            + ''.join(rows) + ("<button>Выбрать аналоги и подготовить расчёт</button>" if rows else '<p>В сохранённых позициях керамогранит не найден.</p>')+'</form>')
+            + ''.join(rows) + (field('discount_pct','На сколько процентов снизить лучшую конкурентную цену (пусто — ручная цена)','','number')
+            + select('seller','От какой фирмы подготовить счёт',[('', 'Выберите фирму')]+[(k,p['name']) for k,p in tiles.sellers().items()])
+            + select('vat','НДС выбранной фирмы',[('', 'Выберите'),('22','22%'),('20','20%'),('10','10%'),('0','Без НДС')])
+            + "<button>Рассчитать предложение по выбранным товарам</button>" if can_prepare else '')+'</form>')
+
+    @app.get('/dashboard/automation/jobs/{job_id}/tiles/prices')
+    def tile_price_check(job_id: int):
+        import browser_prices
+        from tile_offer_policy import competitor_prices
+        order=order_for_job(job_id)
+        items=[item for item in order.get('orderItems',[]) if tiles.is_tile(item.get('goodName') or item.get('name'))]
+        ids=[item['id'] for item in items if item.get('id') is not None]
+        try:
+            result=browser_prices.fetch_best_prices(ids,force=True)
+            prices=competitor_prices(list(result.get('prices',{}).values()),datetime.now(timezone.utc).isoformat())
+            state=browser_prices.price_state(result)
+        except (requests.RequestException,ValueError,TypeError):
+            prices={}; state='Не удалось проверить источник точной цены'
+        rows=[]
+        for item in items:
+            evidence=prices.get(str(item.get('id'))) or {}
+            value=evidence.get('price')
+            details='; '.join(f'{key}: {evidence.get(key) if evidence.get(key) is not None else "не подтверждено"}' for key in ('unit','currency','vat_rate','delivery_included'))
+            rows.append(f"<tr><td>{esc(item.get('goodName') or item.get('name'))}</td><td>{esc(value if value is not None else 'Точная цена недоступна')}</td><td>{esc(details)}</td></tr>")
+        return page(f"<h1>Проверка конкурентной цены: заявка №{esc(order.get('id'))}</h1><p>{esc(state)}</p>"
+            + "<p>Числовая цена без подтверждённых единиц, НДС и доставки не допускается к автоматическому снижению. Коридор не заменяет точную цену.</p>"
+            + "<table><tr><th>Позиция</th><th>Точная цена источника</th><th>Условия</th></tr>"+''.join(rows)+"</table>"
+            + f"<a href='/dashboard/automation/jobs/{job_id}/tiles'>Вернуться к предложению</a>")
 
     @app.post('/dashboard/automation/jobs/{job_id}/tiles/prepare')
     async def tile_prepare(job_id: int,request: Request):
@@ -301,7 +373,7 @@ def install_porcelain(app, fetch_all_orders=None):
         try:
             if managed_catalog.configured(): await run_in_threadpool(managed_catalog.sync_catalog)
             catalog=await run_in_threadpool(required_proposal_catalog,int(form.get('catalog_id') or 0))
-            snapshot=await run_in_threadpool(tiles.make_quote,order,catalog,form)
+            snapshot=await run_in_threadpool(priced_quote,order,catalog,form)
             key=await run_in_threadpool(tiles.save_quote,job_id,catalog,snapshot)
         except ValueError as exc: raise HTTPException(400,str(exc))
         return RedirectResponse(f'{URL}/quotes/{key}',303)
@@ -315,7 +387,7 @@ def install_porcelain(app, fetch_all_orders=None):
         try:
             if managed_catalog.configured(): await run_in_threadpool(managed_catalog.sync_catalog)
             catalog=await run_in_threadpool(required_proposal_catalog,quote['catalog_id'])
-            snapshot=await run_in_threadpool(tiles.make_quote,quote['snapshot']['order_snapshot'],catalog,form)
+            snapshot=await run_in_threadpool(priced_quote,quote['snapshot']['order_snapshot'],catalog,form)
             key=await run_in_threadpool(tiles.save_quote,quote['job_id'],catalog,snapshot)
         except ValueError as exc: raise HTTPException(400,str(exc))
         return RedirectResponse(f'{URL}/quotes/{key}',303)
