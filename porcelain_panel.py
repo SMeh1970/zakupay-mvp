@@ -359,7 +359,14 @@ def install_porcelain(app, fetch_all_orders=None):
         for item in items:
             evidence=prices.get(str(item.get('id'))) or {}
             value=evidence.get('price')
-            details='; '.join(f'{key}: {evidence.get(key) if evidence.get(key) is not None else "не подтверждено"}' for key in ('unit','currency','vat_rate','delivery_included'))
+            labels = {'unit':'Единица цены','currency':'Валюта','vat_rate':'НДС','delivery_included':'Доставка включена'}
+            def display(key):
+                value=evidence.get(key)
+                if value is None: return 'не подтверждено'
+                if key == 'delivery_included': return 'да' if value else 'нет'
+                if key == 'vat_rate': return f'{value*100:g}%' if isinstance(value,(int,float)) else str(value)
+                return str(value)
+            details='; '.join(labels[key]+': '+display(key) for key in labels)
             rows.append(f"<tr><td>{esc(item.get('goodName') or item.get('name'))}</td><td>{esc(value if value is not None else 'Точная цена недоступна')}</td><td>{esc(details)}</td></tr>")
         return page(f"<h1>Проверка конкурентной цены: заявка №{esc(order.get('id'))}</h1><p>{esc(state)}</p>"
             + "<p>Числовая цена без подтверждённых единиц, НДС и доставки не допускается к автоматическому снижению. Коридор не заменяет точную цену.</p>"
