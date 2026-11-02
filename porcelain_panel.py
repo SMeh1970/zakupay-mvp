@@ -353,6 +353,9 @@ def install_porcelain(app, fetch_all_orders=None):
             result=browser_prices.fetch_best_prices(ids,force=True)
             prices=competitor_prices(list(result.get('prices',{}).values()),datetime.now(timezone.utc).isoformat())
             state=browser_prices.price_state(result)
+            available=sum(evidence.get('price') is not None for evidence in prices.values())
+            if available:
+                state=f'Числовые цены получены для {available} из {len(items)} позиций. Условия сравнения указаны в таблице.'
         except (requests.RequestException,ValueError,TypeError):
             prices={}; state='Не удалось проверить источник точной цены'
         rows=[]

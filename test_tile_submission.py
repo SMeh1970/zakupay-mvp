@@ -147,3 +147,13 @@ def test_plinth_page_explains_failure_without_empty_prepare_button(prepared):
     assert 'фасонное изделие' in response.text
     assert 'Рассчитать предложение по выбранным товарам</button>' not in response.text
     assert "name='area_1'" not in response.text
+
+
+def test_price_check_header_reports_available_prices_without_inventing_terms(prepared):
+    q,_,_,client=prepared
+    result={'ok':True,'errors':[],'prices':{'101':{'orderItemId':101,'bestPrice':{'currency':'₽','price':1350},'deliveryIncluded':True}}}
+    with patch.object(panel,'order_for_job',return_value=q['snapshot']['order_snapshot']), patch('browser_prices.fetch_best_prices',return_value=result):
+        response=client.get('/dashboard/automation/jobs/1/tiles/prices')
+    assert 'Числовые цены получены для 1 из 1 позиций' in response.text
+    assert 'НДС: не подтверждено' in response.text
+    assert 'Доставка включена: да' in response.text
