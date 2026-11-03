@@ -11,6 +11,12 @@ def build(item, views, enabled=lambda supplier: True, today=None, respect_row_ex
     all_views = views
     if requested_kind:
         views = [v for v in views if kind(v['name']) == requested_kind]
+    else:
+        # Unknown kind (e.g. «компенсатор»): a product must at least carry one of the leading
+        # product words of the request, otherwise it is another product (a garland, a plug).
+        stems = request_stems(source.get('requested_name'))
+        if stems:
+            views = [v for v in views if any(stem in str(v['name'] or '').lower().replace('ё', 'е') for stem in stems)]
     from catalog_comparison import records
     from supplier_characteristics import primary_match
     request_records = records(source.get('requested_name'))
@@ -107,3 +113,19 @@ def build(item, views, enabled=lambda supplier: True, today=None, respect_row_ex
                 filter_stages=stages,
                 unrelated_count=len(all_views)-len(views),
                 offers=output, minimum=best, suitable_count=len(suitable))
+
+
+def request_stems(requested):
+    """Stems of the leading one or two Cyrillic words of a request («Компенсатор сильфонный» ->
+    компенсат, сильфон); endings are dropped so that singular/plural and cases still match."""
+    import re
+    words = []
+    for token in str(requested or '').split():
+        word = token.strip('.,;:()"«»').lower().replace('ё', 'е')
+        if re.fullmatch(r'[а-я-]{3,}', word) and word not in {'для', 'под', 'без', 'или', 'требуется', 'товар', 'изделие', 'комплект', 'набор'}:
+            words.append(word)
+            if len(words) == 2:
+                break
+        elif words or re.search(r'\d', word):
+            break
+    return [w[:-2] if len(w) >= 7 else w[:-1] if len(w) >= 5 else w for w in words]

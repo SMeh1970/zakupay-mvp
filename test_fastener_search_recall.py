@@ -134,7 +134,9 @@ def test_article_like_range_is_kept_unless_both_sides_state_ranges():
 
 def test_search_variants_keep_real_article_but_skip_size_range_query():
     from automation_pipeline import _search_variants
-    assert "123456" in _search_variants("Деталь 123-456")
+    from automation_pipeline import _article_query_map
+    # A real article is still searched, together with the product name.
+    assert _article_query_map("Деталь 123-456") == {"Деталь 123-456": "123456"}
     assert "5664" not in _search_variants(CLAMP_REQUEST)
 
 
