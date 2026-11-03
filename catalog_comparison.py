@@ -36,7 +36,7 @@ def label(value, unit=None):
     return value + (" " + unit if unit and unit != "DN" else "")
 
 
-def records(name, candidate=None):
+def _records_uncached(name, candidate=None):
     """Stored structured data wins, including an explicitly empty result."""
     candidate = candidate or {}
     analysis = candidate.get("analysis")
@@ -250,3 +250,25 @@ def load_offers(result, conn, position=None):
         total += len(projected)
     result["catalog_search"] = dict(positions=len(rows), candidates=total, at=datetime.now(timezone.utc).isoformat())
     return total
+
+
+from functools import lru_cache as _lru_cache
+
+
+@_lru_cache(maxsize=20000)
+def _records_by_name(name):
+    return _records_uncached(name)
+
+
+def records(name, candidate=None):
+    """Stored structured data wins, including an explicitly empty result.
+
+    Without a candidate the result depends only on the name; the review page asks for the same
+    request name once per offer, so those results are cached (callers get their own copy).
+    """
+    # Only calls without a candidate (the request name) are cached: a candidate's brand,
+    # API specifications and stored analysis also shape the result.
+    if not candidate and (name is None or isinstance(name, str)):
+        from product_identity import _clone
+        return _clone(_records_by_name(name))
+    return _records_uncached(name, candidate)
