@@ -58,5 +58,31 @@ CSS = """
 .inline-values .value-offer{border-top:1px solid #eee;padding:5px 0}
 .invoice-candidate{margin-top:7px;font-size:12px;color:#666}
 .invoice-candidate summary{cursor:pointer}
+.found-names{margin-top:8px;font-size:12px;color:#444}
+.found-names>summary{cursor:pointer;color:#334155}
+.found-names-group{margin:6px 0 0 6px}
+.found-names-value{margin:3px 0 3px 10px;padding-left:6px;border-left:2px solid #dde3df}
+.found-names-label{font-weight:600;margin-right:6px}
+.found-names-item{margin:1px 0;overflow-wrap:anywhere}
+.found-names-price{color:#666}
+.found-names-more>summary{cursor:pointer;color:#667}
+.supplier-items-count{display:block;color:#666;margin-bottom:4px}
+.supplier-item{display:block!important;width:100%;text-align:left;background:#fff!important;color:#222!important;border:1px solid #d6ddd8!important;border-radius:6px!important;padding:6px 8px!important;margin:0 0 4px!important;font-weight:400!important;font-size:12px!important}
+.supplier-item strong{display:block;font-size:13px}
+.supplier-item-name{display:block;overflow-wrap:anywhere}
+.supplier-item small{display:block;color:#8a5a00}
+.supplier-item small.matched{color:#367348}
+.supplier-item.blocked{opacity:.65;background:#f6f6f6!important}
+.supplier-item.chosen{border:2px solid #367348!important;background:#e7f5ec!important}
+.supplier-item:disabled{cursor:default}
+.supplier-items-details{background:none!important;color:#1a56b0!important;border:0!important;padding:2px 0!important;font-size:12px!important;font-weight:400!important;text-decoration:underline}
+.supplier-items-more>summary{cursor:pointer;color:#667;font-size:12px}
+.supplier-items-empty{display:block;color:#777;font-size:12px;margin-bottom:4px}
+.value-ok-bar{display:flex;gap:6px;margin:0 0 6px}
+.value-ok-bar button{padding:6px 12px;font-size:13px;font-weight:600}
+.value-ok-bar button:last-child{background:#5f6368}
+.value-ok-bar button:disabled{opacity:.45}
+.inline-values .value-chip.staged-accepted{outline:2px solid #367348;outline-offset:1px;border-radius:3px}
+.inline-values .value-chip.staged-rejected{outline:2px solid #b3261e;outline-offset:1px;border-radius:3px;text-decoration:line-through}
 #message{font-size:12px;color:#557260}
 """

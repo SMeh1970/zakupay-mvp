@@ -178,7 +178,14 @@ async def panel_request_cleanup(request, call_next):
         if cleaned != pairs:
             request.scope["query_string"] = urlencode(cleaned, doseq=True).encode("utf-8")
 
+    started = time.monotonic()
     response = await call_next(request)
+    elapsed = time.monotonic() - started
+    if elapsed >= float(os.getenv("SLOW_REQUEST_SECONDS", "3")):
+        # Shows up in Render logs (WARNING): which page, how long the server worked, how large the answer is.
+        logging.getLogger(__name__).warning(
+            "slow request method=%s path=%s status=%s server_seconds=%.1f bytes=%s",
+            request.method, path, response.status_code, elapsed, response.headers.get("content-length", "unknown"))
 
     return response
 

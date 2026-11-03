@@ -73,3 +73,29 @@ def has_token(candidate_text, token):
 
 def has_noun(candidate_text, noun):
     return bool(re.search(r"(?<![а-я])" + re.escape(stem(noun)), str(candidate_text or "").lower().replace("ё", "е")))
+
+
+def _shape(token):
+    """(number of x-parts, unit) of a size token such as 8мм or 2050x3050; None for plain codes."""
+    found = re.fullmatch(r"(\d+(?:\.\d+)?(?:x\d+(?:\.\d+)?)*)([a-zа-я]*)", token)
+    if not found:
+        return None
+    numbers, unit = found.groups()
+    parts = numbers.count("x") + 1
+    return None if parts == 1 and not unit else (parts, unit)
+
+
+def alternative(candidate_text, token):
+    """The value an offer has instead of a requested size token: same kind of size and unit, other number.
+
+    The offer's own value is a value found in its name, so it is offered for choice with that name as its source.
+    """
+    shape = _shape(token)
+    if shape is None:
+        return None
+    for other in _clean(candidate_text).split():
+        other = other.strip(".,-/")
+        if other != token and _shape(other) == shape:
+            return other
+    return None
+

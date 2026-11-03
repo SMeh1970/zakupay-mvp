@@ -229,7 +229,17 @@ def offer_view(item, candidate):
         checks = [("Основное слово", noun, has_noun(offer_text, noun))]
         checks += [("Слово " + word, word, has_noun(offer_text, word)) for word in other_words(source.get("requested_name"), noun)]
         checks += [("Параметр " + token, token, has_token(offer_text, token)) for token in tokens]
+        from generic_identity import alternative as generic_alternative
         for field, value, present in checks:
+            other = None if present or not field.startswith("Параметр ") else generic_alternative(offer_text, value)
+            if other:
+                # The name has a different value of the same kind (4мм instead of 8мм): offer that value,
+                # shared by every name that has it, instead of "Не указано".
+                identifier = feature_id(field, other)
+                features.append(dict(id=identifier, field=field, value=other, required=[value],
+                    state=decisions.get(identifier, "pending"), differs=True, unit=None,
+                    evidence="В наименовании: " + other, origin="name", ambiguous=False, offer_specific=False))
+                continue
             shown = value if present else "Не указано"
             identifier = feature_id(field, shown) + ("" if present else ":" + feature_id("Предложение", key + fingerprint(original_candidate)))
             features.append(dict(id=identifier, field=field, value=shown, required=[value],
