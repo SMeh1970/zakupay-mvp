@@ -556,6 +556,61 @@ def _norm_keep_decimals(text: str) -> str:
     return _norm(protected).replace("decpoint", ".")
 
 
+# Sizes, pressure classes and standards look like codes but are shared by thousands of
+# different products: DN200, PN16, Ду50, Ру10, IP20, М8, ГОСТ8732, DIN934, SDR11.
+_NOT_ARTICLE = re.compile(r"(?:DN|PN|ДУ|РУ|IP|M|М|ГОСТ|GOST|DIN|ISO|ТУ|SDR|РN)\d+(?:[.,]\d+)?")
+_DOTTED_ARTICLE = re.compile(r"(?<![\w.])(?=[\w.]*[A-Za-zА-Яа-я])(?=[\w.]*\d)[A-Za-zА-Яа-я0-9]+(?:\.[A-Za-zА-Яа-я0-9]+){2,}(?![\w.])")
+_STOP_NOUNS = {"для", "под", "без", "или", "требуется", "товар", "изделие", "комплект", "набор"}
+
+
+def _compact_code(text) -> str:
+    return re.sub(r"[^A-ZА-Я0-9]", "", str(text or "").upper().replace("Ё", "Е"))
+
+
+def _main_noun(requested: str) -> str:
+    """The product name an article is searched with: the leading one or two Cyrillic words
+    ("Компенсатор сильфонный", "Дисковая пила", "Деталь")."""
+    words = []
+    for token in (requested or "").split():
+        word = token.strip(".,;:()\"«»")
+        if re.fullmatch(r"[А-Яа-яЁё-]{3,}", word) and word.lower() not in _STOP_NOUNS:
+            words.append(word)
+            if len(words) == 2:
+                break
+        elif words or re.search(r"\d", word):
+            break
+    return " ".join(words)
+
+
+def _article_query_map(requested: str) -> dict[str, str]:
+    """{query: compact article} for real article numbers in the request.
+
+    A dotted article (AWMP.16.0200.005) is searched whole, never in pieces (AWMP, 0200);
+    sizes and classes (DN200, PN16) are not articles. The query carries the product name.
+    """
+    noun = _main_noun(requested)
+    found = {}
+    dotted = [m.group(0) for m in _DOTTED_ARTICLE.finditer(requested or "")]
+    dotted_compact = [_compact_code(x) for x in dotted]
+    for raw, compact in zip(dotted, dotted_compact):
+        found.setdefault(compact, raw)
+    for identifier in sorted(_identifiers(requested), key=len, reverse=True):
+        # A bare size such as 5Х51 (the tail of "3,5х51") is not an article.
+        if re.fullmatch(r"\d+[XХ]\d+", identifier) or _NOT_ARTICLE.fullmatch(identifier):
+            continue
+        # Same for a range (56-64 -> 5664) next to an explicit size; only an extra
+        # query is skipped here, the full text query is always sent.
+        if identifier in _range_forms(requested) and re.search(r'дюйм|inch|"|″|\bмм\b|\bmm\b', requested, re.I):
+            continue
+        if any(identifier != whole and identifier in whole for whole in dotted_compact):
+            continue
+        raw = next((token.strip(".,;:()\"«»") for token in re.findall(r"[\w./-]+", requested or "")
+                    if _compact_code(token) == identifier), identifier)
+        found.setdefault(identifier, raw)
+    return {((noun + " " + raw) if noun and noun.lower() not in raw.lower() else raw): compact
+            for compact, raw in found.items()}
+
+
 def _search_variants(requested: str) -> list[str]:
     """Search exact identifiers first, then progressively broader text variants."""
     from product_identity import kind, models
@@ -575,15 +630,9 @@ def _search_variants(requested: str) -> list[str]:
     if "хомут" in requested.lower():
         # Keep the original inch notation and mounting range intact.
         variants.append(requested.strip())
-    for identifier in sorted(_identifiers(requested), key=len, reverse=True):
-        # A bare size such as 5Х51 (the tail of "3,5х51") is not an article.
-        if re.fullmatch(r"\d+[XХ]\d+", identifier):
-            continue
-        # Same for a range (56-64 -> 5664) next to an explicit size; only an extra
-        # query is skipped here, the full text query is always sent.
-        if identifier in _range_forms(requested) and re.search(r'дюйм|inch|"|″|\bмм\b|\bmm\b', requested, re.I):
-            continue
-        variants.append(identifier)
+    # Article queries go with the product name ("Компенсатор AWMP.16.0200.005"); what they
+    # return is kept only if it contains the whole article (see _article_query_map).
+    variants.extend(_article_query_map(requested))
     cleaned = re.sub(r"https?://\S+", " ", requested, flags=re.I)
     cleaned = re.sub(r"\b(?:комментарий|код товара)\s*:\s*", " ", cleaned, flags=re.I)
     cleaned = " ".join(cleaned.split())
@@ -699,6 +748,7 @@ def _search_candidates(suppliers, requested: str, time_budget_seconds: float | N
     deadline = time.monotonic() + time_budget_seconds if time_budget_seconds else None
     diagnostics = []
     timed_out = False
+    article_queries = _article_query_map(requested)
     for supplier in suppliers:
         supplier_started = time.monotonic()
         supplier_queries = 0
@@ -737,6 +787,11 @@ def _search_candidates(suppliers, requested: str, time_budget_seconds: float | N
             else:
                 supplier_quotes, reused = search_session.search(supplier, query, VI_CANDIDATE_LIMIT)
                 reused_queries += int(reused)
+            required_article = article_queries.get(query)
+            if required_article:
+                # An article query is trusted only when the product carries the whole article.
+                supplier_quotes = [q for q in supplier_quotes if q.error or required_article in _compact_code(
+                    " ".join(str(getattr(q, k, None) or "") for k in ("name", "article", "sku")))]
             for quote in supplier_quotes:
                 if quote.error:
                     supplier_errors.append(quote.error)
