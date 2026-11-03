@@ -1280,11 +1280,16 @@ def build_vi_draft(order: dict, invoice_number: int | None = None, progress_call
     suppliers = [OwnCatalogAdapter(), PriceListAdapter(), VseinstrumentiAdapter()]
     krep_komp = KrepKompAdapter()
     deferred_suppliers = []
+    supplier_notices = []
     supplier_search_errors = []
     if krep_komp.enabled:
         try:
             krep_komp.prepare_catalog()
             suppliers.append(krep_komp)
+            if getattr(krep_komp, 'catalog_is_stale', lambda: False)():
+                supplier_notices.append(
+                    'КРЕП-КОМП: используется ранее сохранённый каталог (не удалось получить свежий). '
+                    'Цены и остатки запрашиваются заново; новые товары поставщика могут не найтись')
         except Exception as exc:
             from supplier_adapters import integration_error
             error = integration_error(exc)
@@ -1374,6 +1379,7 @@ def build_vi_draft(order: dict, invoice_number: int | None = None, progress_call
         "prepayment_percent": DEFAULT_PREPAYMENT_PERCENT,
         "delivery_included": DEFAULT_DELIVERY_INCLUDED,
         "deferred_suppliers": deferred_suppliers,
+        "supplier_notices": supplier_notices,
         "supplier_search_errors": supplier_search_errors,
         "search_metrics": search_metrics,
         "summary": {
@@ -3224,6 +3230,11 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
                 "<p style='padding:10px;background:#fff7df;border-radius:7px'>"
                 + html.escape("; ".join(result.get("deferred_suppliers") or []))
                 + ". Это состояние сохранённого поиска. Результат не охватывает всех настроенных поставщиков.</p>"
+            )
+        if result.get("supplier_notices"):
+            search_report += (
+                "<p style='padding:10px;background:#fff7df;border-radius:7px'>"
+                + html.escape("; ".join(result.get("supplier_notices") or [])) + ".</p>"
             )
         if result.get("last_search_at"):
             search_report += (

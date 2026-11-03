@@ -31,6 +31,9 @@ class KrepKompAdapterTests(unittest.TestCase):
         KrepKompAdapter._catalog_expires_at = 0
         KrepKompAdapter._storage_ids = None
         KrepKompAdapter._storage_ids_expires_at = 0
+        KrepKompAdapter._catalog_stale = False
+        KrepKompAdapter._retry_not_before = 0.0
+        KrepKompAdapter._api_down_until = 0.0
 
     def tearDown(self):
         self.cache_load.stop(); self.cache_save.stop()
