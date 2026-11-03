@@ -2802,8 +2802,9 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
             query = request.query_params
             if not explicit and preferences and preferences["enabled"] and not unfiltered:
                 query = {**preferences["filters"], "page": request.query_params.get("page", "1")}
+            actuality = {str(r['order_id']): dict(r) for r in _execute(conn, 'SELECT * FROM order_actuality').fetchall()}
             state = select_page(_execute(conn, listing_query(bool(DATABASE_URL))).fetchall(), query,
-                                reference, reference_updated)
+                                reference, reference_updated, actuality)
             state["listing_filters"] = state["filters"]
             if preferences and not explicit and (not preferences["enabled"] or unfiltered):
                 state["filters"] = preferences["filters"]
@@ -2812,7 +2813,6 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
             state["csrf"] = csrf_token(request)
             ids = [item["id"] for item in state["items"]]
             listing_details = {item["id"]: item for item in state["items"]}
-            actuality = {str(r['order_id']): dict(r) for r in _execute(conn, 'SELECT * FROM order_actuality').fetchall()}
             page_rows = _execute(conn, "SELECT * FROM automation_jobs WHERE id IN (" + ",".join("?" for _ in ids) + ")", tuple(ids)).fetchall() if ids else []
             by_id = {int(row["id"]): row for row in page_rows}
             rows = [by_id[job_id] for job_id in ids if job_id in by_id]
@@ -3010,6 +3010,15 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
                 row = dict(row)
                 row['result_json'] = cleaned
         is_manual = row["event_type"] == "manual_order"
+
+        def actuality_banner_for(nonce):
+            if is_manual:
+                return ""
+            from order_actuality import banner as actuality_banner_html
+            with _connect() as conn:
+                cached = _execute(conn, "SELECT state,checked_at FROM order_actuality WHERE order_id=?", (row["order_id"],)).fetchone()
+            return actuality_banner_html(row["order_id"], job_id, nonce, cached)
+
         request_heading = (
             f"Ручная заявка {html.escape(str(result.get('manual_reference') or 'без номера'))}"
             if is_manual else f"Заявка Закупай № {row['order_id']}"
@@ -3092,7 +3101,7 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
                     "button{padding:12px 18px;background:#1a73e8;color:#fff;border:0;border-radius:7px;font-weight:bold;cursor:pointer}input[type=checkbox]{width:20px;height:20px}</style><body><main>"
                     "<p><a href='/dashboard/automation'>← Все заявки</a></p>"
                     f"<h1>{request_heading}</h1>"
-                    f"{navigation_notice}"
+                    f"{actuality_banner_for(script_nonce)}{navigation_notice}"
                     "<p><b>Поиск цен ещё не запускался.</b> Сначала проверьте состав заявки, затем запустите поиск для выбранных позиций.</p>"
                     f"<p><b>Дата заявки:</b> {html.escape(order_date)} · <b>Заказчик:</b> {html.escape(customer_name)}</p>"
                     f"<p><a href='/dashboard/sniper?job_id={job_id}'>Найти поставщиков или подготовить рассылку через Sniper</a></p>"
@@ -3113,7 +3122,7 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
                     "</main></body></html>"
                 ),
                 media_type="text/html",
-                headers={"Cache-Control": "no-store", "Content-Security-Policy": f"default-src 'none'; script-src 'nonce-{script_nonce}'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"},
+                headers={"Cache-Control": "no-store", "Content-Security-Policy": f"default-src 'none'; connect-src 'self'; script-src 'nonce-{script_nonce}'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"},
             )
         table_rows = []
         review_script_nonce = base64.b64encode(os.urandom(18)).decode("ascii")
@@ -3260,6 +3269,7 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
                 f"из {len(result.get('items') or [])} позиций."
                 "</p>"
             )
+        actuality_banner = actuality_banner_for(review_script_nonce)
         return Response(
             content=(
                 "<!doctype html><html lang='ru'><meta charset='utf-8'>"
@@ -3269,7 +3279,7 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
                 "<p><a href='/dashboard/automation'>← Все заявки</a></p>"
                 f"<h1>{request_heading}</h1>"
                 f"<p>Счёт № {row['invoice_number']} · статус: {'предложение выставлено' if offer_created else html.escape(str(row['status']))}</p>"
-                f"{navigation_notice}{sent_notice}{seller_controls}{customer_form}{top_controls}{search_report}"
+                f"{actuality_banner}{navigation_notice}{sent_notice}{seller_controls}{customer_form}{top_controls}{search_report}"
                 f"<style>{review_value_css}</style><p id='message' role='status'></p>"
                 f"<form id='review-form' method='post' action='/dashboard/automation/jobs/{job_id}/review'></form>"
                 "<table class='review-table' id='review-table'><colgroup><col style='width:76px'><col style='width:260px'><col style='width:420px'><col style='width:80px'><col style='width:100px'></colgroup>"
