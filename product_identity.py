@@ -14,6 +14,7 @@ KINDS = [
  ('гайка', r'\bгайк\w*'),
  ('шайба', r'\bшайб\w*'),
  ('шпилька', r'\bшпильк\w*'),
+ ('респиратор', r'\bреспиратор\w*'),
  ('клапан', r'\bклапан\w*'),
  ('бур', r'\b(?:бур(?:а|ы|ов|у|ом)?|квадробур\w*|бур-сверло)\b|\bсверл\w*.*?\bSDS[ -]?(?:plus|max|\+)'),
  ('маркер', r'\bмаркер\w*'),
@@ -28,7 +29,7 @@ KINDS = [
  ('утеплитель', r'\b(?:утеплител\w*|плит\w*\s+теплоизоляц\w*)'),
  ('наконечник', r'\bнаконечник\w*'),
  ('кабель', r'\bкабел\w*'),
- ('гофрированная труба', r'\bгофр\w*'),
+ ('гофрированная труба', r'\bгофр(?!о?карт)\w*'),
  ('огнетушитель', r'\bогнетушител\w*'),
  ('щит пожарный', r'\bщит\w*\s+пожар\w*'),
  ('ящик для песка', r'\bящик\w*.*?песк\w*'),
@@ -165,6 +166,22 @@ def records(text):
             if (m:=re.search(pattern,text,re.I)):add('Исполнение диска',value,m[0])
         m=re.search(r'(\d+)\s*(?:зуб\w*|[TТ](?!\w))',text,re.I)
         if m:add('Число зубьев',int(m[1]),m[0])
+    # Parameters that were never extracted from a request impose no requirement,
+    # so any candidate passed. Make these ones mandatory (order 37210407 control set).
+    if product == 'респиратор':
+        m=re.search(r'\bFFP\s*([123])\b',text,re.I)
+        if m:add('Класс защиты','FFP'+m[1],m[0])
+    if product == 'диск':
+        # Grit P40 / Р40 (Latin or Cyrillic capital P). "зерно 40" is deliberately not
+        # treated as equal: it stays an operator decision.
+        m=re.search(r'(?<![A-Za-zА-Яа-я0-9])[PР]\s*-?\s*(\d{2,4})(?!\d)',text)
+        if m:add('Зернистость','P'+m[1],m[0])
+    if product == 'Подшипники':
+        # Designation right after the product word, plus an equivalent in brackets.
+        for pattern in (r'подшипник\w*(?:\s+[А-Яа-яЁё]+){0,2}?\s*(?:№\s*)?((?:[A-Z]{1,3}-?)?\d{3,7})(?![\w])',
+                        r'\(\s*((?:[A-Z]{1,3}-?)?\d{3,7})(?![\w])'):
+            m=re.search(pattern,text,re.I)
+            if m:add('Обозначение подшипника',re.sub(r'[-\s]','',m[1]).upper(),m[0])
     if product == 'ящик для песка':
         m=re.search(r'(\d+(?:[.,]\d+)?)\s*м[³3]',text,re.I)
         if m:add('Объём',f'{float(m[1].replace(",",".")):g} м³',m[0])

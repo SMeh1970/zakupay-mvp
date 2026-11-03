@@ -255,10 +255,20 @@ class VseinstrumentiAdapter(SupplierAdapter):
             )]
 
         limit = min(max(int(limit), 1), 40)
-        try:
-            response = self._request_products(query, limit, offset)
-        except requests.RequestException as exc:
-            return [SupplierQuote(supplier=self.name, name=query, error=f"Ошибка сети API ВИ: {exc}")]
+        # One failed call is not proof that the product is absent: repeat transient failures
+        # (network error, 429, 5xx) once before reporting the error.
+        retries = max(0, int(os.getenv("VSEINSTRUMENTI_RETRIES", "1")))
+        response = None
+        for attempt in range(retries + 1):
+            try:
+                response = self._request_products(query, limit, offset)
+            except requests.RequestException as exc:
+                if attempt >= retries:
+                    return [SupplierQuote(supplier=self.name, name=query, error=f"Ошибка сети API ВИ: {exc}")]
+            else:
+                if response.status_code not in {429, 500, 502, 503, 504} or attempt >= retries:
+                    break
+            time.sleep(0.5 * (attempt + 1))
 
         if not response.ok:
             return [SupplierQuote(
@@ -370,6 +380,15 @@ class VseinstrumentiAdapter(SupplierAdapter):
         return quotes, meta
 
 
+def peak_rss_mb():
+    """Peak resident memory of this process in MB (Linux), for the memory-limit diagnosis; None elsewhere."""
+    try:
+        import resource
+        return round(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024)
+    except Exception:
+        return None
+
+
 class KrepKompAdapter(SupplierAdapter):
     """Read-only adapter for the official KREP-KOMP 1C exchange API.
 
@@ -401,6 +420,9 @@ class KrepKompAdapter(SupplierAdapter):
             "https://1cwbsvc.krep-komp.ru:7333/torg1/hs/mp",
         ).rstrip("/")
         self.timeout = float(os.getenv("KREP_KOMP_API_TIMEOUT", "8"))
+        # Prices and stock are requested for the whole window in one call each, so a wider window
+        # costs no extra API requests; it keeps size/model variants that the text rank puts below the top few.
+        self.candidate_window = max(8, min(int(os.getenv("KREP_KOMP_CANDIDATE_WINDOW", "40")), 100))
         self.catalog_ttl = int(os.getenv("KREP_KOMP_CATALOG_TTL", "21600"))
         names = os.getenv("KREP_KOMP_STORAGE_NAMES", "КОЛЕДИНО")
         self.storage_names = {x.strip().casefold() for x in names.split(",") if x.strip()}
@@ -556,7 +578,7 @@ class KrepKompAdapter(SupplierAdapter):
             if saved is not None:
                 cls._catalog, cls._catalog_expires_at = saved
                 cls._catalog_error = None
-                logger.info('krep catalogue restored records=%s', len(cls._catalog))
+                logger.warning('krep catalogue restored records=%s peak_rss_mb=%s', len(cls._catalog), peak_rss_mb())
                 return cls._catalog
             started = time.monotonic()
             items: list[dict[str, Any]] = []
@@ -565,7 +587,9 @@ class KrepKompAdapter(SupplierAdapter):
                 payload = self._get_data("get_items", page=page)
                 data = payload.get("data") or []
                 if isinstance(data, list):
-                    items.extend(x for x in data if isinstance(x, dict))
+                    # Prices and stock are requested live for the few ranked candidates, so keep only
+                    # the identity fields (what the stored cache keeps), compacted page by page.
+                    items.extend(cache.compact(x for x in data if isinstance(x, dict)))
                 meta = payload.get("meta") or {}
                 last_page = int(meta.get("last_page") or page)
                 if page >= last_page:
@@ -580,7 +604,7 @@ class KrepKompAdapter(SupplierAdapter):
                 cache.save(self._catalog_cache_key(), items, cls._catalog_expires_at)
             except Exception as exc:
                 logger.warning('krep catalogue cache write failed: %s', type(exc).__name__)
-            logger.info('krep catalogue ready pages=%s records=%s seconds=%.3f', page, len(items), time.monotonic()-started)
+            logger.warning('krep catalogue ready pages=%s records=%s seconds=%.3f peak_rss_mb=%s', page, len(items), time.monotonic()-started, peak_rss_mb())
             return items
 
     @classmethod
@@ -698,11 +722,24 @@ class KrepKompAdapter(SupplierAdapter):
             return [SupplierQuote(supplier=self.name, name=query, error="API КРЕП-КОМП не настроен")]
         try:
             normalized_query = self._norm(query)
-            ranked = sorted(
-                self._catalog_items(),
-                key=lambda item: self._rank_normalized(normalized_query, item),
-                reverse=True,
-            )
+            # Main noun first, whatever its ending (сверло/сверла): such items rank above items that
+            # only share size or unit words ("10", "мм").
+            from generic_identity import head_noun
+            noun = head_noun(query)
+            noun_prefix = noun[:max(4, len(noun) - 1)] if noun and len(noun) >= 4 else ""
+
+            def noun_hit(item):
+                if not noun_prefix:
+                    return False
+                tokens = self._indexed_item(*(str(item.get(k) or '') for k in (
+                    'Наименование', 'ПолноеНаименование', 'Артикул', 'Категория')))[1]
+                return any(token.startswith(noun_prefix) for token in tokens)
+
+            def rank(item):
+                exact_article, score, text = self._rank_normalized(normalized_query, item)
+                return (exact_article, noun_hit(item), score, text)
+
+            ranked = sorted(self._catalog_items(), key=rank, reverse=True)
             from cable_identity import identity, conflicts
             from product_identity import kind
             if kind(query) == "кабель" and identity(query):
@@ -711,9 +748,9 @@ class KrepKompAdapter(SupplierAdapter):
             query_tokens = set(normalized_query.split())
             candidates = list(islice((
                 item for item in ranked
-                if query_tokens & self._indexed_item(*(str(item.get(k) or '') for k in (
+                if noun_hit(item) or query_tokens & self._indexed_item(*(str(item.get(k) or '') for k in (
                     'Наименование', 'ПолноеНаименование', 'Артикул', 'Категория')))[1]
-            ), min(max(int(limit), 1), 20)))
+            ), max(min(max(int(limit), 1), 20), self.candidate_window)))
             return self._enrich(candidates)
         except (requests.RequestException, RuntimeError, ValueError) as exc:
             return [SupplierQuote(supplier=self.name, name=query, error=f"Ошибка API КРЕП-КОМП: {exc}")]

@@ -1,3 +1,4 @@
+from datetime import date, timedelta
 import json
 import unittest
 from unittest.mock import patch
@@ -17,7 +18,7 @@ class PriceSearchRecallTests(unittest.TestCase):
     def load(self, names):
         rows = [["Наименование", "Цена", "Артикул", "Ед. изм.", "Остаток"]]
         rows += [[name, price, article, "шт", None] for name, price, article in names]
-        lid = prices.stage_file(workbook(rows), "test.xlsx", "Сатурн", "Основной", "2026-10-22")
+        lid = prices.stage_file(workbook(rows), "test.xlsx", "Сатурн", "Основной", (date.today() - timedelta(days=1)).isoformat())
         prices.activate_list(lid, settings())
 
     def row(self, query):
@@ -32,7 +33,10 @@ class PriceSearchRecallTests(unittest.TestCase):
         self.assertNotEqual(row["match_status"], "точное")
         self.assertNotEqual(row["decision"], "auto_ready")
         view = comparison.offer_view(row, pipeline._review_candidates(row)[0])
-        self.assertTrue(any(f["field"] == "Проверка прайса" and f["state"] == "pending" for f in view["features"]))
+        # With a recognised product kind the missing parameter itself is the pending feature
+        # ("Проверка прайса" is only a fallback for requests of unknown kind).
+        self.assertTrue(any("Толщина" in f["field"] and f["value"] == "Не указано" and f["state"] == "pending" for f in view["features"]),
+                        [(f["field"], f["value"], f["state"]) for f in view["features"]])
 
     def test_wrong_size_survives_only_as_reviewable_difference(self):
         self.load([("Фанера ламинированная толщина 18 мм", 100, "F18")])
@@ -46,7 +50,13 @@ class PriceSearchRecallTests(unittest.TestCase):
     def test_numbers_and_wrong_product_type_do_not_fill_shortlist(self):
         self.load([("Саморез черный 200 мм", 1, "S1"), ("Маркер черный 200 мм", 2, "M1")])
         found = prices.search_prices("Маркер черный 200 мм")
-        self.assertEqual([q.article for q in found], ["M1"])
+        # The right product comes first; a row of another type is not hidden but returned last,
+        # and the pipeline lists it as rejected with the reason instead of losing it silently.
+        self.assertEqual([q.article for q in found], ["M1", "S1"])
+        row = self.row("Маркер черный 200 мм")
+        self.assertEqual(row["selected"]["article"], "M1")
+        self.assertTrue(any(c.get("article") == "S1" and "тип товара" in c.get("rejection_reason", "")
+                            for c in row["rejected_candidates"]))
         self.assertEqual(prices.search_prices("Неизвестный товар 200 мм"), [])
 
     def test_synonym_expansion_is_one_index_query_and_original_requirements_remain(self):
@@ -60,7 +70,9 @@ class PriceSearchRecallTests(unittest.TestCase):
             found = prices.search_prices("Коронка 32 мм")
         self.assertTrue(found)
         self.assertEqual(found[0].article, "P32")
-        self.assertEqual(sum("supplier_price_tokens" in sql for sql in calls), 1)
+        # One lookup for all synonym variants plus one main-noun ("Ctrl+F") pass: the count does not
+        # grow with the number of variants.
+        self.assertLessEqual(sum("supplier_price_tokens" in sql for sql in calls), 2)
         row = self.row("Коронка 32 мм")
         self.assertFalse(row["selected"] and row["selected"]["article"] == "P60")
 

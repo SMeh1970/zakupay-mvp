@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 import copy
 import json
 import os
@@ -188,7 +189,7 @@ class ManualPriceSearchTests(unittest.TestCase):
     def test_price_search_and_invoice_numbering_begin_only_after_explicit_start(self):
         first = pipeline.process_api_order(copy.deepcopy(ORDER))
         second = pipeline.process_api_order({**copy.deepcopy(ORDER), "id": 123457})
-        quotes = [SupplierQuote("ВИ", "Маркер черный", price=10, stock=10)]
+        quotes = [SupplierQuote("ВИ", "Маркер черный", price=10, unit="шт", stock=10, price_date=datetime.now(timezone.utc).date().isoformat())]
         real_thread = pipeline.threading.Thread
         def search_thread(*args, **kwargs):
             if str(kwargs.get("name") or "").startswith("supplier-search-"):

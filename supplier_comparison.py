@@ -219,7 +219,23 @@ def offer_view(item, candidate):
                 ambiguous=ambiguous, offer_specific=ambiguous))
     from product_identity import kind
     typed_kind = kind(source.get("requested_name"))
-    if not typed_kind or (candidate.get("catalog_prepared") and not kind(candidate.get("name")) and (candidate.get("category") == "Не определена" or
+    # A product outside the closed kind list is still verified: same main noun and every size /
+    # designation token of the request must be in the offer, otherwise the difference goes to the operator.
+    from generic_identity import identity as generic_identity, has_noun, has_token, other_words
+    generic = None if typed_kind else generic_identity(source.get("requested_name"))
+    if generic:
+        noun, tokens = generic
+        offer_text = " ".join(str(candidate.get(k) or "") for k in ("name", "article", "sku"))
+        checks = [("Основное слово", noun, has_noun(offer_text, noun))]
+        checks += [("Слово " + word, word, has_noun(offer_text, word)) for word in other_words(source.get("requested_name"), noun)]
+        checks += [("Параметр " + token, token, has_token(offer_text, token)) for token in tokens]
+        for field, value, present in checks:
+            shown = value if present else "Не указано"
+            identifier = feature_id(field, shown) + ("" if present else ":" + feature_id("Предложение", key + fingerprint(original_candidate)))
+            features.append(dict(id=identifier, field=field, value=shown, required=[value],
+                state=decisions.get(identifier, "matched" if present else "pending"), differs=not present, unit=None,
+                evidence=value, origin="request", ambiguous=not present, offer_specific=not present))
+    if (not typed_kind and not generic) or (candidate.get("catalog_prepared") and not kind(candidate.get("name")) and (candidate.get("category") == "Не определена" or
             "Категория требует ручной проверки" in candidate.get("match", {}).get("missing", []))):
         identifier = feature_id("Проверка категории", key + fingerprint(original_candidate))
         features.append(dict(id=identifier, field="Проверка категории", value=candidate.get("category") or "Не определена",
@@ -228,7 +244,7 @@ def offer_view(item, candidate):
     # Parser diagnostics are not additional product requirements. Once type
     # and the request's fields are known, the shared value filter below is the
     # sole matching gate. Keep original warnings on the quote for diagnostics.
-    if not typed_kind:
+    if not typed_kind and not generic:
         for warning in dict.fromkeys([*(candidate.get("characteristic_conflicts") or []),
                                       *(candidate.get("characteristic_missing") or [])]):
             identifier = feature_id("Проверка прайса", key + fingerprint(original_candidate) + warning)

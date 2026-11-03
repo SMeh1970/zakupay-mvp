@@ -104,7 +104,9 @@ def extract(name):
         for m in re.finditer(pattern, text, re.I):
             size(key, m)
     if category in {"Зенковки", "Сверла"} and not any(a["parameter"] == "Диаметр" for a in attributes):
-        m = re.search(r"(?:зенковка|сверло)\s+(" + N + r")\s*(мм)?", text, re.I)
+        # "Сверло по металлу 10 мм": the work-material qualifier may stand between
+        # the product word and the diameter; without it the diameter was never checked.
+        m = re.search(r"(?:зенковка|сверло)(?:\s+по\s+[а-яё]+)?\s+(" + N + r")\s*(мм)?", text, re.I)
         if m:
             size("Диаметр", m)
     for m in re.finditer(r"(" + N + r")\s*(?:°|градус\w*|гр\b)", text, re.I):

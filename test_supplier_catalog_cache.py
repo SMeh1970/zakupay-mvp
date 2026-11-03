@@ -37,3 +37,18 @@ def test_cache_failure_does_not_disable_supplier_and_expiry_starts_after_downloa
     with patch.object(KrepKompAdapter,'_catalog',None), patch.object(KrepKompAdapter,'_catalog_expires_at',0), patch('supplier_catalog_cache.load',side_effect=RuntimeError), patch('supplier_catalog_cache.save',side_effect=RuntimeError), patch.object(adapter,'_get_data',return_value=payload), patch('supplier_adapters.time.time',side_effect=[100,100,800]):
         assert adapter.prepare_catalog() == [{'Код':'x'}]
         assert KrepKompAdapter._catalog_expires_at == 800+max(adapter.catalog_ttl,300)
+
+
+def test_streaming_encoder_keeps_the_stored_format_at_batch_boundaries():
+    import base64, json, zlib
+    for count in (0, 1, 2, 3, 5):
+        items = [{'Код': str(i), 'Наименование': 'Болт М16 «тест»', 'Цена': 100, 'token': 'secret'} for i in range(count)]
+        stored = json.loads(zlib.decompress(base64.b64decode(cache.encode(items, batch=2))))
+        assert stored == [{'Код': str(i), 'Наименование': 'Болт М16 «тест»'} for i in range(count)]
+
+
+def test_downloaded_catalogue_keeps_identity_fields_only_in_memory():
+    adapter = KrepKompAdapter()
+    payload = {'data': [{'Код': 'x', 'Наименование': 'Болт', 'Цена': 100, 'Остаток': 5, 'token': 'secret'}], 'meta': {'last_page': 1}}
+    with patch.object(KrepKompAdapter,'_catalog',None), patch.object(KrepKompAdapter,'_catalog_expires_at',0), patch('supplier_catalog_cache.load',return_value=None), patch('supplier_catalog_cache.save'), patch.object(adapter,'_get_data',return_value=payload):
+        assert adapter.prepare_catalog() == [{'Код': 'x', 'Наименование': 'Болт'}]

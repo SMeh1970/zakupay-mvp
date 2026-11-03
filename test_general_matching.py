@@ -29,6 +29,12 @@ def test_model_word_order_spaces_and_brand_case_do_not_block_exact_product():
     ('Рулетка измерительная 10 м','Измерительная рулетка GROSS 10м х 25мм','Рулетка GROSS 5м х 25мм'),
     ('Плоскогубцы комбинированные 180 мм','Комбинированные пассатижи STARTUL 180 мм','Пассатижи комбинированные 160 мм'),
     ('Бита PH2х50 мм','Бита PH2, 50 мм, S2 SGS','Бита PZ2, 50 мм, S2 SGS'),
+    ('Сверло по металлу 10 мм','Сверло по металлу 10 мм HSS','Сверло по металлу 2 мм HSS'),
+    # Order 37210407: parameters that used to impose no requirement at all.
+    ('Респиратор РУССИЗ 926 FFP2 с клапаном и угольным слоем','Респиратор РУССИЗ 926 FFP2 с клапаном и угольным слоем','Респиратор РУССИЗ 926 FFP1 с клапаном и угольным слоем'),
+    ('Круг лепестковый торцевой тип-1 125 мм P40','Круг лепестковый торцевой тип-1 125 мм P40','Круг лепестковый торцевой тип-1 125 мм P80'),
+    ('Самозацепной шлифовальный круг с отверстиями 125 мм RING P120','Самозацепной шлифовальный круг с отверстиями 125 мм RING P120','Самозацепной шлифовальный круг с отверстиями 125 мм RING P240'),
+    ('Подшипник 80205 (6205 ZZ) АПЗ-20 Курск','Подшипник 80205 (6205 ZZ) АПЗ-20 Курск','Подшипник 80305 (6305 ZZ) АПЗ-20 Курск'),
     ('Очиститель монтажной пены 500 мл','Очиститель незатвердевшей монтажной пены IRFIX 0,5 л','Очиститель монтажной пены 650 мл'),
     ('Огнетушитель ОП-5 (з) АВСЕ','Огнетушитель Меланти ОП-5 з АВСЕ','Огнетушитель Меланти ОП-4 з АВСЕ'),
 ])
@@ -91,3 +97,31 @@ def test_parser_warnings_do_not_override_requested_parameter_match():
     counts={s['field']:s['remaining'] for s in comparison['filter_stages']}
     assert counts['Диаметр бура']==1
     assert counts['Общая длина бура']==1
+
+
+def test_respirator_with_valve_is_not_a_valve_and_cardboard_is_not_a_pipe():
+    from product_identity import kind
+    assert kind('Респиратор РУССИЗ 926 FFP2 с клапаном и угольным слоем') == 'респиратор'
+    assert kind('Клапан балансировочный Ду 50') == 'клапан'
+    assert kind('Двуслойный гофрокартон «С') != 'гофрированная труба'
+    assert kind('Труба гофрированная ПНД d32') == 'гофрированная труба'
+
+
+# Products outside the closed kind list: same main noun, every size/designation token and every
+# other word of the request must be present; anything lacking goes to the operator (not comparable yet).
+@pytest.mark.parametrize('requested,correct,wrong', [
+    ('Монолитный поликарбонат 8 мм прозрачный 2050×3050', 'Поликарбонат монолитный прозрачный 8 мм 2050х3050', 'Поликарбонат монолитный прозрачный 4 мм 2050х3050'),
+    ('Монолитный поликарбонат 8 мм прозрачный 2050×3050', 'Поликарбонат монолитный прозрачный 8 мм 2050х3050', 'Поликарбонат сотовый прозрачный 8 мм 2050х3050'),
+    ('Лента конв. 2.2-1000-3-ТК-200-5/2 НБ 11', 'Лента конв. 2.2-1000-3-ТК-200-5/2 НБ 11', 'Лента конв. 2.2-800-3-ТК-200-5/2 НБ 11'),
+    ('Секция заборная оцинкованная 2D Спорт 4.8/6.0 50×200 2500×2030', 'Секция заборная оцинкованная 2D Спорт 4.8/6.0 50х200 2500х2030', 'Секция заборная оцинкованная 2D Спорт 4.8/6.0 50х200 2500х1530'),
+    ('Ограждение сетчатое оцинкованное 3D 4 мм 2500×1530', 'Ограждение сетчатое оцинкованное 3D 4 мм 2500х1530', 'Ограждение сетчатое оцинкованное 3D 4 мм 2500х1230'),
+])
+def test_kind_outside_the_closed_list_is_verified_by_noun_words_and_numbers(requested, correct, wrong):
+    from product_identity import kind
+    assert not kind(requested)
+    assert allowed(result(requested, [correct, wrong])) == [correct]
+
+
+def test_kind_outside_the_list_without_any_number_stays_with_the_operator():
+    # Nothing to verify by name: even an identical name is held for confirmation, not auto-passed.
+    assert not allowed(result('Двуслойный гофрокартон «С', ['Двуслойный гофрокартон «С']))

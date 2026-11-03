@@ -4,6 +4,7 @@ import json
 import os
 import tempfile
 import unittest
+from datetime import date, timedelta
 from unittest.mock import patch
 
 from fastapi import FastAPI
@@ -17,7 +18,9 @@ from invoice_generator import build_invoice_xlsx
 from supplier_adapters import PriceListAdapter, OwnCatalogAdapter, SupplierQuote
 
 
-TODAY = "2026-10-01"
+# Prices older than 30 days are not comparable, so the dates must follow the wall clock, not a fixed day.
+TODAY = (date.today() - timedelta(days=1)).isoformat()
+NEXT_DAY = date.today().isoformat()
 NAME = "Маркер черный 1 мм"
 CUSTOMER = {"name": "Тестовый покупатель", "inn": "7716997861", "kpp": "770801001"}
 
@@ -185,7 +188,7 @@ class PriceListsCatalogTests(unittest.TestCase):
 
     def test_manual_catalog_latest_price_not_old_cheapest_with_history(self):
         result = self.manual(purchase_price=10)
-        update = self.manual(purchase_price=80, price_date="2026-10-02", competitors_count="")
+        update = self.manual(purchase_price=80, price_date=NEXT_DAY, competitors_count="")
         self.assertEqual(result["product_id"], update["product_id"])
         found = catalog.search_catalog(NAME)[0]
         self.assertEqual(found.price, 80)
