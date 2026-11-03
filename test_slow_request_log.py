@@ -19,3 +19,30 @@ def test_fast_requests_are_not_logged(caplog):
             patch.dict(os.environ, {"SLOW_REQUEST_SECONDS": "60"}), caplog.at_level("WARNING"):
         client.get("/version")
     assert not [r for r in caplog.records if "slow request" in r.getMessage()]
+
+
+def test_request_that_does_not_finish_reports_itself_with_thread_stacks(caplog, capfd):
+    import threading
+    import main_ai
+    gate = threading.Event()
+
+    @main_ai.app.get("/dashboard/_stuck_for_test")
+    def stuck():
+        gate.wait(5)
+        return {"ok": True}
+
+    with patch.object(main_ai.app.router, "on_startup", []), TestClient(main_ai.app) as client, \
+            patch.dict(os.environ, {"STILL_RUNNING_SECONDS": "0"}), caplog.at_level("WARNING"):
+        client.get("/dashboard/_stuck_for_test")
+    gate.set()
+    lines = [r.getMessage() for r in caplog.records if "request still running" in r.getMessage()]
+    assert lines and "path=/dashboard/_stuck_for_test" in lines[0]
+    assert "thread" in capfd.readouterr().err.lower()  # faulthandler printed the thread stacks
+
+
+def test_fast_dashboard_request_stays_silent(caplog):
+    import main_ai
+    with patch.object(main_ai.app.router, "on_startup", []), TestClient(main_ai.app) as client, \
+            patch.dict(os.environ, {"STILL_RUNNING_SECONDS": "30"}), caplog.at_level("WARNING"):
+        client.get("/dashboard/automation", follow_redirects=False)
+    assert not [r for r in caplog.records if "request still running" in r.getMessage()]

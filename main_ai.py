@@ -1,4 +1,7 @@
 import os
+import asyncio
+import faulthandler
+import sys
 import hmac
 import secrets
 import time
@@ -143,6 +146,17 @@ def _mint_abacus_access_token(request) -> str:
     return _sign_payload(payload, "oauth-access", "za_at")
 
 
+async def _report_if_still_running(method, path, started):
+    """A request that never finishes leaves no access-log line. Say so, and show where every thread is stuck."""
+    await asyncio.sleep(float(os.getenv("STILL_RUNNING_SECONDS", "20")))
+    logging.getLogger(__name__).warning(
+        "request still running method=%s path=%s seconds=%.0f (thread stacks follow)", method, path, time.monotonic() - started)
+    try:
+        faulthandler.dump_traceback(file=sys.stderr, all_threads=True)
+    except Exception:
+        pass
+
+
 @app.middleware("http")
 async def panel_request_cleanup(request, call_next):
     path = request.url.path
@@ -179,7 +193,12 @@ async def panel_request_cleanup(request, call_next):
             request.scope["query_string"] = urlencode(cleaned, doseq=True).encode("utf-8")
 
     started = time.monotonic()
-    response = await call_next(request)
+    watch = asyncio.create_task(_report_if_still_running(request.method, path, started)) if path.startswith("/dashboard") else None
+    try:
+        response = await call_next(request)
+    finally:
+        if watch:
+            watch.cancel()
     elapsed = time.monotonic() - started
     if elapsed >= float(os.getenv("SLOW_REQUEST_SECONDS", "3")):
         # Shows up in Render logs (WARNING): which page, how long the server worked, how large the answer is.
