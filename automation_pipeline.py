@@ -630,9 +630,6 @@ def _search_variants(requested: str) -> list[str]:
     if "хомут" in requested.lower():
         # Keep the original inch notation and mounting range intact.
         variants.append(requested.strip())
-    # Article queries go with the product name ("Компенсатор AWMP.16.0200.005"); what they
-    # return is kept only if it contains the whole article (see _article_query_map).
-    variants.extend(_article_query_map(requested))
     cleaned = re.sub(r"https?://\S+", " ", requested, flags=re.I)
     cleaned = re.sub(r"\b(?:комментарий|код товара)\s*:\s*", " ", cleaned, flags=re.I)
     cleaned = " ".join(cleaned.split())
@@ -646,6 +643,10 @@ def _search_variants(requested: str) -> list[str]:
     # Preserve model punctuation and significant single-digit values before
     # trying lossy word-normalised queries.
     variants.append(cleaned)
+    # The name is searched first; then the article from the name, together with the product
+    # words ("Компенсатор сильфонный AWMP.16.0200.005"). Article results are kept only if the
+    # product carries the whole article (see _article_query_map).
+    variants.extend(_article_query_map(requested))
     # Supplier search does not reliably understand specification-column prose.
     # Retrieve nuts by their identity; matching still receives every requirement.
     if re.search(r'\bгайк\w*', cleaned, re.I):
