@@ -23,6 +23,8 @@
       if(next===null)draft.delete(draftKey(row.position,id));
       else draft.set(draftKey(row.position,id),{position:row.position,id,decision:next});
     }
+    const message=document.getElementById('message');
+    if(message)message.textContent=draft.size?'Решение отмечено. Чтобы применить, нажмите «Применить» внизу экрана.':'';
     render();
   }
   let applyBar=null;
@@ -30,7 +32,7 @@
     if(data.read_only && !draft.size){applyBar?.remove();applyBar=null;return;}
     if(!applyBar) {
       applyBar=node('div','','value-apply-bar');
-      applyBar.style.cssText='position:sticky;bottom:0;z-index:5;display:flex;gap:10px;align-items:center;padding:10px 14px;margin:8px 0;background:#fff7df;border:1px solid #e5d3a1;border-radius:8px;font:14px Arial';
+      applyBar.style.cssText='position:fixed;left:50%;transform:translateX(-50%);bottom:12px;z-index:50;box-shadow:0 4px 16px #0003;display:flex;gap:10px;align-items:center;padding:10px 14px;margin:8px 0;background:#fff7df;border:1px solid #e5d3a1;border-radius:8px;font:14px Arial';
       const table=document.getElementById('review-table');
       (table?.parentNode||document.body).insertBefore(applyBar, table?.nextSibling||null);
     }
@@ -56,6 +58,9 @@
     if(await save({action:'values_batch',decisions:[...groups.values()]})){draft.clear();render();}
   }
   window.addEventListener('beforeunload',event=>{if(draft.size){event.preventDefault();event.returnValue='';}});
+  // Product-kind checks: a product failing one of them is another product, never a choice.
+  const IDENTITY_FIELDS=['Тип товара','Слово в наименовании','Нет слова из заявки','Проверка категории','Проверка прайса','Проверка соответствия'];
+  const otherKind=offer=>!offer.comparable && (offer.comparison_reasons||[]).some(reason=>IDENTITY_FIELDS.some(field=>reason.includes(field)));
   const node = (tag, text, cls) => { const n = document.createElement(tag); n.textContent = text ?? ''; if(cls)n.className=cls; return n; };
   const money = value => Number(value).toLocaleString('ru-RU', {maximumFractionDigits:6});
   let activeDialog=null, dialog=null, choiceError='';
@@ -85,7 +90,8 @@
     if(search) {
       dialog.append(node('p',search.label,'supplier-choice-detail'));
       for(const error of search.errors)dialog.append(node('p',error,'supplier-choice-error'));
-      const other=(search.rejected||[]).filter(q=>!row.value_comparison.offers.some(v=>v.key===q.key));
+      const other=[...(search.rejected||[]).filter(q=>!row.value_comparison.offers.some(v=>v.key===q.key)),
+        ...row.value_comparison.offers.filter(v=>v.supplier===supplier&&otherKind(v)).map(v=>({key:v.key,name:v.name,price:v.price,url:v.product_url||v.url,reasons:['Другой товар: '+v.comparison_reasons.join('; ')]}))];
       if(other.length) {
         const details=node('details');details.append(node('summary','Другие результаты и причины недопуска: '+other.length));
         for(const rejected of other) {
@@ -97,7 +103,7 @@
         dialog.append(details);
       }
     }
-    const choices=row.value_comparison.offers.filter(v=>v.supplier===supplier).sort((a,b)=>Number(b.comparable)-Number(a.comparable)||(a.unit_price??Infinity)-(b.unit_price??Infinity));
+    const choices=row.value_comparison.offers.filter(v=>v.supplier===supplier&&!otherKind(v)).sort((a,b)=>Number(b.comparable)-Number(a.comparable)||(a.unit_price??Infinity)-(b.unit_price??Infinity));
     if(!choices.length && !search)dialog.append(node('p','Нет товаров с разрешёнными характеристиками. Проверьте причины недопуска.'));
     if(!choices.length) {
       const excluded=row.value_comparison.offers.filter(v=>v.supplier===supplier&&!v.comparable);
@@ -119,8 +125,8 @@
       const choose=node('button',row.invoice?.key===offer.key&&row.invoice?.included?'Выбрано в счёт':'Выбрать в счёт');choose.type='button';
       // A product with unresolved differences can still be chosen: the button then accepts its
       // differences (like ✓ on each value) and selects it. Shortage or a missing price still block.
-      if(!offer.comparable)choose.textContent='Принять отличия и выбрать';
-      choose.disabled=busy||data.selection_read_only||offer.shortage>0||!offer.quantity||offer.unit_price==null;
+      if(!offer.comparable)choose.textContent=otherKind(offer)?'Другой товар — выбрать нельзя':'Принять отличия и выбрать';
+      choose.disabled=busy||data.selection_read_only||otherKind(offer)||offer.shortage>0||!offer.quantity||offer.unit_price==null;
       const selected=row.invoice?.key===offer.key&&row.invoice?.included;
       if(selected){choose.textContent='✓ Выбрано в счёт';line.style.background='#e7f5ec';choose.disabled=true;}
       choose.onclick=()=>save({action:offer.comparable?'value_select':'value_accept_select',position:row.position,key:offer.key});
@@ -197,7 +203,7 @@
     let cursor=0;
     for(const p of placements.sort((a,b)=>a.start-b.start)) {
       line.append(document.createTextNode(source.slice(cursor,p.start)),chip(p.group,p.feature,p.text));
-      for(const alternative of p.group.values)if(!checks(p.group) && alternative.id!==p.feature.id && !alternative.ambiguous && alternative.value!=='Не указано' && !alternative.offer_label) {
+      for(const alternative of p.group.values)if(!checks(p.group) && alternative.id!==p.feature.id && !alternative.ambiguous && alternative.value!=='Не указано' && !alternative.offer_label && shown(alternative)) {
         line.append(document.createTextNode(' / '),chip(p.group,alternative,alternative.value.replace(/\s+(мм|см|м|кг|г|л|мл|°)$/u,'')));
       }
       cursor=p.end;
@@ -205,6 +211,8 @@
     line.append(document.createTextNode(source.slice(cursor)));
     const extra=node('div','','supplier-found-values');
     for(const group of row.value_comparison.groups) {
+      const realShown=group.values.some(v=>v.value!=='Не указано' && Array.isArray(v.sources) && v.sources.some(s=>shownKeys.has(s.key)));
+      if(!realShown && group.values.every(v=>Array.isArray(v.sources)))continue;
       const values=group.values.filter(v=>(!used.has(group)||checks(group)||v.ambiguous||v.value==='Не указано'||v.offer_label) && shown(v));
       if(!values.length)continue;
       const block=node('div','','value-group-details');block.append(node('b',group.field+': '));

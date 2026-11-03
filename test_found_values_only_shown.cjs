@@ -30,3 +30,24 @@ dom2.window.HTMLDialogElement.prototype.showModal=function(){this.open=true};
 dom2.window.eval(fs.readFileSync(__dirname+'/comparison_assets/values.js','utf8'));
 assert.equal(dom2.window.document.querySelector('.supplier-found-values'),null);
 console.log('ok');
+{
+  // A field only present in hidden products must not appear as «Не указано» for a shown product,
+  // and request-line alternatives come only from shown products.
+  const d=JSON.parse(JSON.stringify(data));
+  d.rows[0].value_comparison.offers[0].comparable=true;
+  d.rows[0].name='Отвод DN200';
+  d.rows[0].value_comparison.groups=[
+    {field:'Условный проход',request_spans:[{text:'200',value:'200'}],values:[
+      {id:'dn200',field:'Условный проход',value:'200',required:['200'],state:'matched',sources:[src('shown')]},
+      {id:'dn100',field:'Условный проход',value:'100',required:['200'],state:'pending',sources:[src('hidden')]}]},
+    {field:'Количество ламп',values:[
+      {id:'l1',field:'Количество ламп',value:'2',required:[],state:'matched',sources:[src('hidden')]},
+      {id:'l0',field:'Количество ламп',value:'Не указано',required:[],state:'matched',ambiguous:true,sources:[src('shown')]}]}];
+  const dom3=new JSDOM(`<p id="message"></p><table id="review-table"><colgroup>${'<col>'.repeat(5)}</colgroup><tr><th>Позиция</th></tr><tr><td><div data-value-position="1"></div></td></tr></table><script id="comparison-data" type="application/json">${JSON.stringify(d)}</script>`,{runScripts:'outside-only'});
+  dom3.window.HTMLDialogElement.prototype.showModal=function(){this.open=true};
+  dom3.window.eval(fs.readFileSync(__dirname+'/comparison_assets/values.js','utf8'));
+  const t3=dom3.window.document.querySelector('[data-value-position="1"]').textContent;
+  assert.doesNotMatch(t3,/Количество ламп/);
+  assert.doesNotMatch(t3,/100/);
+  console.log('ok fields');
+}
