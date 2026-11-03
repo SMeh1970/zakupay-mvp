@@ -1,3 +1,4 @@
+from datetime import date, timedelta
 import json
 import unittest
 from unittest.mock import patch
@@ -17,7 +18,7 @@ class PriceSearchRecallTests(unittest.TestCase):
     def load(self, names):
         rows = [["Наименование", "Цена", "Артикул", "Ед. изм.", "Остаток"]]
         rows += [[name, price, article, "шт", None] for name, price, article in names]
-        lid = prices.stage_file(workbook(rows), "test.xlsx", "Сатурн", "Основной", "2026-10-22")
+        lid = prices.stage_file(workbook(rows), "test.xlsx", "Сатурн", "Основной", (date.today() - timedelta(days=1)).isoformat())
         prices.activate_list(lid, settings())
 
     def row(self, query):
@@ -32,7 +33,10 @@ class PriceSearchRecallTests(unittest.TestCase):
         self.assertNotEqual(row["match_status"], "точное")
         self.assertNotEqual(row["decision"], "auto_ready")
         view = comparison.offer_view(row, pipeline._review_candidates(row)[0])
-        self.assertTrue(any(f["field"] == "Проверка прайса" and f["state"] == "pending" for f in view["features"]))
+        # With a recognised product kind the missing parameter itself is the pending feature
+        # ("Проверка прайса" is only a fallback for requests of unknown kind).
+        self.assertTrue(any("Толщина" in f["field"] and f["value"] == "Не указано" and f["state"] == "pending" for f in view["features"]),
+                        [(f["field"], f["value"], f["state"]) for f in view["features"]])
 
     def test_wrong_size_survives_only_as_reviewable_difference(self):
         self.load([("Фанера ламинированная толщина 18 мм", 100, "F18")])

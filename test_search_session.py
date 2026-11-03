@@ -175,7 +175,12 @@ class DraftRetrievalTests(unittest.TestCase):
         candidate = old["items"][2]["selected"]
         comparison.mutate(old, dict(action="cell", position=3, key=comparison.quote_key(candidate), enabled=False))
         comparison.preserve_comparison(draft, old)
-        self.assertFalse(comparison.offer_view(draft["items"][0], draft["items"][0]["selected"])["eligible"])
+        # The disabled quote must not stay selected (reconcile clears it) and must stay ineligible.
+        item = draft["items"][0]
+        self.assertIsNone(item["selected"])
+        self.assertEqual(item["decision"], "excluded")
+        disabled = next(c for c in item["candidates"] if comparison.quote_key(c) == comparison.quote_key(candidate))
+        self.assertFalse(comparison.offer_view(item, disabled)["eligible"])
 
     def test_reuse_preserves_candidates_and_decisions_from_uncached_execution(self):
         order = self.order(4)
