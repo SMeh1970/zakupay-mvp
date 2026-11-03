@@ -584,10 +584,23 @@ def mutate(result, payload, conn=None):
                 from automation_pipeline import _refresh_summary
                 _refresh_summary(result)
             return
-        elif action == 'value_select':
+        elif action in {'value_select', 'value_accept_select'}:
             candidate = next((c for c in candidates(item) if quote_key(c) == payload.get('key')),None)
             if candidate is None:
                 raise ValueError('Предложение не найдено')
+            if action == 'value_accept_select':
+                # The operator chose this product despite its differences: accept exactly the values
+                # that block it (as if ✓ had been pressed on each). Like any ✓, the decision applies to
+                # every offer of this position with the same value; the request itself is unchanged.
+                from characteristic_comparison import build
+                key = quote_key(candidate)
+                groups = build(item, views, lambda s: supplier_enabled(result, s))['groups']
+                blocking = [value['id'] for group in groups for value in group['values']
+                            if value.get('state') not in {'matched', 'accepted'}
+                            and any(source.get('key') == key for source in value.get('sources') or [])]
+                if blocking:
+                    state.setdefault('values', {}).update({identifier: 'accepted' for identifier in blocking})
+                state['value_workflow'] = True
             apply_value_selection(item,candidate,result)
         elif action == "feature":
             identifier, decision = payload.get("feature"), payload.get("decision")
@@ -736,7 +749,7 @@ def install_supplier_comparison(app):
             except ValueError as exc:
                 raise HTTPException(400, str(exc))
             invoice_number = row["invoice_number"]
-            if payload.get("action") in {"select", "value_select"} and invoice_number is None:
+            if payload.get("action") in {"select", "value_select", "value_accept_select"} and invoice_number is None:
                 from automation_pipeline import INVOICE_NUMBER_START
                 last = _execute(conn, "SELECT MAX(invoice_number) AS maximum FROM automation_jobs").fetchone()
                 invoice_number = max(INVOICE_NUMBER_START, (last["maximum"] or INVOICE_NUMBER_START - 1) + 1)

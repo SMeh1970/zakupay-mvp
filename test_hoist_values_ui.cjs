@@ -23,5 +23,7 @@ doc.querySelector('[data-supplier-column] button')?.click();
 doc.querySelector('td[data-supplier-column] button').click();
 assert.match(doc.querySelector('dialog .supplier-choice-list').textContent,/HHBD05-02T/);
 assert.match(doc.querySelector('dialog .supplier-choice-list').textContent,/Не разрешено: Модель тали/);
-assert.equal(doc.querySelector('dialog .supplier-choice-option button').disabled,true);
-console.log('PASS: values of a product not shown in the column are hidden; pending hoist is visible in the dialog without invoice eligibility');
+// A product with differences is chosen by accepting its differences, not silently.
+assert.equal(doc.querySelector('dialog .supplier-choice-option button').disabled,false);
+assert.equal(doc.querySelector('dialog .supplier-choice-option button').textContent,'Принять отличия и выбрать');
+console.log('PASS: values of a product not shown in the column are hidden; pending hoist is chosen only by accepting its differences');

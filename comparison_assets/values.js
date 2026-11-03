@@ -91,10 +91,13 @@
       if(href){const link=node('a','Карточка товара'+(offer.sku?' · '+offer.sku:''));link.href=href;link.target='_blank';link.rel='noopener noreferrer';description.append(link);}
       if(offer.shortage>0)description.append(node('p',`Не хватает ${money(offer.shortage)} ${row.unit}`));
       const choose=node('button',row.invoice?.key===offer.key&&row.invoice?.included?'Выбрано в счёт':'Выбрать в счёт');choose.type='button';
-      choose.disabled=busy||data.selection_read_only||!offer.comparable||offer.shortage>0||!offer.quantity;
+      // A product with unresolved differences can still be chosen: the button then accepts its
+      // differences (like ✓ on each value) and selects it. Shortage or a missing price still block.
+      if(!offer.comparable)choose.textContent='Принять отличия и выбрать';
+      choose.disabled=busy||data.selection_read_only||offer.shortage>0||!offer.quantity||offer.unit_price==null;
       const selected=row.invoice?.key===offer.key&&row.invoice?.included;
       if(selected){choose.textContent='✓ Выбрано в счёт';line.style.background='#e7f5ec';choose.disabled=true;}
-      choose.onclick=()=>save({action:'value_select',position:row.position,key:offer.key});
+      choose.onclick=()=>save({action:offer.comparable?'value_select':'value_accept_select',position:row.position,key:offer.key});
       line.append(description,choose);list.append(line);
     }
     dialog.append(list,node('p',data.selection_read_only?'Отправленный счёт доступен только для просмотра.':'Выбор применяется к строке счёта. Разрешённые характеристики сохраняются.','supplier-choice-footer'));
@@ -308,7 +311,7 @@
       if(response.redirected || !response.headers.get('content-type')?.includes('application/json'))throw new Error('Обновите страницу и войдите заново.');
       const next=await response.json();if(!response.ok)throw new Error(next.detail || 'Не удалось сохранить решение');
       data=next;message.textContent='Решение сохранено. Минимум пересчитан.';
-      syncInvoice(payload.position,payload.action==='value_select');return true;
+      syncInvoice(payload.position,['value_select','value_accept_select'].includes(payload.action));return true;
     } catch(error) { message.textContent=error.message;choiceError=error.message;return false; }
     finally {busy=false;render();if(activeDialog)renderChoices();}
   }

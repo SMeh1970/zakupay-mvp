@@ -74,3 +74,26 @@ def test_conflicting_primary_api_and_name_are_not_silently_joined():
     result=data();result['items'][0]['candidates']=[q]
     assert comparison(result)['offers']==[]
     assert any(r['ambiguous'] for r in records(q['name'],q) if r['field']=='Метрическая резьба')
+
+
+def test_choosing_an_offer_with_differences_accepts_exactly_its_differences_and_selects_it():
+    import pytest
+    result=data()
+    b=quote_key(result['items'][0]['candidates'][1])
+    a=quote_key(result['items'][0]['candidates'][0])
+    assert not next(v for v in comparison(result)['offers'] if v['key']==b)['comparable']
+    with pytest.raises(ValueError):
+        mutate(result,dict(action='value_select',position=1,key=b))
+    mutate(result,dict(action='value_accept_select',position=1,key=b))
+    item=result['items'][0]
+    assert quote_key(item['selected'])==b and item['decision']=='approved'
+    assert item['requested_name']==REQUEST
+    panel=comparison(result)
+    assert next(v for v in panel['offers'] if v['key']==b)['comparable']
+    # Only the values of the chosen product were accepted: the other product's own difference stays open.
+    assert not next(v for v in panel['offers'] if v['key']==a)['comparable']
+    accepted={(g['field'],v['value']) for g in panel['groups'] for v in g['values'] if v['state']=='accepted'}
+    # The request asks for class 8; only the blocking class 10 of the chosen product was accepted.
+    assert accepted=={('Класс прочности','10')}
+    assert ('Покрытие','Цинк (способ не указан)') not in accepted
+    assert model(result)['rows'][0]['invoice']['included']
