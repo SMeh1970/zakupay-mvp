@@ -17,7 +17,7 @@ def response(payload, status=200):
 class KrepKompAdapterTests(unittest.TestCase):
     def setUp(self):
         self.env = patch.dict(os.environ, {
-            "KREP_KOMP_API_USERNAME": "test-user",
+            "KREP_KOMP_ENABLED": "true", "KREP_KOMP_API_USERNAME": "test-user",
             "KREP_KOMP_API_PASSWORD": "test-password",
             "KREP_KOMP_STORAGE_NAMES": "КОЛЕДИНО",
         }, clear=False)

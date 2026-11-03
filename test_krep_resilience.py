@@ -21,7 +21,7 @@ def wait_for_refresh(timeout=3.0):
 
 class KrepResilienceTests(unittest.TestCase):
     def setUp(self):
-        self.env = patch.dict(os.environ, {"KREP_KOMP_API_USERNAME": "u", "KREP_KOMP_API_PASSWORD": "p",
+        self.env = patch.dict(os.environ, {"KREP_KOMP_ENABLED": "true", "KREP_KOMP_API_USERNAME": "u", "KREP_KOMP_API_PASSWORD": "p",
                                            "KREP_KOMP_STORAGE_NAMES": ""}, clear=False)
         self.env.start()
         self.saved_row = None  # (items, expires_at) returned for allow_expired reads
@@ -166,3 +166,14 @@ class StaleCatalogueNoticeTests(unittest.TestCase):
                 if stale:
                     self.assertIn("ранее сохранённый каталог", notices[0])
                 self.assertEqual(draft["deferred_suppliers"], [])
+
+
+class KrepSwitchTests(unittest.TestCase):
+    def test_supplier_is_off_unless_switched_on(self):
+        creds = {"KREP_KOMP_API_USERNAME": "u", "KREP_KOMP_API_PASSWORD": "p"}
+        for value, expected in ((None, False), ("false", False), ("true", True), ("1", True)):
+            env = dict(creds, **({"KREP_KOMP_ENABLED": value} if value is not None else {}))
+            with self.subTest(value=value), patch.dict(os.environ, env, clear=False):
+                if value is None:
+                    os.environ.pop("KREP_KOMP_ENABLED", None)
+                self.assertEqual(KrepKompAdapter().enabled, expected)
