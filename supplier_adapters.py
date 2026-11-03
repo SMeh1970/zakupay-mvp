@@ -565,7 +565,9 @@ class KrepKompAdapter(SupplierAdapter):
                 payload = self._get_data("get_items", page=page)
                 data = payload.get("data") or []
                 if isinstance(data, list):
-                    items.extend(x for x in data if isinstance(x, dict))
+                    # Prices and stock are requested live for the few ranked candidates, so keep only
+                    # the identity fields (what the stored cache keeps), compacted page by page.
+                    items.extend(cache.compact(x for x in data if isinstance(x, dict)))
                 meta = payload.get("meta") or {}
                 last_page = int(meta.get("last_page") or page)
                 if page >= last_page:

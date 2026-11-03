@@ -67,6 +67,9 @@ GITHUB_OIDC_ISSUER = "https://token.actions.githubusercontent.com"
 GITHUB_REPOSITORY = os.getenv("GITHUB_AUTOMATION_REPOSITORY", "SMeh1970/zakupay-mvp")
 
 _lock = threading.Lock()
+# Supplier searches run as threads inside the web process and hold large catalogues; excess searches
+# wait here (their job stays "processing") instead of all running at once and exhausting memory.
+_SEARCH_SLOTS = threading.BoundedSemaphore(max(1, int(os.getenv("MAX_CONCURRENT_SUPPLIER_SEARCHES", "2"))))
 _schema_lock = threading.Lock()
 _initialized_database_key = None
 _poll_lock = threading.Lock()
@@ -2668,6 +2671,12 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
                         "UPDATE automation_jobs SET status='failed', error=?, updated_at=? WHERE id=?",
                         (f"{type(exc).__name__}: {exc}", datetime.now(timezone.utc).isoformat(), job_id),
                     )
+
+        search_body = run_search
+
+        def run_search():
+            with _SEARCH_SLOTS:
+                search_body()
 
         threading.Thread(target=run_search, name=f"supplier-search-{job_id}", daemon=True).start()
         return Response(status_code=303, headers={"Location": f"/dashboard/automation/jobs/{job_id}/review"})
