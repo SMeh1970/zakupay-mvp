@@ -23,6 +23,8 @@
       if(next===null)draft.delete(draftKey(row.position,id));
       else draft.set(draftKey(row.position,id),{position:row.position,id,decision:next});
     }
+    const message=document.getElementById('message');
+    if(message)message.textContent=draft.size?'Решение отмечено. Чтобы применить, нажмите «Применить» внизу экрана.':'';
     render();
   }
   let applyBar=null;
@@ -30,7 +32,7 @@
     if(data.read_only && !draft.size){applyBar?.remove();applyBar=null;return;}
     if(!applyBar) {
       applyBar=node('div','','value-apply-bar');
-      applyBar.style.cssText='position:sticky;bottom:0;z-index:5;display:flex;gap:10px;align-items:center;padding:10px 14px;margin:8px 0;background:#fff7df;border:1px solid #e5d3a1;border-radius:8px;font:14px Arial';
+      applyBar.style.cssText='position:fixed;left:50%;transform:translateX(-50%);bottom:12px;z-index:50;box-shadow:0 4px 16px #0003;display:flex;gap:10px;align-items:center;padding:10px 14px;margin:8px 0;background:#fff7df;border:1px solid #e5d3a1;border-radius:8px;font:14px Arial';
       const table=document.getElementById('review-table');
       (table?.parentNode||document.body).insertBefore(applyBar, table?.nextSibling||null);
     }
@@ -197,7 +199,7 @@
     let cursor=0;
     for(const p of placements.sort((a,b)=>a.start-b.start)) {
       line.append(document.createTextNode(source.slice(cursor,p.start)),chip(p.group,p.feature,p.text));
-      for(const alternative of p.group.values)if(!checks(p.group) && alternative.id!==p.feature.id && !alternative.ambiguous && alternative.value!=='Не указано' && !alternative.offer_label) {
+      for(const alternative of p.group.values)if(!checks(p.group) && alternative.id!==p.feature.id && !alternative.ambiguous && alternative.value!=='Не указано' && !alternative.offer_label && shown(alternative)) {
         line.append(document.createTextNode(' / '),chip(p.group,alternative,alternative.value.replace(/\s+(мм|см|м|кг|г|л|мл|°)$/u,'')));
       }
       cursor=p.end;
@@ -205,6 +207,8 @@
     line.append(document.createTextNode(source.slice(cursor)));
     const extra=node('div','','supplier-found-values');
     for(const group of row.value_comparison.groups) {
+      const realShown=group.values.some(v=>v.value!=='Не указано' && Array.isArray(v.sources) && v.sources.some(s=>shownKeys.has(s.key)));
+      if(!realShown && group.values.every(v=>Array.isArray(v.sources)))continue;
       const values=group.values.filter(v=>(!used.has(group)||checks(group)||v.ambiguous||v.value==='Не указано'||v.offer_label) && shown(v));
       if(!values.length)continue;
       const block=node('div','','value-group-details');block.append(node('b',group.field+': '));
