@@ -157,3 +157,43 @@ def test_price_check_header_reports_available_prices_without_inventing_terms(pre
     assert 'Числовые цены получены для 1 из 1 позиций' in response.text
     assert 'НДС: не подтверждено' in response.text
     assert 'Доставка включена: да' in response.text
+
+
+REQUEST_37535989='Керамогранит Cersanit Studio серый рельеф ректификат 598х598х8 мм'
+
+
+def test_satrap_is_visible_for_review_but_never_automatically_approved():
+    p={**sample.PRODUCT,'id':'satrap','name':'Satrap Gray','format':'60x60','color':'Серый','pattern':'Камень','surface':'Матовая','thickness_mm':8.5,'stock_m2':1490.4,'price_rub_m2':1690}
+    order=copy.deepcopy(sample.ORDER)
+    order['orderItems'][0].update(goodName=REQUEST_37535989,count=900)
+    data={'products':[p]}
+    assert tiles.find_analogues(data,REQUEST_37535989)==[]
+    assert tiles.automatic_selection(data,order)=={}
+    candidates=tiles.review_analogues(data,REQUEST_37535989,900)
+    assert candidates[0]['product']['id']=='satrap'
+    notes='; '.join(candidates[0]['review_notes'])
+    assert '600×600 мм вместо 598×598 мм' in notes
+    assert '8.5 вместо 8 мм' in notes
+    assert 'Рельеф' in notes and 'Ректификация' in notes
+
+
+def test_review_discovery_excludes_other_sizes_thick_slabs_and_accessories():
+    p={**sample.PRODUCT,'id':'base','format':'60x60','thickness_mm':8.5}
+    data={'products':[p,{**p,'id':'slab','thickness_mm':20},{**p,'id':'large','format':'60x120'},{**p,'id':'part','name':'Плинтус керамогранитный'}]}
+    assert [r['product']['id'] for r in tiles.review_analogues(data,REQUEST_37535989,900)]==['base']
+    assert tiles.review_analogues(data,'Плинтус керамогранитный 600х95х9 мм',900)==[]
+
+
+def test_37535989_page_distinguishes_no_auto_selection_from_review_candidates(prepared):
+    q,catalog,_,client=prepared
+    catalog=copy.deepcopy(catalog)
+    catalog['data']['products'][0].update(name='Satrap Gray',format='60x60',thickness_mm=8.5,stock_m2=1490.4,price_rub_m2=1690)
+    order=copy.deepcopy(q['snapshot']['order_snapshot'])
+    order['orderItems'][0].update(goodName=REQUEST_37535989,count=900)
+    with patch.object(panel,'order_for_job',return_value=order),patch.object(panel,'required_catalog',return_value=catalog):
+        response=client.get('/dashboard/automation/jobs/1/tiles')
+    assert response.status_code==200
+    assert 'Предварительные замены найдены для 1 поз.' in response.text
+    assert 'Satrap Gray' in response.text and '598×598' in response.text
+    assert 'Подходящего товара с известными характеристиками, ценой и достаточным остатком нет.' not in response.text
+    assert "<option value='KH-GRAY'" not in response.text

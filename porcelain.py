@@ -303,6 +303,54 @@ def delivery_address(order):
     return str(value)
 
 
+def review_analogues(data, requested, quantity, limit=6):
+    """Expose nearby alternatives without changing strict selection or approval.
+
+    Near dimensions are a discovery window, never an accepted tolerance.
+    Unknown price/stock stays visible; a different thickness is not a match.
+    """
+    wanted = requirements(requested)
+    target = wanted['format']
+    if not target or tile_kind(requested) != 'tile':
+        return []
+    ids = {p['id'] for p in data['products']}
+    candidates = []
+    for p in data['products']:
+        if p.get('alias_of') in ids or tile_kind(p.get('name')) == 'accessory':
+            continue
+        actual = product_requirements(p)
+        size = actual['format']
+        if not size or any(abs(a-b) > max(.5, b*.02) for a,b in zip(size,target)):
+            continue
+        if wanted['thickness'] and actual['thickness'] and abs(wanted['thickness']-actual['thickness']) > 1:
+            continue
+        check = assess(requested, p)
+        notes = list(check['unknown'])
+        for reason in check['conflicts']:
+            if reason == 'Формат отличается':
+                fmt = lambda pair: '×'.join(f'{value*10:g}' for value in pair) + ' мм'
+                notes.append('Формат: ' + fmt(size) + ' вместо ' + fmt(target))
+            elif reason == 'Толщина отличается':
+                notes.append(f"Толщина: {actual['thickness']:g} вместо {wanted['thickness']:g} мм")
+            else:
+                notes.append(reason)
+        for pattern, label in [(r'рельеф', 'Рельеф'), (r'ректиф|обрезн', 'Ректификация'),
+                               (r'\br\s*\d', 'Класс противоскольжения')]:
+            if re.search(pattern, str(requested), re.I):
+                notes.append(label + ': требуется техническое подтверждение')
+        price, stock = number(p.get('price_rub_m2')), number(p.get('stock_m2'))
+        if price is None: notes.append('Цена в каталоге не заполнена')
+        if stock is None: notes.append('Остаток неизвестен')
+        elif stock < (number(quantity) or 0): notes.append('Остаток меньше требуемого количества')
+        notes.append('Модель / артикул и согласование замены требуют проверки')
+        candidates.append(dict(product=p, **check, review_notes=list(dict.fromkeys(notes))))
+    return sorted(candidates, key=lambda row: (
+        -row['score'], row['product'].get('stock_m2') is None,
+        (number(row['product'].get('stock_m2')) or 0) < (number(quantity) or 0),
+        row['product'].get('price_rub_m2') is None,
+        number(row['product'].get('price_rub_m2')) or float('inf'), row['product']['id']))[:limit]
+
+
 def automatic_selection(data, order):
     """Choose priced, sufficiently stocked matches; unknown requirements need a person."""
     from saved_dashboard import normalize_unit

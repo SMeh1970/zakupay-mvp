@@ -300,6 +300,7 @@ def install_porcelain(app, fetch_all_orders=None):
         history=''.join(f"<li><a href='{URL}/quotes/{r['id']}'>Предложение № {r['id']} — {esc(r['created_at'])}</a></li>" for r in previous)
         selected_count = 0
         can_prepare = False
+        review_count = 0
         for i,item in enumerate(order.get('orderItems',[]),1):
             name=item.get('goodName') or item.get('name') or ''
             if not tiles.is_tile(name): continue
@@ -314,26 +315,30 @@ def install_porcelain(app, fetch_all_orders=None):
             features=request.query_params.get(f'features_{i}','')
             found=tiles.find_analogues(catalog['data'],name+' '+str(item.get('comment') or '')+' '+features)
             found=[r for r in found if tiles.tile_kind(r['product'].get('name')) != 'accessory']
+            alternatives=tiles.review_analogues(catalog['data'],name+' '+str(item.get('comment') or '')+' '+features,item.get('count'))
+            review_count += bool(alternatives)
             can_prepare = can_prepare or bool(found)
             key=automatic.get(i,'')
             chosen=next((p for p in catalog['data']['products'] if p['id']==key),None)
             if chosen: selected_count += 1
             status=(f"Предварительно подобрано: {esc(chosen['name'])}. Цена каталога: {esc(chosen.get('price_rub_m2'))} ₽/м²."
-                    if chosen else 'Подходящего товара с известными характеристиками, ценой и достаточным остатком нет.')
+                    if chosen else ('Автоматически выбранного товара нет. Ниже показаны предварительные замены с отличиями или недостающими данными.' if alternatives else 'В текущем каталоге не найден вариант для автоматического выбора. Требуется расширить поиск.'))
             if chosen:
                 from tile_offer_policy import line_match
                 notes=line_match(item,chosen)
                 if notes: status += ' Требует проверки: ' + esc('; '.join(notes))
             options=[('', 'Не включать позицию')]+[(r['product']['id'],r['product']['name']+' · '+str(r['product'].get('format') or '')) for r in found]
+            alternative_cards=''.join(product_card(catalog['id'],r['product']) + '<ul class=notice>'+''.join('<li>'+esc(note)+'</li>' for note in r['review_notes'])+'</ul>' for r in alternatives)
+            review_html=("<h3>Предварительные замены — на согласование</h3><p>Эти товары не выбраны автоматически. Отклонения размеров, толщины и неизвестные характеристики не считаются подтверждённым соответствием.</p>"+alternative_cards) if alternatives else ''
             rows.append(f"<section><h2>{i}. {esc(name)}</h2><p>{esc(item.get('count'))} {esc(unit)}</p><p class='notice'>{status}</p>"
                 + select(f'product_{i}','Выбранный товар',options,request.query_params.get(f'product_{i}',key))
                 + field(f'area_{i}','Требуется, м²',request.query_params.get(f'area_{i}',item.get('count')),'number')
-                + "<details><summary>Проверить характеристики и другие варианты</summary>"
+                + review_html + "<details><summary>Варианты без выявленных конфликтов основных характеристик</summary>"
                 + field(f'features_{i}','Уточнить цвет / рисунок / характеристики',features)
                 + "<div class='products'>"+''.join(product_card(catalog['id'],r['product'],r) for r in found)+"</div></details></section>")
         price_note = 'Точная лучшая цена не подменяется коридором. При расчёте проверяется источник, м², НДС и доставка; недоступная цена остановит расчёт.'
         return page(f"<h1>Предложение по заявке № {esc(order.get('id'))}</h1><p>Адрес доставки: {esc(tiles.delivery_address(order) or 'не указан')}</p>"
-            + f"<section><h2>Результат автоматического подбора: {selected_count} поз.</h2><p>{price_note}</p><a href='/dashboard/automation/jobs/{job_id}/tiles/prices'>Проверить текущие конкурентные цены</a>"
+            + f"<section><h2>Результат автоматического подбора: {selected_count} поз.</h2><p>Предварительные замены найдены для {review_count} поз. Требуют согласования.</p><p>{price_note}</p><a href='/dashboard/automation/jobs/{job_id}/tiles/prices'>Проверить текущие конкурентные цены</a>"
             + ('<p>Подготовьте расчёт по выбранным товарам. Наличие, специальные требования и реквизиты проверяются перед счётом.</p>' if selected_count else '<p class="notice">Автоматическое предложение остановлено. Причины указаны по каждой позиции ниже.</p>') + '</section>'
             + (f"<section><h2>Сохранённые версии</h2><ul>{history}</ul></section>" if history else '')
             + f"<form method='post' action='/dashboard/automation/jobs/{job_id}/tiles/prepare'><input type='hidden' name='catalog_id' value='{catalog['id']}'>"
