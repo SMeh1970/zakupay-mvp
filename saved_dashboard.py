@@ -24,7 +24,7 @@ STATUSES = {
 }
 DEFAULTS = {
     "keyword": "", "title": "", "order_id": "", "customer": "", "inn": "",
-    "source": "all", "status": "all", "viewed": "all", "offer": "all",
+    "source": "all", "status": "all", "viewed": "all", "offer": "all", "actuality": "all",
     "region": "", "regions": (), "category": "", "category_id": (), "payment": "all",
     "creationDateFrom": "", "creationDateTo": "",
     "finishDateFrom": "", "finishDateTo": "",
@@ -209,7 +209,7 @@ def filters_from_query(query):
     filters["quantity_unit"] = normalize_unit(filters["quantity_unit"])
     enums = {"source": {"all", "manual", "zakupay"}, "status": {"all", *STATUSES},
              "viewed": {"all", "yes", "no"}, "offer": {"all", "sent", "unsent"},
-             "payment": {"all", "prepayment", "delay"}}
+             "payment": {"all", "prepayment", "delay"}, "actuality": {"all", "active", "inactive", "unknown"}}
     for key, allowed in enums.items():
         if filters[key] not in allowed:
             filters[key] = DEFAULTS[key]
@@ -269,6 +269,8 @@ def matches(item, filters, selected_categories=None):
         return False
     if filters["offer"] != "all" and item["sent"] != (filters["offer"] == "sent"):
         return False
+    if filters["actuality"] != "all" and filters["actuality"] != item.get("actuality"):
+        return False
     if filters["payment"] == "prepayment" and not (item["delay"] == 0 or (item["delay"] is None and ("предоплат" in _norm(item["terms"]) or "без отсроч" in _norm(item["terms"])))):
         return False
     if filters["payment"] == "delay" and not (item["delay"] is not None and item["delay"] > 0):
@@ -285,9 +287,16 @@ def matches(item, filters, selected_categories=None):
     return True
 
 
-def select_page(rows, query, reference=None, reference_updated=""):
+def select_page(rows, query, reference=None, reference_updated="", actuality=None):
     filters, errors = filters_from_query(query)
     saved = [describe(row) for row in rows]
+    # Last known Zakupay answer per request; manual requests have none and are not matched by it.
+    for item in saved:
+        if item["source"] == "manual":
+            item["actuality"] = "manual"
+        else:
+            state = ((actuality or {}).get(item["order_id"]) or {}).get("state")
+            item["actuality"] = state if state in {"active", "inactive"} else "unknown"
     reference = reference or []
     choices = category_choices(saved, reference)
     unit_choices = {unit: unit for unit in COMMON_UNITS}
@@ -464,6 +473,7 @@ def filter_form(state):
         select("status", "Статус обработки", {"all": "Все", **STATUSES}) +
         select("viewed", "Просмотр", {"all": "Все", "no": "Не просмотрены", "yes": "Просмотрены"}) +
         select("offer", "Моё предложение", {"all": "Все", "unsent": "Не отправлено", "sent": "Отправлено"}) +
+        select("actuality", "Актуальность (по последней проверке)", {"all": "Все", "active": "Актуальна", "inactive": "Неактуальна", "unknown": "Не проверена / не подтверждена"}) +
         field("creationDateFrom", "Дата заявки от", "date") + field("creationDateTo", "Дата заявки до", "date") +
         select("page_size", "На странице", {"25": "25", "50": "50", "100": "100"})
     )
@@ -488,7 +498,7 @@ def filter_form(state):
     )
     return (
         f"<section class='filter-panel' id='request-filters'><h2>Фильтры заявок</h2>"
-        "<p>Чтобы показать только заявки Закупай, выберите источник «Закупай». Фильтры применяются к сохранённым заявкам.</p>"
+        "<p>Чтобы показать только заявки Закупай, выберите источник «Закупай». Фильтры применяются к сохранённым заявкам. Фильтр «Актуальность» берёт последний ответ Закупай; ручные заявки им не отбираются. Кнопка «Проверить актуальность заявок» обновляет ответы.</p>"
         f"<p>{category_note}</p>"
         + preferences_control(state)
         + (f"<form method='post' action='{URL}/filters'><input type='hidden' name='csrf' value='{state['csrf']}'>"
