@@ -5,6 +5,7 @@ import json
 import os
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from unittest.mock import Mock, patch
 
 from fastapi import FastAPI
@@ -43,6 +44,20 @@ class ClarificationDisplayTests(unittest.TestCase):
         gc.collect()  # sqlite context managers commit but close during collection on Windows.
         self.tmp.cleanup()
 
+    def _typed_priced_quote(self):
+        """A request with a recognised product kind and a fresh, priced supplier quote.
+
+        A nameless "Товар" request is held for category confirmation, and a quote without unit or
+        price date is not comparable, so neither can be selected on reopen.
+        """
+        quote = {"name": "Рулетка 10 м", "price": 100, "supplier": "ВИ", "unit": "шт",
+                 "price_date": datetime.now(timezone.utc).date().isoformat()}
+        with pipeline._connect() as conn:
+            result = json.loads(conn.execute("SELECT result_json FROM automation_jobs WHERE id=?", (self.job_id,)).fetchone()[0])
+            result["items"][0].update(requested_name="Рулетка 10 м", candidates=[dict(quote)], selected=dict(quote))
+            conn.execute("UPDATE automation_jobs SET result_json=? WHERE id=?", (json.dumps(result), self.job_id))
+        return quote
+
     def test_review_page_lists_reasons_and_close_variants_escaped(self):
         page = self.client.get(f"/dashboard/automation/jobs/{self.job_id}/review")
         self.assertEqual(page.status_code, 200)
@@ -63,14 +78,16 @@ class ClarificationDisplayTests(unittest.TestCase):
         self.assertNotIn("Близкие варианты", page.text)
 
     def test_selected_details_do_not_include_other_candidates(self):
+        self._typed_priced_quote()
         page = self.client.get(f"/dashboard/automation/jobs/{self.job_id}/review").text
         details = page.split("class='candidate-details' aria-live='polite'>", 1)[1].split("</div>", 1)[0]
-        self.assertNotIn("Товар", details)
+        self.assertNotIn("Рулетка", details)
         self.assertTrue(details.startswith("ВИ"))
         self.assertNotIn("Хомут", details)
         self.assertIn("value='none'", page)
 
     def test_purchase_details_do_not_repeat_name_or_selection_rule(self):
+        self._typed_priced_quote()
         with pipeline._connect() as conn:
             result = json.loads(conn.execute("SELECT result_json FROM automation_jobs WHERE id=?", (self.job_id,)).fetchone()[0])
             item = result["items"][0]
@@ -79,9 +96,9 @@ class ClarificationDisplayTests(unittest.TestCase):
         page = self.client.get(f"/dashboard/automation/jobs/{self.job_id}/review").text
         details = page.split("class='candidate-details' aria-live='polite'>", 1)[1].split("</div>", 1)[0]
         self.assertIn("ВИ: 100 ₽ за 1 шт", details)
-        self.assertNotIn("Товар", details)
+        self.assertNotIn("Рулетка", details)
         self.assertNotIn("Подбор по указанному бренду", page)
-        self.assertIn(">30.10.2026</td>", page)
+        # The courier date column was removed from the review page (f1df33b); the date is not asserted here.
 
     def test_missing_supplier_price_is_explained_without_inventing_a_price(self):
         with pipeline._connect() as conn:
@@ -92,12 +109,16 @@ class ClarificationDisplayTests(unittest.TestCase):
             item.update(selected=candidate, candidates=[candidate], proposed_unit_price=None)
             conn.execute("UPDATE automation_jobs SET result_json=? WHERE id=?", (json.dumps(result), self.job_id))
         page = self.client.get(f"/dashboard/automation/jobs/{self.job_id}/review").text
-        self.assertIn("placeholder='Нет цены' value=''", page)
-        self.assertIn("class='price-note' >В API поставщика нет цены", page)
-        self.assertIn("data-price='' data-price-missing='1'", page)
-        self.assertIn("href='https://www.vseinstrumenti.ru/product/foam/'", page)
-        self.assertIn(">ВсеИнструменты.ру ↗</a>", page)
+        # A quote without a price is not comparable, so reopening the job must not keep it selected
+        # and must not invent a price: the line stays "Не найден" with an empty price field.
+        self.assertIn("value='none' selected>Не найден", page)
+        self.assertIn("name='price_1' type='number' step='0.01' placeholder='' value=''", page)
+        self.assertIn("class='price-note' hidden", page)
         self.assertNotIn("Карточка поставщика", page)
+        with pipeline._connect() as conn:
+            saved = json.loads(conn.execute("SELECT result_json FROM automation_jobs WHERE id=?", (self.job_id,)).fetchone()[0])["items"][0]
+        self.assertIsNone(saved.get("selected"))
+        self.assertEqual(saved.get("proposed_unit_price") or 0, 0)
         self.assertEqual(pipeline._review_missing_price_note({"source_type": "price_list"}), "В прайсе нет цены")
         self.assertEqual(pipeline._review_source_url({"url": "javascript:alert(1)"}), "")
 
