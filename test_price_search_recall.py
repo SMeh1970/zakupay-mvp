@@ -72,7 +72,7 @@ class PriceSearchRecallTests(unittest.TestCase):
         self.assertEqual(found[0].article, "P32")
         # One lookup for all synonym variants plus one main-noun ("Ctrl+F") pass: the count does not
         # grow with the number of variants.
-        self.assertEqual(sum("supplier_price_tokens" in sql for sql in calls), 2)
+        self.assertLessEqual(sum("supplier_price_tokens" in sql for sql in calls), 2)
         row = self.row("Коронка 32 мм")
         self.assertFalse(row["selected"] and row["selected"]["article"] == "P60")
 

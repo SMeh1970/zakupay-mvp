@@ -105,6 +105,8 @@ def initialize_schema(conn, postgres):
         PRIMARY KEY(token,item_id)
     )""")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_supplier_price_tokens_item ON supplier_price_tokens(item_id)")
+    # Distinct words only: a prefix ("Ctrl+F") lookup scans this small table, never the row-per-word index.
+    conn.execute("CREATE TABLE IF NOT EXISTS supplier_price_vocab (token TEXT PRIMARY KEY)")
     # Concurrent imports of the same catalogue cannot leave two active versions.
     conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_supplier_price_active_version ON supplier_price_lists(catalog_key) WHERE status='active'")
     from prepared_catalog import initialize_schema as initialize_prepared_schema
@@ -359,6 +361,8 @@ def activate_list(list_id, settings):
                                "INSERT INTO supplier_price_tokens(item_id,token) VALUES (?,?)", index_rows)
         finally:
             cursor.close()
+        for token in sorted({token for _, token in index_rows}):
+            execute(conn, "INSERT INTO supplier_price_vocab(token) VALUES (?) ON CONFLICT DO NOTHING", (token,))
         execute(conn, "UPDATE supplier_price_lists SET status='superseded' WHERE catalog_key=? AND status='active'", (record["catalog_key"],))
         execute(conn, """UPDATE supplier_price_lists SET status='active',settings_json=?,imported_rows=?,
             skipped_rows=?,activated_at=? WHERE id=?""",
@@ -372,6 +376,12 @@ PRICE_SHORTLIST = max(400, int(os.getenv("PRICE_SEARCH_SHORTLIST", "1500")))
 PRICE_PER_SUPPLIER = max(8, int(os.getenv("PRICE_SEARCH_PER_SUPPLIER", "60")))
 PRICE_NOUN_SCAN = max(500, int(os.getenv("PRICE_SEARCH_NOUN_SCAN", "3000")))
 PRICE_TOTAL = max(80, int(os.getenv("PRICE_SEARCH_TOTAL", "300")))
+
+
+def _ensure_vocab(conn):
+    """Lists imported before the vocabulary table existed: fill it once from the token index."""
+    if execute(conn, "SELECT 1 FROM supplier_price_vocab LIMIT 1").fetchone() is None:
+        execute(conn, "INSERT INTO supplier_price_vocab(token) SELECT DISTINCT token FROM supplier_price_tokens WHERE true ON CONFLICT DO NOTHING")
 
 
 def search_prices(query, limit=8):
@@ -415,12 +425,15 @@ def search_prices(query, limit=8):
         noun = head_noun(query)
         if noun and len(noun) >= 4:
             prefix = noun_prefix = noun[:max(4, len(noun) - 1)]
-            extra = execute(conn, f"""SELECT i.id,i.payload_json FROM supplier_price_items i
-                JOIN supplier_price_lists p ON p.id=i.list_id
-                WHERE p.status='active' AND i.id IN (SELECT t.item_id FROM supplier_price_tokens t WHERE t.token LIKE ?)
-                ORDER BY i.price LIMIT {PRICE_NOUN_SCAN}""", [prefix + "%"]).fetchall()
-            for row in extra:
-                rows.setdefault(row["id"], row)
+            _ensure_vocab(conn)
+            words = [r["token"] for r in execute(conn, "SELECT token FROM supplier_price_vocab WHERE token LIKE ? LIMIT 200", [prefix + "%"]).fetchall()]
+            if words:
+                extra = execute(conn, f"""SELECT i.id,i.payload_json FROM supplier_price_items i
+                    JOIN supplier_price_lists p ON p.id=i.list_id
+                    WHERE p.status='active' AND i.id IN (SELECT t.item_id FROM supplier_price_tokens t
+                        WHERE t.token IN ({",".join("?" for _ in words)}) LIMIT {PRICE_NOUN_SCAN})""", words).fetchall()
+                for row in extra:
+                    rows.setdefault(row["id"], row)
         quotes = [SupplierQuote(**json.loads(row["payload_json"])) for row in rows.values()]
         product_ids = sorted({q.catalog_product_id for q in quotes if q.catalog_product_id})
         corrected = {}

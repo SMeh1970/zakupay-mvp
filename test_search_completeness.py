@@ -168,3 +168,20 @@ class StagedQueriesTests(unittest.TestCase):
         self.assertIn("поликарбонат 8 мм", variants)
         self.assertIn("поликарбонат монолитный", variants)
         self.assertEqual(variants.index("Монолитный поликарбонат 8 мм прозрачный 2050×3050") < variants.index("поликарбонат"), True)
+
+
+class VocabularyTests(unittest.TestCase):
+    setUp = base.PriceListsCatalogTests.setUp
+    tearDown = base.PriceListsCatalogTests.tearDown
+
+    def test_prefix_pass_uses_the_word_vocabulary_and_backfills_old_lists(self):
+        rows = [["Наименование", "Цена", "Артикул", "Ед. изм.", "Остаток"], ["Сверла HSS 10 мм", 10, "X1", "шт", None]]
+        lid = prices.stage_file(workbook(rows), "v.xlsx", "Сатурн", "Основной", PRICE_DAY)
+        prices.activate_list(lid, settings())
+        with prices.database() as conn:
+            self.assertIsNotNone(prices.execute(conn, "SELECT 1 FROM supplier_price_vocab WHERE token='сверл'").fetchone())
+            # A list imported before the vocabulary existed: the table is empty and is filled on first use.
+            prices.execute(conn, "DELETE FROM supplier_price_vocab")
+        self.assertEqual([q.article for q in prices.search_prices("Сверло 10 мм")], ["X1"])
+        with prices.database() as conn:
+            self.assertIsNotNone(prices.execute(conn, "SELECT 1 FROM supplier_price_vocab WHERE token='сверл'").fetchone())
