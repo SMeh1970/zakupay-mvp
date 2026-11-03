@@ -33,12 +33,12 @@ def encode(items, batch=2000):
     return base64.b64encode(b''.join(parts)).decode('ascii')
 
 
-def load(key, now):
+def load(key, now, allow_expired=False):
     from automation_pipeline import _connect, _execute
     with closing(_connect()) as conn, conn:
         conn.execute('CREATE TABLE IF NOT EXISTS supplier_catalog_cache (cache_key TEXT PRIMARY KEY, expires_at DOUBLE PRECISION NOT NULL, payload TEXT NOT NULL)')
         row = _execute(conn, 'SELECT expires_at, payload FROM supplier_catalog_cache WHERE cache_key=?', (key,)).fetchone()
-    if not row or row['expires_at'] <= now:
+    if not row or (row['expires_at'] <= now and not allow_expired):
         return None
     expires_at = float(row['expires_at'])
     items = json.loads(zlib.decompress(base64.b64decode(row['payload'])))

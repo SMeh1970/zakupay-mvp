@@ -373,6 +373,13 @@ class VseinstrumentiAdapter(SupplierAdapter):
 KREP_SLOW_CALL_MS = int(os.getenv("KREP_KOMP_SLOW_CALL_MS", "3000"))
 # Per-thread scratch space so _enrich keeps its signature while search() can log step timings.
 _krep_timing = threading.local()
+# After a network failure stop calling the API for a while so orders do not each wait out a timeout.
+KREP_COOLDOWN_SECONDS = int(os.getenv("KREP_KOMP_COOLDOWN_SECONDS", "90"))
+# An expired catalogue may be used (and refreshed in the background) for at most this long.
+KREP_STALE_MAX_SECONDS = int(float(os.getenv("KREP_KOMP_STALE_MAX_HOURS", "168")) * 3600)
+KREP_STALE_RECHECK_SECONDS = 60
+# Hard stop when the API does not report last_page.
+KREP_MAX_PAGES = int(os.getenv("KREP_KOMP_MAX_PAGES", "150"))
 
 
 def _priced_count(quotes) -> int:
@@ -419,6 +426,13 @@ class KrepKompAdapter(SupplierAdapter):
     _catalog_expires_at = 0.0
     _catalog_loading = False
     _catalog_error: str | None = None
+    _catalog_stale = False
+    _catalog_source: str | None = None
+    _catalog_origin_expiry = 0.0
+    _refreshing = False
+    _retry_not_before = 0.0
+    _failure_text: str | None = None
+    _api_down_until = 0.0
     _catalog_warm_lock = threading.Lock()
     _storage_ids: list[str] | None = None
     _storage_ids_expires_at = 0.0
@@ -451,6 +465,8 @@ class KrepKompAdapter(SupplierAdapter):
             "storages": sorted(self.storage_names),
             "catalog_ready": type(self).catalog_ready(),
             "catalog_loading": type(self)._catalog_loading,
+            "catalog_stale": type(self).catalog_is_stale(),
+            "catalog_source": type(self)._catalog_source,
             "catalog_error": type(self)._catalog_error,
             "read_only": True,
         })
@@ -487,6 +503,10 @@ class KrepKompAdapter(SupplierAdapter):
         score = overlap + (2.0 if exact_article else 0.0) + (1.0 if phrase else 0.0)
         return (1 if exact_article else 0, score, text)
 
+    def _note_network_failure(self, exc) -> None:
+        if isinstance(exc, (requests.exceptions.ConnectionError, requests.exceptions.Timeout)):
+            type(self)._api_down_until = time.time() + KREP_COOLDOWN_SECONDS
+
     def _token_value(self) -> str:
         if not self.enabled:
             raise RuntimeError("Не настроены KREP_KOMP_API_USERNAME/KREP_KOMP_API_PASSWORD")
@@ -516,6 +536,7 @@ class KrepKompAdapter(SupplierAdapter):
                 )
                 response.raise_for_status()
             except Exception as exc:
+                self._note_network_failure(exc)
                 _log_krep_failure("generate_token", started, exc)
                 raise
             try:
@@ -540,6 +561,9 @@ class KrepKompAdapter(SupplierAdapter):
         body: dict[str, Any] = {"page": int(page)}
         if parametrs:
             body["parametrs"] = parametrs
+        down_for = type(self)._api_down_until - time.time()
+        if down_for > 0:
+            raise RuntimeError(f"КРЕП-КОМП временно недоступен после сетевого сбоя; повтор через {int(down_for) + 1} с")
         token = self._token_value()
         started = time.monotonic()
         try:
@@ -559,8 +583,10 @@ class KrepKompAdapter(SupplierAdapter):
                 type(self)._token_expires_at = 0
             response.raise_for_status()
         except Exception as exc:
+            self._note_network_failure(exc)
             _log_krep_failure(operation, started, exc, page=page)
             raise
+        type(self)._api_down_until = 0.0
         elapsed_ms = int((time.monotonic() - started) * 1000)
         if elapsed_ms >= KREP_SLOW_CALL_MS:
             logging.getLogger(__name__).warning(
@@ -611,54 +637,159 @@ class KrepKompAdapter(SupplierAdapter):
                 saved = None
             if saved is not None:
                 cls._catalog, cls._catalog_expires_at = saved
+                cls._catalog_origin_expiry = cls._catalog_expires_at
                 cls._catalog_error = None
+                cls._catalog_stale = False
                 cls._catalog_source = 'db_cache'
                 logger.warning('krep catalogue restored source=db_cache records=%s expires_in_hours=%.2f',
                                len(cls._catalog), (cls._catalog_expires_at - now) / 3600)
                 return cls._catalog
-            logger.warning('krep catalogue cache miss: no valid saved catalogue, loading from the API')
-            started = time.monotonic()
-            items: list[dict[str, Any]] = []
-            page = 1
-            last_page = None
+            # No valid catalogue. A saved one that has only expired is still good for finding
+            # products (prices and stock are always requested live), so serve it at once and
+            # refresh in the background instead of making every order wait for the API.
+            stale = self._stale_catalog(cache, logger, now)
+            if stale is not None:
+                self._start_background_refresh(now)
+                return stale
+            if now < cls._retry_not_before:
+                raise RuntimeError(cls._failure_text or "КРЕП-КОМП: каталог временно недоступен")
+            logger.warning('krep catalogue cache miss: no saved catalogue, loading from the API')
             try:
-                while True:
-                    payload = self._get_data("get_items", page=page)
-                    data = payload.get("data") or []
-                    if isinstance(data, list):
-                        # Prices and stock are requested live for the few ranked candidates, so keep only
-                        # the identity fields (what the stored cache keeps), compacted page by page.
-                        items.extend(cache.compact(x for x in data if isinstance(x, dict)))
-                    meta = payload.get("meta") or {}
-                    last_page = int(meta.get("last_page") or page)
-                    if page == 1:
-                        logger.warning('krep catalogue first page records=%s meta_keys=%s last_page_reported=%s',
-                                       len(items), _meta_keys(meta), meta.get("last_page") if isinstance(meta, dict) else None)
+                items, pages, started = self._load_catalog_from_api(cache, logger)
+            except Exception as exc:
+                self._remember_failure(exc)
+                raise
+            self._install_catalog(items)
+            self._persist_catalog(cache, logger, items, pages, started)
+            return items
+
+    def _load_catalog_from_api(self, cache, logger):
+        """Read every get_items page. Returns (items, pages, started); changes no shared state."""
+        started = time.monotonic()
+        items: list[dict[str, Any]] = []
+        page = 1
+        last_page = None
+        previous_first_code = None
+        try:
+            while True:
+                payload = self._get_data("get_items", page=page)
+                data = payload.get("data") or []
+                if isinstance(data, list):
+                    # Prices and stock are requested live for the few ranked candidates, so keep only
+                    # the identity fields (what the stored cache keeps), compacted page by page.
+                    items.extend(cache.compact(x for x in data if isinstance(x, dict)))
+                meta = payload.get("meta") or {}
+                reported = meta.get("last_page")
+                last_page = int(reported) if reported else None
+                if page == 1:
+                    logger.warning('krep catalogue first page records=%s meta_keys=%s last_page_reported=%s',
+                                   len(items), _meta_keys(meta), reported)
+                if last_page is not None:
                     if page >= last_page:
                         break
-                    if page % 10 == 0:
-                        logger.warning('krep catalogue loading page=%s total_pages=%s records=%s elapsed_ms=%s',
-                                       page, last_page, len(items), int((time.monotonic() - started) * 1000))
-                    page += 1
-            except Exception as exc:
-                logger.warning('krep catalogue load failed page=%s last_page=%s records_loaded=%s elapsed_ms=%s error=%s',
-                               page, last_page, len(items), int((time.monotonic() - started) * 1000), integration_error(exc))
-                raise
-            cls._catalog = items
-            cls._catalog_expires_at = time.time() + max(self.catalog_ttl, 300)
-            cls._catalog_error = None
-            cls._catalog_source = 'api'
-            save_started = time.monotonic()
-            saved_ok = True
+                else:
+                    # The API did not say how many pages exist: keep reading until an empty page
+                    # instead of taking the first page for the whole catalogue.
+                    first_code = (data[0].get("Код") if data and isinstance(data[0], dict) else None)
+                    if not data or page >= KREP_MAX_PAGES:
+                        break
+                    if first_code is not None and first_code == previous_first_code:
+                        raise RuntimeError("КРЕП-КОМП get_items: страница не изменилась, постраничное чтение не поддерживается")
+                    previous_first_code = first_code
+                if page % 10 == 0:
+                    logger.warning('krep catalogue loading page=%s total_pages=%s records=%s elapsed_ms=%s',
+                                   page, last_page, len(items), int((time.monotonic() - started) * 1000))
+                page += 1
+        except Exception as exc:
+            logger.warning('krep catalogue load failed page=%s last_page=%s records_loaded=%s elapsed_ms=%s error=%s',
+                           page, last_page, len(items), int((time.monotonic() - started) * 1000), integration_error(exc))
+            raise
+        return items, page, started
+
+    def _install_catalog(self, items) -> None:
+        """Make a freshly loaded catalogue current. Callers hold _catalog_lock."""
+        cls = type(self)
+        cls._catalog = items
+        cls._catalog_expires_at = time.time() + max(self.catalog_ttl, 300)
+        cls._catalog_origin_expiry = cls._catalog_expires_at
+        cls._catalog_error = None
+        cls._catalog_stale = False
+        cls._catalog_source = 'api'
+        cls._retry_not_before = 0.0
+        cls._failure_text = None
+
+    def _persist_catalog(self, cache, logger, items, pages, started) -> None:
+        save_started = time.monotonic()
+        saved_ok = True
+        try:
+            cache.save(self._catalog_cache_key(), items, type(self)._catalog_expires_at)
+        except Exception as exc:
+            saved_ok = False
+            logger.warning('krep catalogue cache write failed: %s', type(exc).__name__)
+        logger.warning('krep catalogue ready source=api pages=%s records=%s seconds=%.3f cache_saved=%s save_ms=%s',
+                       pages, len(items), time.monotonic() - started, saved_ok,
+                       int((time.monotonic() - save_started) * 1000))
+
+    def _remember_failure(self, exc) -> None:
+        cls = type(self)
+        cls._retry_not_before = time.time() + KREP_COOLDOWN_SECONDS
+        cls._failure_text = (f"КРЕП-КОМП: каталог временно недоступен ({integration_error(exc)}); "
+                             f"повторная попытка не раньше чем через {KREP_COOLDOWN_SECONDS} с")
+
+    def _stale_catalog(self, cache, logger, now):
+        """An expired but complete catalogue (memory first, then the saved copy), or None."""
+        cls = type(self)
+        stale, origin, source = cls._catalog, cls._catalog_origin_expiry or cls._catalog_expires_at, 'stale_memory'
+        if stale is None:
             try:
-                cache.save(self._catalog_cache_key(), items, cls._catalog_expires_at)
+                old = cache.load(self._catalog_cache_key(), now, allow_expired=True)
             except Exception as exc:
-                saved_ok = False
-                logger.warning('krep catalogue cache write failed: %s', type(exc).__name__)
-            logger.warning('krep catalogue ready source=api pages=%s records=%s seconds=%.3f cache_saved=%s save_ms=%s',
-                           page, len(items), time.monotonic() - started, saved_ok,
-                           int((time.monotonic() - save_started) * 1000))
-            return items
+                logger.warning('krep catalogue stale cache read failed: %s', type(exc).__name__)
+                return None
+            if old is None:
+                return None
+            stale, origin = old
+            source = 'stale_db'
+        age_hours = (now - origin) / 3600
+        if now - origin > KREP_STALE_MAX_SECONDS:
+            logger.warning('krep catalogue too old to use source=%s age_hours=%.1f', source, age_hours)
+            return None
+        cls._catalog = stale
+        cls._catalog_origin_expiry = origin
+        cls._catalog_stale = True
+        cls._catalog_source = source
+        cls._catalog_expires_at = now + KREP_STALE_RECHECK_SECONDS
+        logger.warning('krep catalogue stale served source=%s records=%s expired_hours_ago=%.2f',
+                       source, len(stale), age_hours)
+        return stale
+
+    def _start_background_refresh(self, now) -> bool:
+        cls = type(self)
+        if cls._refreshing or now < cls._retry_not_before:
+            return False
+        cls._refreshing = True
+
+        def refresh():
+            logger = logging.getLogger(__name__)
+            try:
+                import supplier_catalog_cache as cache
+                items, pages, started = self._load_catalog_from_api(cache, logger)
+                with cls._catalog_lock:
+                    self._install_catalog(items)
+                self._persist_catalog(cache, logger, items, pages, started)
+                logger.warning('krep catalogue background refresh finished records=%s', len(items))
+            except Exception as exc:
+                self._remember_failure(exc)
+                logger.warning('krep catalogue background refresh failed error=%s', integration_error(exc))
+            finally:
+                cls._refreshing = False
+
+        threading.Thread(target=refresh, name="krep-komp-catalog-refresh", daemon=True).start()
+        return True
+
+    @classmethod
+    def catalog_is_stale(cls) -> bool:
+        return bool(cls._catalog is not None and cls._catalog_stale)
 
     @classmethod
     def catalog_ready(cls) -> bool:

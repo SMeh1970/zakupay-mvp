@@ -16,6 +16,15 @@ def ok(payload):
     return result
 
 
+def reset_krep_state():
+    for name, value in (("_token", None), ("_token_expires_at", 0), ("_catalog", None),
+                        ("_catalog_expires_at", 0), ("_storage_ids", None), ("_storage_ids_expires_at", 0),
+                        ("_catalog_stale", False), ("_catalog_source", None), ("_catalog_origin_expiry", 0.0),
+                        ("_refreshing", False), ("_retry_not_before", 0.0), ("_failure_text", None),
+                        ("_api_down_until", 0.0), ("_catalog_error", None)):
+        setattr(KrepKompAdapter, name, value)
+
+
 ITEM = {"Код": "001", "Наименование": "Болт М8х30", "ПолноеНаименование": "Болт М8х30 оцинкованный",
         "Артикул": "b830", "Категория": "Болты"}
 
@@ -31,11 +40,10 @@ class KrepDiagnosticsTests(unittest.TestCase):
         self.cache_save = patch("supplier_catalog_cache.save")
         self.cache_load.start()
         self.cache_save.start()
-        for name, value in (("_token", None), ("_token_expires_at", 0), ("_catalog", None),
-                            ("_catalog_expires_at", 0), ("_storage_ids", None), ("_storage_ids_expires_at", 0)):
-            setattr(KrepKompAdapter, name, value)
+        reset_krep_state()
 
     def tearDown(self):
+        reset_krep_state()
         self.cache_load.stop()
         self.cache_save.stop()
         self.env.stop()
