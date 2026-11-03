@@ -370,6 +370,36 @@ class VseinstrumentiAdapter(SupplierAdapter):
         return quotes, meta
 
 
+KREP_SLOW_CALL_MS = int(os.getenv("KREP_KOMP_SLOW_CALL_MS", "3000"))
+# Per-thread scratch space so _enrich keeps its signature while search() can log step timings.
+_krep_timing = threading.local()
+
+
+def _priced_count(quotes) -> int:
+    try:
+        return sum(1 for quote in quotes if getattr(quote, "price", None) is not None)
+    except Exception:
+        return -1
+
+
+def _meta_keys(meta) -> list[str]:
+    try:
+        return sorted(str(key) for key in meta)[:12] if isinstance(meta, dict) else [type(meta).__name__]
+    except Exception:
+        return []
+
+
+def _log_krep_failure(operation: str, started: float, exc: Exception, **context) -> None:
+    """One line per failed API call: the operation, where it stopped and the error type.
+
+    Never logs headers, credentials, request bodies or response bodies.
+    """
+    where = " ".join(f"{key}={value}" for key, value in context.items() if value is not None)
+    logging.getLogger(__name__).warning(
+        "krep api failed operation=%s %s error=%s elapsed_ms=%s",
+        operation, where, integration_error(exc), int((time.monotonic() - started) * 1000))
+
+
 class KrepKompAdapter(SupplierAdapter):
     """Read-only adapter for the official KREP-KOMP 1C exchange API.
 
@@ -474,15 +504,20 @@ class KrepKompAdapter(SupplierAdapter):
             basic = base64.b64encode(
                 f"{self.username}:{self.password}".encode("utf-8")
             ).decode("ascii")
-            response = requests.get(
-                f"{self.base_url}/generate_token",
-                headers={
-                    "Authorization": f"Basic {basic}",
-                    "Accept": "application/json",
-                },
-                timeout=self.timeout,
-            )
-            response.raise_for_status()
+            started = time.monotonic()
+            try:
+                response = requests.get(
+                    f"{self.base_url}/generate_token",
+                    headers={
+                        "Authorization": f"Basic {basic}",
+                        "Accept": "application/json",
+                    },
+                    timeout=self.timeout,
+                )
+                response.raise_for_status()
+            except Exception as exc:
+                _log_krep_failure("generate_token", started, exc)
+                raise
             try:
                 payload = response.json()
             except ValueError:
@@ -505,21 +540,31 @@ class KrepKompAdapter(SupplierAdapter):
         body: dict[str, Any] = {"page": int(page)}
         if parametrs:
             body["parametrs"] = parametrs
-        response = requests.post(
-            f"{self.base_url}/get_data",
-            json=body,
-            headers={
-                "Authorization": f"Bearer {self._token_value()}",
-                "Operation": operation,
-                "Accept": "application/json",
-                "Accept-Encoding": "",
-            },
-            timeout=self.timeout,
-        )
-        if response.status_code == 401:
-            type(self)._token = None
-            type(self)._token_expires_at = 0
-        response.raise_for_status()
+        token = self._token_value()
+        started = time.monotonic()
+        try:
+            response = requests.post(
+                f"{self.base_url}/get_data",
+                json=body,
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Operation": operation,
+                    "Accept": "application/json",
+                    "Accept-Encoding": "",
+                },
+                timeout=self.timeout,
+            )
+            if response.status_code == 401:
+                type(self)._token = None
+                type(self)._token_expires_at = 0
+            response.raise_for_status()
+        except Exception as exc:
+            _log_krep_failure(operation, started, exc, page=page)
+            raise
+        elapsed_ms = int((time.monotonic() - started) * 1000)
+        if elapsed_ms >= KREP_SLOW_CALL_MS:
+            logging.getLogger(__name__).warning(
+                "krep api slow operation=%s page=%s elapsed_ms=%s", operation, page, elapsed_ms)
         payload = response.json()
         if not isinstance(payload, dict) or payload.get("success") is False:
             info = payload.get("info") or payload.get("Info") if isinstance(payload, dict) else payload
@@ -531,11 +576,22 @@ class KrepKompAdapter(SupplierAdapter):
 
     def prepare_catalog(self):
         """Wait in the search worker; a configured supplier is never skipped silently."""
+        cls = type(self)
+        started = time.monotonic()
+        was_ready = cls.catalog_ready()
         try:
-            return self._catalog_items()
+            items = self._catalog_items()
         except Exception as exc:
-            type(self)._catalog_error = integration_error(exc)
+            cls._catalog_error = integration_error(exc)
+            logging.getLogger(__name__).warning(
+                "krep catalogue prepare failed elapsed_ms=%s error=%s",
+                int((time.monotonic() - started) * 1000), cls._catalog_error)
             raise
+        logging.getLogger(__name__).warning(
+            "krep catalogue prepared source=%s records=%s elapsed_ms=%s",
+            "memory" if was_ready else getattr(cls, "_catalog_source", None), len(items),
+            int((time.monotonic() - started) * 1000))
+        return items
 
     def _catalog_items(self) -> list[dict[str, Any]]:
         cls = type(self)
@@ -556,33 +612,52 @@ class KrepKompAdapter(SupplierAdapter):
             if saved is not None:
                 cls._catalog, cls._catalog_expires_at = saved
                 cls._catalog_error = None
-                logger.info('krep catalogue restored records=%s', len(cls._catalog))
+                cls._catalog_source = 'db_cache'
+                logger.warning('krep catalogue restored source=db_cache records=%s expires_in_hours=%.2f',
+                               len(cls._catalog), (cls._catalog_expires_at - now) / 3600)
                 return cls._catalog
+            logger.warning('krep catalogue cache miss: no valid saved catalogue, loading from the API')
             started = time.monotonic()
             items: list[dict[str, Any]] = []
             page = 1
-            while True:
-                payload = self._get_data("get_items", page=page)
-                data = payload.get("data") or []
-                if isinstance(data, list):
-                    # Prices and stock are requested live for the few ranked candidates, so keep only
-                    # the identity fields (what the stored cache keeps), compacted page by page.
-                    items.extend(cache.compact(x for x in data if isinstance(x, dict)))
-                meta = payload.get("meta") or {}
-                last_page = int(meta.get("last_page") or page)
-                if page >= last_page:
-                    break
-                if page == 1 or page % 10 == 0:
-                    logger.info('krep catalogue loading page=%s total_pages=%s records=%s', page, last_page, len(items))
-                page += 1
+            last_page = None
+            try:
+                while True:
+                    payload = self._get_data("get_items", page=page)
+                    data = payload.get("data") or []
+                    if isinstance(data, list):
+                        # Prices and stock are requested live for the few ranked candidates, so keep only
+                        # the identity fields (what the stored cache keeps), compacted page by page.
+                        items.extend(cache.compact(x for x in data if isinstance(x, dict)))
+                    meta = payload.get("meta") or {}
+                    last_page = int(meta.get("last_page") or page)
+                    if page == 1:
+                        logger.warning('krep catalogue first page records=%s meta_keys=%s last_page_reported=%s',
+                                       len(items), _meta_keys(meta), meta.get("last_page") if isinstance(meta, dict) else None)
+                    if page >= last_page:
+                        break
+                    if page % 10 == 0:
+                        logger.warning('krep catalogue loading page=%s total_pages=%s records=%s elapsed_ms=%s',
+                                       page, last_page, len(items), int((time.monotonic() - started) * 1000))
+                    page += 1
+            except Exception as exc:
+                logger.warning('krep catalogue load failed page=%s last_page=%s records_loaded=%s elapsed_ms=%s error=%s',
+                               page, last_page, len(items), int((time.monotonic() - started) * 1000), integration_error(exc))
+                raise
             cls._catalog = items
             cls._catalog_expires_at = time.time() + max(self.catalog_ttl, 300)
             cls._catalog_error = None
+            cls._catalog_source = 'api'
+            save_started = time.monotonic()
+            saved_ok = True
             try:
                 cache.save(self._catalog_cache_key(), items, cls._catalog_expires_at)
             except Exception as exc:
+                saved_ok = False
                 logger.warning('krep catalogue cache write failed: %s', type(exc).__name__)
-            logger.info('krep catalogue ready pages=%s records=%s seconds=%.3f', page, len(items), time.monotonic()-started)
+            logger.warning('krep catalogue ready source=api pages=%s records=%s seconds=%.3f cache_saved=%s save_ms=%s',
+                           page, len(items), time.monotonic() - started, saved_ok,
+                           int((time.monotonic() - save_started) * 1000))
             return items
 
     @classmethod
@@ -616,7 +691,11 @@ class KrepKompAdapter(SupplierAdapter):
         codes = [x for x in codes if x]
         if not codes:
             return []
+        timing = _krep_timing.__dict__.setdefault("current", {})
+        step = time.monotonic()
         prices_payload = self._get_data("get_price", parametrs={"СписокКодов": codes})
+        timing["price_ms"] = int((time.monotonic() - step) * 1000)
+        step = time.monotonic()
         prices = {
             str(x.get("Код") or "").strip(): x
             for x in (prices_payload.get("data") or []) if isinstance(x, dict)
@@ -639,6 +718,7 @@ class KrepKompAdapter(SupplierAdapter):
         if storage_ids:
             stock_params["СписокСкладов"] = storage_ids
         stocks_payload = self._get_data("get_stocks", parametrs=stock_params)
+        timing["stocks_ms"] = int((time.monotonic() - step) * 1000)
         stocks: dict[str, float] = {}
         stock_names: dict[str, list[str]] = {}
         for row in stocks_payload.get("data") or []:
@@ -698,10 +778,14 @@ class KrepKompAdapter(SupplierAdapter):
             return [SupplierQuote(supplier=self.name, name="", error="Пустой поисковый запрос")]
         if not self.enabled:
             return [SupplierQuote(supplier=self.name, name=query, error="API КРЕП-КОМП не настроен")]
+        started = time.monotonic()
         try:
             normalized_query = self._norm(query)
+            catalog = self._catalog_items()
+            catalog_ms = int((time.monotonic() - started) * 1000)
+            rank_started = time.monotonic()
             ranked = sorted(
-                self._catalog_items(),
+                catalog,
                 key=lambda item: self._rank_normalized(normalized_query, item),
                 reverse=True,
             )
@@ -716,8 +800,18 @@ class KrepKompAdapter(SupplierAdapter):
                 if query_tokens & self._indexed_item(*(str(item.get(k) or '') for k in (
                     'Наименование', 'ПолноеНаименование', 'Артикул', 'Категория')))[1]
             ), min(max(int(limit), 1), 20)))
-            return self._enrich(candidates)
+            rank_ms = int((time.monotonic() - rank_started) * 1000)
+            timing: dict[str, int] = {}
+            _krep_timing.current = timing
+            quotes = self._enrich(candidates)
+            logging.getLogger(__name__).warning(
+                "krep search catalog_ms=%s rank_ms=%s raw_candidates=%s priced=%s price_ms=%s stocks_ms=%s total_ms=%s",
+                catalog_ms, rank_ms, len(candidates), _priced_count(quotes),
+                timing.get("price_ms"), timing.get("stocks_ms"), int((time.monotonic() - started) * 1000))
+            return quotes
         except (requests.RequestException, RuntimeError, ValueError) as exc:
+            logging.getLogger(__name__).warning(
+                "krep search failed total_ms=%s error=%s", int((time.monotonic() - started) * 1000), integration_error(exc))
             return [SupplierQuote(supplier=self.name, name=query, error=f"Ошибка API КРЕП-КОМП: {exc}")]
 
 
