@@ -713,11 +713,24 @@ class KrepKompAdapter(SupplierAdapter):
             return [SupplierQuote(supplier=self.name, name=query, error="API КРЕП-КОМП не настроен")]
         try:
             normalized_query = self._norm(query)
-            ranked = sorted(
-                self._catalog_items(),
-                key=lambda item: self._rank_normalized(normalized_query, item),
-                reverse=True,
-            )
+            # Main noun first, whatever its ending (сверло/сверла): such items rank above items that
+            # only share size or unit words ("10", "мм").
+            from generic_identity import head_noun
+            noun = head_noun(query)
+            noun_prefix = noun[:max(4, len(noun) - 1)] if noun and len(noun) >= 4 else ""
+
+            def noun_hit(item):
+                if not noun_prefix:
+                    return False
+                tokens = self._indexed_item(*(str(item.get(k) or '') for k in (
+                    'Наименование', 'ПолноеНаименование', 'Артикул', 'Категория')))[1]
+                return any(token.startswith(noun_prefix) for token in tokens)
+
+            def rank(item):
+                exact_article, score, text = self._rank_normalized(normalized_query, item)
+                return (exact_article, noun_hit(item), score, text)
+
+            ranked = sorted(self._catalog_items(), key=rank, reverse=True)
             from cable_identity import identity, conflicts
             from product_identity import kind
             if kind(query) == "кабель" and identity(query):
@@ -726,7 +739,7 @@ class KrepKompAdapter(SupplierAdapter):
             query_tokens = set(normalized_query.split())
             candidates = list(islice((
                 item for item in ranked
-                if query_tokens & self._indexed_item(*(str(item.get(k) or '') for k in (
+                if noun_hit(item) or query_tokens & self._indexed_item(*(str(item.get(k) or '') for k in (
                     'Наименование', 'ПолноеНаименование', 'Артикул', 'Категория')))[1]
             ), max(min(max(int(limit), 1), 20), self.candidate_window)))
             return self._enrich(candidates)

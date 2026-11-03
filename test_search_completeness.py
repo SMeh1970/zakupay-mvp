@@ -185,3 +185,19 @@ class VocabularyTests(unittest.TestCase):
         self.assertEqual([q.article for q in prices.search_prices("Сверло 10 мм")], ["X1"])
         with prices.database() as conn:
             self.assertIsNotNone(prices.execute(conn, "SELECT 1 FROM supplier_price_vocab WHERE token='сверл'").fetchone())
+
+
+class KrepNounFirstTests(unittest.TestCase):
+    def test_items_with_the_main_noun_rank_above_items_sharing_only_size_words(self):
+        # 60 items share only "10" and "мм" with the request; the two drills use another word form.
+        noise = [{"Код": f"n{i:03d}", "Наименование": f"Лента клейкая 10 мм {i}", "ПолноеНаименование": f"Лента клейкая 10 мм {i}",
+                  "Артикул": f"n{i}", "ЕдиницаИзмерения": "шт", "Категория": "Лента"} for i in range(60)]
+        drills = [{"Код": f"d{i}", "Наименование": f"Сверла HSS {i}", "ПолноеНаименование": f"Сверла HSS {i}",
+                   "Артикул": f"d{i}", "ЕдиницаИзмерения": "шт", "Категория": "Сверла"} for i in range(2)]
+        adapter = KrepKompAdapter()
+        captured = {}
+        adapter._enrich = lambda chosen: captured.setdefault("codes", [x["Код"] for x in chosen]) and []
+        with patch.object(KrepKompAdapter, "enabled", new=True), \
+                patch.object(KrepKompAdapter, "_catalog_items", return_value=noise + drills):
+            adapter.search("Сверло 10 мм", limit=8)
+        self.assertEqual(set(captured["codes"][:2]), {"d0", "d1"})
