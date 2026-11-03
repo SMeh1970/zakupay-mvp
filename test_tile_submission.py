@@ -197,3 +197,27 @@ def test_37535989_page_distinguishes_no_auto_selection_from_review_candidates(pr
     assert 'Satrap Gray' in response.text and '598×598' in response.text
     assert 'Подходящего товара с известными характеристиками, ценой и достаточным остатком нет.' not in response.text
     assert "<option value='KH-GRAY'" not in response.text
+
+
+def test_comparison_shows_two_photos_and_parameters_with_original_specification():
+    base={**sample.PRODUCT,'format':'60x60','thickness_mm':8.5,'price_rub_m2':1690,'stock_m2':1490.4}
+    data={'products':[{**base,'id':'satrap','name':'Satrap Gray'},
+                      {**base,'id':'second','name':'Другой серый вариант','stock_m2':175.32}]}
+    candidates=tiles.review_analogues(data,REQUEST_37535989,900)
+    output=panel.comparison_table(7,dict(goodName=REQUEST_37535989,count=900),candidates)
+    assert output.count('<img ')==2
+    assert '/catalogs/7/images/satrap' in output and '/catalogs/7/images/second' in output
+    assert 'По заявке' in output and 'Вариант 1' in output and 'Вариант 2' in output
+    assert '598 × 598' in output and '600 × 600' in output and '8.5' in output
+    assert 'Рельеф' in output and 'Ректификация' in output and 'Не подтверждена' in output
+    assert '1690' in output and '1490.4' in output and '175.32' in output
+    assert 'Остаток меньше требуемого количества' in output
+    assert 'Фото исходного товара не загружено' in output
+
+
+def test_comparison_does_not_invent_second_candidate_or_missing_photo():
+    p={**sample.PRODUCT,'image':None,'format':'60x60','thickness_mm':8.5}
+    output=panel.comparison_table(7,dict(goodName=REQUEST_37535989,count=900),tiles.review_analogues({'products':[p]},REQUEST_37535989,900))
+    assert 'Второй вариант не найден' in output
+    assert 'Однозначного фото нет' in output
+    assert '<img ' not in output

@@ -4,6 +4,7 @@ import io
 import json
 import logging
 import os
+import re
 import threading
 import zipfile
 from datetime import datetime, timezone
@@ -36,7 +37,7 @@ def page(body, title='Керамогранит'):
         f"<title>{esc(title)}</title><style>body{{font:16px Arial;margin:0;background:#f4f6f8;color:#202124}}main{{max-width:1200px;margin:auto;padding:24px}}"
         "section,article{background:white;border-radius:12px;padding:18px;margin:16px 0}label{display:block;margin:10px 0;font-size:14px}input,select{padding:9px;box-sizing:border-box;width:100%;margin-top:5px;border:1px solid #ccc;border-radius:6px}input[type=checkbox]{width:auto}"
         ".grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px}.products{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px}.product{border:1px solid #ddd;border-radius:8px;padding:12px}img{width:160px;height:140px;object-fit:contain;max-width:100%}"
-        "a{color:#174ea6}button,.button{display:inline-block;background:#1a73e8;color:#fff;border:0;padding:11px 15px;border-radius:7px;text-decoration:none;cursor:pointer;margin:5px 0}.error{color:#b3261e}.notice{background:#fff3d4;padding:12px;border-radius:7px}.muted{color:#5f6368}.scroll{overflow-x:auto}table{width:100%;border-collapse:collapse}td,th{text-align:left;padding:9px;border-bottom:1px solid #ddd;vertical-align:top}"
+        "a{color:#174ea6}button,.button{display:inline-block;background:#1a73e8;color:#fff;border:0;padding:11px 15px;border-radius:7px;text-decoration:none;cursor:pointer;margin:5px 0}.error{color:#b3261e}.notice{background:#fff3d4;padding:12px;border-radius:7px}.muted{color:#5f6368}.scroll{overflow-x:auto}.tile-comparison{min-width:850px;table-layout:fixed}.tile-comparison th,.tile-comparison td{width:25%;overflow-wrap:anywhere}.tile-comparison thead{background:#edf1f6}.tile-comparison tbody th{background:#f7f9fb}.tile-comparison img{display:block;width:180px;height:150px;margin:auto}table{width:100%;border-collapse:collapse}td,th{text-align:left;padding:9px;border-bottom:1px solid #ddd;vertical-align:top}"
         "</style><main><a href='/dashboard/automation'>← Заявки</a> · <a href='/dashboard/tiles'>Керамогранит</a> · <a href='/dashboard/tiles/sellers'>Наши фирмы</a>"
         + " · <a href='/dashboard/tiles/automatic'>Автоматические предложения</a>" + body + '</main></html>', headers={'Cache-Control': 'no-store', 'Content-Security-Policy': "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"})
 
@@ -127,6 +128,45 @@ def age_label(value):
         hours=max(0,int((datetime.now(timezone.utc)-date).total_seconds()//3600))
         return f'возраст {hours} ч'
     except (ValueError, TypeError): return 'возраст неизвестен'
+
+
+def comparison_table(catalog_id, item, candidates):
+    """Keep the requested specification and two visible alternatives together."""
+    requested = str(item.get('goodName') or item.get('name') or '')
+    wanted = tiles.requirements(requested + ' ' + str(item.get('comment') or ''))
+    choices = list(candidates[:2])
+    fmt = lambda pair: ' × '.join(f'{v*10:g}' for v in pair) if pair else 'Не указан'
+    words = lambda values: ', '.join(sorted(values)) if values else 'Не указано'
+    required_surface = words(wanted['surface'])
+    required_relief = 'Требуется' if re.search(r'рельеф', requested, re.I) else 'Не задан'
+    required_rectified = 'Требуется' if re.search(r'ректиф|обрезн', requested, re.I) else 'Не задана'
+    required_slip = re.search(r'\bR\s*\d+(?:[A-CА-С]+)?', requested, re.I)
+    headings = ['Параметр', 'По заявке'] + [f"Вариант {i+1}: {c['product']['name']}" for i,c in enumerate(choices)]
+    if len(choices) == 1: headings.append('Второй вариант не найден')
+    specs = [tiles.product_requirements(c['product']) for c in choices]
+    rows = []
+    def add(label, source, values, *, images=False):
+        if len(choices) == 1: values = list(values) + ['—']
+        cells = ['<th scope="row">'+esc(label)+'</th>', '<td>'+esc(source)+'</td>']
+        cells += ['<td>'+ (v if images else esc(v)) + '</td>' for v in values]
+        rows.append('<tr>'+''.join(cells)+'</tr>')
+    add('Фото', 'Фото исходного товара не загружено',
+        [photo(catalog_id,c['product']) for c in choices], images=True)
+    add('Наименование', requested, [c['product']['name'] for c in choices])
+    add('Размер, мм', fmt(wanted['format']), [fmt(s['format']) for s in specs])
+    add('Толщина, мм', wanted['thickness'] if wanted['thickness'] is not None else 'Не указана',
+        [s['thickness'] if s['thickness'] is not None else 'Не подтверждена' for s in specs])
+    add('Цвет', words(wanted['color']), [c['product'].get('color') or 'Не подтверждён' for c in choices])
+    add('Поверхность', required_surface, [c['product'].get('surface') or 'Не подтверждена' for c in choices])
+    add('Рисунок', words(wanted['pattern']), [c['product'].get('pattern') or 'Не подтверждён' for c in choices])
+    add('Рельеф', required_relief, ['Не подтверждён' for c in choices])
+    add('Ректификация', required_rectified, ['Не подтверждена' for c in choices])
+    add('Противоскольжение', required_slip.group() if required_slip else 'Не задано', ['Не подтверждено' for c in choices])
+    add('Цена каталога, ₽/м²', '—', [c['product'].get('price_rub_m2') if c['product'].get('price_rub_m2') is not None else 'Не заполнена' for c in choices])
+    add('Количество / остаток, м²', item.get('count'), [c['product'].get('stock_m2') if c['product'].get('stock_m2') is not None else 'Неизвестен' for c in choices])
+    add('Дата остатков', '—', [c['product'].get('stock_as_of') or 'Не указана' for c in choices])
+    add('Отличия и что проверить', 'Исходные требования', ['; '.join(c['review_notes']) for c in choices])
+    return '<div class="scroll"><table class="tile-comparison"><thead><tr>'+''.join('<th scope="col">'+esc(h)+'</th>' for h in headings)+'</tr></thead><tbody>'+''.join(rows)+'</tbody></table></div>'
 
 
 def sync_status_html():
@@ -328,7 +368,7 @@ def install_porcelain(app, fetch_all_orders=None):
                 notes=line_match(item,chosen)
                 if notes: status += ' Требует проверки: ' + esc('; '.join(notes))
             options=[('', 'Не включать позицию')]+[(r['product']['id'],r['product']['name']+' · '+str(r['product'].get('format') or '')) for r in found]
-            alternative_cards=''.join(product_card(catalog['id'],r['product']) + '<ul class=notice>'+''.join('<li>'+esc(note)+'</li>' for note in r['review_notes'])+'</ul>' for r in alternatives)
+            alternative_cards=comparison_table(catalog['id'],item,alternatives) if alternatives else ''
             review_html=("<h3>Предварительные замены — на согласование</h3><p>Эти товары не выбраны автоматически. Отклонения размеров, толщины и неизвестные характеристики не считаются подтверждённым соответствием.</p>"+alternative_cards) if alternatives else ''
             rows.append(f"<section><h2>{i}. {esc(name)}</h2><p>{esc(item.get('count'))} {esc(unit)}</p><p class='notice'>{status}</p>"
                 + select(f'product_{i}','Выбранный товар',options,request.query_params.get(f'product_{i}',key))
