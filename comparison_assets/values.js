@@ -6,6 +6,39 @@
   const actionUrl = data.action_url || location.pathname+'/action';
   let busy = false;
   const pendingValues = new Map();
+  // Choices made on the value chips of a row wait here until the row's «ОК» is pressed.
+  const staged = new Map();
+  function stagedDecision(position, ids) {
+    const m = staged.get(position); if (!m) return null;
+    const found = ids.map(id => m.get(id));
+    return found.every(d => d && d === found[0]) ? found[0] : null;
+  }
+  function stage(position, ids, decision) {
+    if (!staged.has(position)) staged.set(position, new Map());
+    const m = staged.get(position), same = stagedDecision(position, ids) === decision;
+    for (const id of ids) { if (same) m.delete(id); else m.set(id, decision); }
+    if (!m.size) staged.delete(position);
+    render();
+  }
+  function okBar(row) {
+    const bar = node('div', '', 'value-ok-bar'), count = staged.get(row.position)?.size || 0;
+    const ok = node('button', count ? `ОК · применить ко всем поставщикам (${count})` : 'ОК'); ok.type = 'button';
+    ok.disabled = busy || data.read_only || !count;
+    ok.title = 'Применить отмеченные ✓ и ✕ к найденным товарам всех поставщиков';
+    ok.onclick = async () => {
+      const m = staged.get(row.position); if (!m) return;
+      const pick = decision => [...m.entries()].filter(([, d]) => d === decision).map(([id]) => id);
+      const accepted = pick('accepted'), rejected = pick('rejected');
+      let done = true;
+      if (accepted.length) done = await save({action: 'value', position: row.position, features: accepted, decision: 'accepted'});
+      if (done && rejected.length) done = await save({action: 'value', position: row.position, features: rejected, decision: 'rejected'});
+      if (done) { staged.delete(row.position); render(); }
+    };
+    const cancel = node('button', 'Отменить'); cancel.type = 'button'; cancel.disabled = busy || !count;
+    cancel.onclick = () => { staged.delete(row.position); render(); };
+    bar.append(ok, cancel);
+    return bar;
+  }
   function valueCheck(row, group, value) {
     const input=node('input');input.type='checkbox';input.disabled=busy||data.read_only;
     input.setAttribute('aria-label','Выделить: '+group.field+' '+value.value);
@@ -118,6 +151,47 @@
     if(quantity)quantity.value=invoice.quantity??'';
     if(include){include.checked=!!invoice.included;include.dataset.bulkAllowed=invoice.key?'1':'0';include.dispatchEvent(new Event('change',{bubbles:true}));}
   }
+  // A value exists only because some found product name contains it. 'Не указано' lists the names that lack it.
+  const foundIn=value=>(value.sources||[]).filter(s=>s.origin!=='missing');
+  const INTERNAL_CHECKS=['Проверка прайса','Проверка категории','Проверка соответствия'];
+  function foundNames(row) {
+    const groups=row.value_comparison.groups.filter(g=>!INTERNAL_CHECKS.includes(g.field));
+    const names=new Set(), block=node('details','','found-names');
+    const body=node('div','','found-names-body');
+    for(const group of groups) {
+      const byValue=new Map();
+      for(const value of group.values) {
+        const sources=value.value==='Не указано'?(value.sources||[]):foundIn(value);
+        if(!sources.length)continue;
+        if(!byValue.has(value.value))byValue.set(value.value,new Map());
+        for(const source of sources)byValue.get(value.value).set(source.key,source);
+        if(value.value!=='Не указано')for(const source of sources)names.add(source.key);
+      }
+      if(!byValue.size)continue;
+      const section=node('div','','found-names-group');section.append(node('b',group.field));
+      for(const [label,sources] of byValue) {
+        const line=node('div','','found-names-value');
+        line.append(node('span',label==='Не указано'?'Не указано в наименовании':label,'found-names-label'));
+        const list=[...sources.values()];
+        const show=(source)=>{
+          const item=node('div','','found-names-item');
+          const text=node('span',(source.supplier||'')+(source.sku?' · '+source.sku:'')+' — '+source.name);
+          item.append(text);
+          if(source.price!=null)item.append(node('span',' · '+money(source.price)+' ₽','found-names-price'));
+          if(source.url){const link=node('a',' ↗');link.href=source.url;link.target='_blank';link.rel='noopener noreferrer';item.append(link);}
+          return item;
+        };
+        for(const source of list.slice(0,3))line.append(show(source));
+        if(list.length>3){const more=node('details','','found-names-more');more.append(node('summary','ещё '+(list.length-3)));for(const source of list.slice(3))more.append(show(source));line.append(more);}
+        section.append(line);
+      }
+      body.append(section);
+    }
+    if(!names.size)return null;
+    block.append(node('summary','Где найдены значения: '+names.size+' наименований'),body);
+    block.open=false;
+    return block;
+  }
   function inlineName(row) {
     const line=node('div','','value-panel');
     line.setAttribute('aria-label','Наименование с выбором значений позиции '+row.position);
@@ -129,13 +203,14 @@
       const span=node('span','','value-chip '+(neutral?'available':allowed?'matched':value.state));
       span.title=group.field+': '+value.value+(value.offer_label?' · '+value.offer_label:'')+(value.evidence?' · '+value.evidence:'');
       span.append(node('span',label??value.value));
-      span.prepend(valueCheck(row,group,value));
-      for(const [symbol,decision,label] of [['✓','accepted','Разрешить'],['✕','rejected','Исключить']]) {
+      const chipIds=value.ids||[value.id], stagedNow=stagedDecision(row.position,chipIds);
+      if(stagedNow)span.classList.add('staged-'+stagedNow);
+      for(const [symbol,decision,label] of [['✓','accepted','Обязательно'],['✕','rejected','Исключить']]) {
         const action=node('button',symbol);action.type='button';action.disabled=busy||data.read_only;
         action.setAttribute('aria-label',label+': '+group.field+' '+value.value);
-        action.title=label+': '+group.field+' '+value.value;
-        action.setAttribute('aria-pressed',String(value.state===decision));
-        action.onclick=()=>save({action:'value',position:row.position,features:value.ids||[value.id],decision});
+        action.title=label+': '+group.field+' '+value.value+' (применится после «ОК»)';
+        action.setAttribute('aria-pressed',String(stagedNow?stagedNow===decision:value.state===decision));
+        action.onclick=()=>stage(row.position,chipIds,decision);
         span.append(action);
       }
       if(value.sources?.length) {
@@ -151,10 +226,12 @@
       const required=[...new Set(group.values.flatMap(v=>v.required||[]))].sort((a,b)=>b.length-a.length);
       for(const candidate of [...(group.request_spans||[]),...required.map(value=>({text:value,value}))]) {
         const feature=group.values.find(v=>v.value===candidate.value);
-        if(!feature)continue;
+        if(!feature||!foundIn(feature).length)continue;
         const raw=candidate.text.replace(/\s+(мм|см|м|кг|г|л|мл|°)$/u,'');
         const escaped=raw.split(/[.,]/).map(part=>part.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')).join('[.,]');
-        const match=[...source.matchAll(new RegExp('(?<![\\d])'+escaped+'(?![\\d])','giu'))].find(m=>!placements.some(p=>m.index<p.end && m.index+m[0].length>p.start));
+        // The request may write 8 мм or 2050×3050 where the stored token is 8мм / 2050x3050.
+        const tolerant=escaped.replace(/x/gi,'[xх×*]').replace(/(\d)(мм|см|дм|мл|кг|квт|вт|м|л|г|т|в|а)$/iu,'$1\\s*$2');
+        const match=[...source.matchAll(new RegExp('(?<![\\d])'+tolerant+'(?![\\d])','giu'))].find(m=>!placements.some(p=>m.index<p.end && m.index+m[0].length>p.start));
         if(!match)continue;
         if(feature){placements.push({start:match.index,end:match.index+match[0].length,group,feature,text:match[0]});used.add(group);break;}
       }
@@ -170,7 +247,7 @@
     line.append(document.createTextNode(source.slice(cursor)));
     const extra=node('div','','supplier-found-values');
     for(const group of row.value_comparison.groups) {
-      const values=group.values.filter(v=>!used.has(group)||checks(group)||v.ambiguous||v.value==='Не указано'||v.offer_label);
+      const values=group.values.filter(v=>(!used.has(group)||checks(group)||v.ambiguous||v.value==='Не указано'||v.offer_label)&&(v.value==='Не указано'||checks(group)||foundIn(v).length));
       if(!values.length)continue;
       const block=node('div','','value-group-details');block.append(node('b',group.field+': '));
       const byValue=new Map();
@@ -187,6 +264,8 @@
     // These are values from all primary-matching supplier products, including
     // specifications not written in the request or in a supplier product title.
     if(extra.childNodes.length){extra.prepend(node('div','Значения из найденных товаров','supplier-found-label'));line.append(extra);}
+    const names=foundNames(row);
+    if(names)line.append(names);
     return line;
   }
   function showValueSources(group,value) {
@@ -226,17 +305,29 @@
         if(!anchor)continue;
         const td=node('td','','supplier-price');td.dataset.supplierColumn='1';
         const comparison=row.value_comparison;
-        const offers=comparison.offers.filter(v=>v.supplier===supplier.name && v.comparable)
-          .sort((a,b)=>a.unit_price-b.unit_price);
-        const selected=offers.find(v=>row.invoice?.included&&row.invoice.key===v.key), offer=selected||offers[0];
-        const button=node('button','','supplier-quote'+(selected?' chosen':''));button.type='button';
-        button.setAttribute('aria-label',`Выбрать товар: ${supplier.name}, позиция ${row.position}`);
-        if(offer) {
-          button.append(node('strong',`${money(offer.unit_price)} ₽ / ${row.unit}`),node('span',offer.name,'supplier-quote-name'),node('small',`${offers.length} вариантов · Выбрать ›`));
-          if(selected)button.append(node('small','Выбрано в счёт','matched'));
-        } else button.append(node('span',row.supplier_search?.[supplier.name]?.label||'Нет сохранённых результатов поставщика'),node('small','Посмотреть ›'));
-        if(offer && ['error','incomplete'].includes(row.supplier_search?.[supplier.name]?.state))button.append(node('small',row.supplier_search[supplier.name].label));
-        button.onclick=()=>showChoices(row.position,supplier.name);td.append(button);
+        const all=comparison.offers.filter(v=>v.supplier===supplier.name)
+          .sort((a,b)=>Number(b.comparable)-Number(a.comparable)||(a.unit_price??Infinity)-(b.unit_price??Infinity));
+        const line=offer=>{
+          const selected=!!(row.invoice?.included&&row.invoice.key===offer.key);
+          const item=node('button','','supplier-item'+(offer.comparable?'':' blocked')+(selected?' chosen':''));item.type='button';
+          item.title=offer.name;
+          item.append(node('span',offer.name,'supplier-item-name'));
+          item.append(node('strong',offer.unit_price!=null?`${money(offer.unit_price)} ₽ / ${row.unit}`:offer.price!=null?`${money(offer.price)} ₽ / ${offer.unit}`:'Цена не получена'));
+          if(!offer.comparable)item.append(node('small',offer.comparison_reasons.join('; ')));
+          else if(offer.shortage>0)item.append(node('small',`Не хватает ${money(offer.shortage)} ${row.unit}`));
+          else if(selected)item.append(node('small','✓ Выбрано в счёт','matched'));
+          item.disabled=busy||data.selection_read_only||!offer.comparable||offer.shortage>0||!offer.quantity;
+          item.onclick=()=>save({action:'value_select',position:row.position,key:offer.key});
+          return item;
+        };
+        if(all.length) {
+          td.append(node('small',`Найдено: ${all.length} · подходят: ${all.filter(v=>v.comparable).length}`,'supplier-items-count'));
+          for(const offer of all.slice(0,10))td.append(line(offer));
+          if(all.length>10){const more=node('details','','supplier-items-more');more.append(node('summary','ещё '+(all.length-10)));for(const offer of all.slice(10))more.append(line(offer));td.append(more);}
+        } else td.append(node('span',row.supplier_search?.[supplier.name]?.label||'Нет сохранённых результатов поставщика','supplier-items-empty'));
+        if(['error','incomplete'].includes(row.supplier_search?.[supplier.name]?.state))td.append(node('small',row.supplier_search[supplier.name].label));
+        const details=node('button','Все результаты и причины ›','supplier-items-details');details.type='button';
+        details.onclick=()=>showChoices(row.position,supplier.name);td.append(details);
         anchor.closest('tr').append(td);
       }
     }
@@ -249,7 +340,8 @@
       if(!target)continue;
       if(embedded)target.replaceChildren();
       const section = node('div', '', 'value-position');
-      section.append(batchControls(row));
+      if(!embedded)section.append(batchControls(row));
+      else if(row.value_comparison.groups.length)section.append(okBar(row));
       if(!embedded)section.append(node('h2', `${row.position}. ${row.name}`));
       if(embedded) {
         section.append(inlineName(row));
