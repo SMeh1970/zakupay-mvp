@@ -3,6 +3,8 @@
 Category rules are deliberately finite. Unsupported descriptions stay reviewable.
 No attributes are derived from worksheet formatting or neighbouring products.
 """
+from functools import lru_cache as _lru_cache
+
 import re
 
 VERSION = "2026-10-22.4"
@@ -33,7 +35,7 @@ CATEGORIES = [
 MATCH_CATEGORIES = {"Огнетушители", "Кабели", "Фанера", "Зенковки", "Трубы", "Профильные трубы", "Крепёж", "Сверла", "Отводы", "Переходы", "Тройники"}
 
 
-def extract(name):
+def _extract_uncached(name):
     text = str(name or "")
     categories = [(m.start(), n, c) for n, (p, c) in enumerate(CATEGORIES) if (m := re.search(p, text, re.I))]
     # The earliest product noun wins: "дверь ... ПВХ плёнка" is a door,
@@ -206,3 +208,28 @@ def compare(request, product):
             missing.append(key + ": несколько значений")
     return dict(status="conflict" if conflicts else "review" if missing else "matched",
                 conflicts=list(dict.fromkeys(conflicts)), missing=list(dict.fromkeys(missing)))
+
+
+# extract() is a pure function of the text. The review page parses the same request and
+# product names for every offer and on every load, so keep recent results. Callers get
+# their own copy and may change it freely.
+@_lru_cache(maxsize=20000)
+def _extract_cached(text):
+    return _extract_uncached(text)
+
+
+def extract(name):
+    return _clone(_extract_cached(str(name or "")))
+
+
+def _clone(value):
+    """Copy of JSON-like data (dicts, lists, tuples of plain values); faster than deepcopy."""
+    if isinstance(value, dict):
+        return {key: _clone(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_clone(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_clone(item) for item in value)
+    if isinstance(value, set):
+        return {_clone(item) for item in value}
+    return value

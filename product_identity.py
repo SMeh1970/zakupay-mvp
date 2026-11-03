@@ -1,4 +1,6 @@
 """Ordered product identity, independent of catalogue wording and word order."""
+from functools import lru_cache as _lru_cache
+
 import re
 from functools import lru_cache
 
@@ -55,7 +57,7 @@ KINDS = [
 
 
 @lru_cache(maxsize=8192)
-def kind(text):
+def _kind_uncached(text):
     text = str(text or '')
     matches = [(m.start(), i, name) for i,(name,pattern) in enumerate(KINDS)
                if (m := re.search(pattern,text,re.I))]
@@ -76,7 +78,7 @@ def models(text):
             for m in re.finditer(r'(?<!\w)(?:[A-Za-z]{1,5}\s*[-]?\s*\d{3,7}(?:\s*[A-Za-z]{1,3})?|\d{4,8}[A-Za-z]{1,3})(?!\w)',str(text or ''))}
 
 
-def records(text):
+def _records_uncached(text):
     text = str(text or '')
     product = kind(text)
     result = []
@@ -212,3 +214,35 @@ def valve_checks(requested, offered):
         elif found[field] != {value}:
             conflicts.append('не совпадает ' + field + ': требуется ' + value + ', найдено ' + '/'.join(sorted(found[field])))
     return conflicts, missing
+
+
+# Pure functions of the text, called for every offer on every review page load.
+@_lru_cache(maxsize=20000)
+def _kind_cached(text):
+    return _kind_uncached(text)
+
+
+def kind(text):
+    return _kind_cached(str(text or ''))
+
+
+@_lru_cache(maxsize=20000)
+def _records_cached(text):
+    return _records_uncached(text)
+
+
+def records(text):
+    return _clone(_records_cached(str(text or '')))
+
+
+def _clone(value):
+    """Copy of JSON-like data (dicts, lists, tuples of plain values); faster than deepcopy."""
+    if isinstance(value, dict):
+        return {key: _clone(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_clone(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_clone(item) for item in value)
+    if isinstance(value, set):
+        return {_clone(item) for item in value}
+    return value
