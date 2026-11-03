@@ -30,6 +30,19 @@ def classify(order):
     return 'inactive' if values and all(value == 'inactive' for value in values) else 'unknown'
 
 
+def status_detail(order):
+    """The raw statuses Zakupay returned, so a verdict can be compared with what the Zakupay site shows."""
+    if not isinstance(order, dict):
+        return ''
+    items = [item for item in (order.get('orderItems') or []) if isinstance(item, dict)]
+    counts = {}
+    for item in items:
+        key = str(item.get('actualityStatus'))
+        counts[key] = counts.get(key, 0) + 1
+    return (f"заявка: {order.get('actualityStatus')!r}; позиции: "
+            + (', '.join(f'{key} × {number}' for key, number in sorted(counts.items())) or 'нет данных'))
+
+
 def unknown_reason(order, order_id):
     """Say why an answer could not be classified, so 'не подтверждена' is never a mystery."""
     if not isinstance(order, dict):
@@ -69,7 +82,7 @@ def label(value):
 
 def install(app, connect, execute, fetch_order):
     def check(order_id):
-        state, reason = 'unknown', ''
+        state, reason, detail = 'unknown', '', ''
         if not fetch_order:
             reason = 'получение заявок из Закупай не настроено'
         elif not _slots.acquire(blocking=False):
@@ -103,6 +116,8 @@ def install(app, connect, execute, fetch_order):
                     state = classify(order) if isinstance(order, dict) and str(order.get('id')) == str(order_id) else 'unknown'
                     if state == 'unknown':
                         reason = unknown_reason(order, order_id)
+                    else:
+                        detail = status_detail(order)
                 except TimeoutError:
                     reason = f'Закупай не ответил за {CHECK_TIMEOUT} с'
                 except HTTPException as exc:
@@ -112,6 +127,8 @@ def install(app, connect, execute, fetch_order):
         if state == 'unknown':
             # Timeouts, API failures and absence do not prove closure.
             logger.warning('actuality check order=%s unknown reason=%s', order_id, reason)
+        elif state == 'inactive':
+            logger.warning('actuality check order=%s inactive %s', order_id, detail)
         with connect() as conn:
             if state == 'unknown':
                 previous = execute(conn, 'SELECT state,checked_at FROM order_actuality WHERE order_id=?', (int(order_id),)).fetchone()
@@ -119,7 +136,7 @@ def install(app, connect, execute, fetch_order):
                     # A failed check must not erase the last real answer from Zakupay.
                     return dict(state='unknown', checked_at=datetime.now(timezone.utc).isoformat(),
                                 last_known=dict(previous), reason=reason)
-            return {**store(conn, execute, order_id, state), 'reason': reason}
+            return {**store(conn, execute, order_id, state), 'reason': reason, 'detail': detail}
 
     def job(job_id):
         with connect() as conn:
@@ -189,7 +206,8 @@ BANNER_SCRIPT = """
   } catch { value = {state:'unknown', label:'Актуальность не подтверждена'}; }
   const note = {inactive:' Закупай сообщил, что заявка неактуальна: не отправляйте счёт, пока не уточните.',
                 unknown:' Это не означает, что заявка закрыта; сведения ниже сохранены ранее.'}[value.state] || '';
-  const why = value.state === 'unknown' && value.reason ? ' Причина: ' + value.reason + '.' : '';
+  const why = value.state === 'unknown' && value.reason ? ' Причина: ' + value.reason + '.'
+            : (value.state === 'inactive' && value.detail ? ' Ответ Закупай: ' + value.detail + '.' : '');
   paint(value.state, value.label + '.' + note + why);
   if (value.state !== 'active') {
    const again = document.createElement('button');
