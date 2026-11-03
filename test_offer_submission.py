@@ -32,7 +32,7 @@ class OfferSubmissionTests(unittest.TestCase):
             "job_id": 456, "order": self.order,
             "result": {
                 "customer": {"name": "ООО Покупатель", "inn": "7716997861", "kpp": "770801001"},
-                "items": [{"order_item_id": 10, "quantity": 2, "unit": "шт", "decision": "approved"}],
+                "items": [{"order_item_id": 10, "quantity": 2, "unit": "шт", "decision": "approved", "selected": {"name": "Товар"}, "proposed_unit_price": 100}],
             },
         }
         self.fetch = Mock(return_value=copy.deepcopy(self.order))
