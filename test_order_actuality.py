@@ -82,8 +82,12 @@ def test_expired_record_opens_at_once_and_page_checks_exact_id_and_preserves_inv
     assert "data-fresh='1'" in fresh_page.text and 'Актуальна' in fresh_page.text
 
 
-@pytest.mark.parametrize('value', [None, {'id': 999, 'actualityStatus': 'ACTUAL'}, {'id': 123}])
-def test_missing_or_unrecognized_is_unknown_and_never_closed(panel, value):
+@pytest.mark.parametrize('value,reason', [
+    (None, 'не вернул заявку'),
+    ({'id': 999, 'actualityStatus': 'ACTUAL'}, 'другим номером'),
+    ({'id': 123, 'actualityStatus': 'WEIRD', 'orderItems': [{'actualityStatus': 'X'}]}, 'без распознанного статуса'),
+])
+def test_unrecognized_answer_is_unknown_explained_and_keeps_last_real_answer(panel, value, reason):
     client, job, fetch, _, _ = panel
     expire()
     fetch.return_value = value
@@ -91,9 +95,38 @@ def test_missing_or_unrecognized_is_unknown_and_never_closed(panel, value):
     assert response.status_code == 303  # still opens: the saved version stays reachable
     result = post_check(client, job).json()
     assert result['state'] == 'unknown' and 'не подтверждена' in result['label']
+    assert reason in result['reason']
+    assert 'Последний ответ Закупай: Актуальна' in result['label']
     page = client.get(f'/dashboard/automation/jobs/{job}/review')
     shown = page.text.split("id='actuality-banner'", 1)[1].split('</div>', 1)[0]
-    assert 'Закупай сообщил, что заявка неактуальна' not in shown and 'не подтверждена' in shown
+    # The failed check did not erase the last real answer, and nothing claims the order is closed.
+    assert 'Актуальна · требуется повторная проверка' in shown and 'неактуальна' not in shown.lower().replace('проверяется', '')
+
+
+def test_failure_reasons_are_reported_and_logged(panel, caplog):
+    from fastapi import HTTPException
+    client, job, fetch, _, _ = panel
+    fetch.side_effect = HTTPException(502, 'Ошибка соединения с Закупай: connect timeout')
+    with caplog.at_level('WARNING'):
+        result = post_check(client, job).json()
+    assert result['state'] == 'unknown' and 'HTTP 502' in result['reason'] and 'connect timeout' in result['reason']
+    assert any('actuality check' in r.message and 'HTTP 502' in r.message for r in caplog.records)
+    fetch.side_effect = None
+    import time
+    with patch.object(a, 'CHECK_TIMEOUT', 0.05):
+        fetch.side_effect = lambda *args, **kwargs: time.sleep(0.3)
+        assert 'не ответил за' in post_check(client, job).json()['reason']
+    time.sleep(0.4)
+
+
+def test_first_failed_check_without_any_previous_answer_is_stored_as_unknown(panel):
+    client, job, fetch, _, _ = panel
+    with closing(p._connect()) as conn, conn:
+        conn.execute('DELETE FROM order_actuality')
+    fetch.return_value = None
+    assert post_check(client, job).json()['state'] == 'unknown'
+    with closing(p._connect()) as conn:
+        assert conn.execute('SELECT state FROM order_actuality WHERE order_id=123').fetchone()['state'] == 'unknown'
 
 
 def test_explicit_closure_is_shown_and_fresh_closure_stops_opening_without_api(panel):
