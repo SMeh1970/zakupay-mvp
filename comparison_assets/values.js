@@ -58,6 +58,9 @@
     if(await save({action:'values_batch',decisions:[...groups.values()]})){draft.clear();render();}
   }
   window.addEventListener('beforeunload',event=>{if(draft.size){event.preventDefault();event.returnValue='';}});
+  // Product-kind checks: a product failing one of them is another product, never a choice.
+  const IDENTITY_FIELDS=['Тип товара','Слово в наименовании','Нет слова из заявки','Проверка категории','Проверка прайса','Проверка соответствия'];
+  const otherKind=offer=>!offer.comparable && (offer.comparison_reasons||[]).some(reason=>IDENTITY_FIELDS.some(field=>reason.includes(field)));
   const node = (tag, text, cls) => { const n = document.createElement(tag); n.textContent = text ?? ''; if(cls)n.className=cls; return n; };
   const money = value => Number(value).toLocaleString('ru-RU', {maximumFractionDigits:6});
   let activeDialog=null, dialog=null, choiceError='';
@@ -87,7 +90,8 @@
     if(search) {
       dialog.append(node('p',search.label,'supplier-choice-detail'));
       for(const error of search.errors)dialog.append(node('p',error,'supplier-choice-error'));
-      const other=(search.rejected||[]).filter(q=>!row.value_comparison.offers.some(v=>v.key===q.key));
+      const other=[...(search.rejected||[]).filter(q=>!row.value_comparison.offers.some(v=>v.key===q.key)),
+        ...row.value_comparison.offers.filter(v=>v.supplier===supplier&&otherKind(v)).map(v=>({key:v.key,name:v.name,price:v.price,url:v.product_url||v.url,reasons:['Другой товар: '+v.comparison_reasons.join('; ')]}))];
       if(other.length) {
         const details=node('details');details.append(node('summary','Другие результаты и причины недопуска: '+other.length));
         for(const rejected of other) {
@@ -99,7 +103,7 @@
         dialog.append(details);
       }
     }
-    const choices=row.value_comparison.offers.filter(v=>v.supplier===supplier).sort((a,b)=>Number(b.comparable)-Number(a.comparable)||(a.unit_price??Infinity)-(b.unit_price??Infinity));
+    const choices=row.value_comparison.offers.filter(v=>v.supplier===supplier&&!otherKind(v)).sort((a,b)=>Number(b.comparable)-Number(a.comparable)||(a.unit_price??Infinity)-(b.unit_price??Infinity));
     if(!choices.length && !search)dialog.append(node('p','Нет товаров с разрешёнными характеристиками. Проверьте причины недопуска.'));
     if(!choices.length) {
       const excluded=row.value_comparison.offers.filter(v=>v.supplier===supplier&&!v.comparable);
@@ -121,8 +125,8 @@
       const choose=node('button',row.invoice?.key===offer.key&&row.invoice?.included?'Выбрано в счёт':'Выбрать в счёт');choose.type='button';
       // A product with unresolved differences can still be chosen: the button then accepts its
       // differences (like ✓ on each value) and selects it. Shortage or a missing price still block.
-      if(!offer.comparable)choose.textContent='Принять отличия и выбрать';
-      choose.disabled=busy||data.selection_read_only||offer.shortage>0||!offer.quantity||offer.unit_price==null;
+      if(!offer.comparable)choose.textContent=otherKind(offer)?'Другой товар — выбрать нельзя':'Принять отличия и выбрать';
+      choose.disabled=busy||data.selection_read_only||otherKind(offer)||offer.shortage>0||!offer.quantity||offer.unit_price==null;
       const selected=row.invoice?.key===offer.key&&row.invoice?.included;
       if(selected){choose.textContent='✓ Выбрано в счёт';line.style.background='#e7f5ec';choose.disabled=true;}
       choose.onclick=()=>save({action:offer.comparable?'value_select':'value_accept_select',position:row.position,key:offer.key});

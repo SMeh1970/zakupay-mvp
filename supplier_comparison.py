@@ -337,6 +337,12 @@ def safe_url(value):
     return value if parsed.scheme in {"https", "http"} and parsed.netloc and not parsed.username else None
 
 
+# Checks that decide whether a product is the requested kind at all; they are never accepted
+# by «Принять отличия и выбрать».
+IDENTITY_CHECK_FIELDS = frozenset({'Тип товара', 'Слово в наименовании', 'Нет слова из заявки',
+                                   'Проверка категории', 'Проверка прайса', 'Проверка соответствия'})
+
+
 def supplier_enabled(result, supplier):
     return (result.get("comparison") or {}).get("suppliers", {}).get(supplier) is not False
 
@@ -631,9 +637,15 @@ def mutate(result, payload, conn=None):
                 from characteristic_comparison import build
                 key = quote_key(candidate)
                 groups = build(item, views, lambda s: supplier_enabled(result, s))['groups']
-                blocking = [value['id'] for group in groups for value in group['values']
+                blocking = [(group['field'], value['id']) for group in groups for value in group['values']
                             if value.get('state') not in {'matched', 'accepted'}
                             and any(source.get('key') == key for source in value.get('sources') or [])]
+                # Product identity is never waved through: a product of another kind (no main word
+                # of the request, other category) cannot be chosen by accepting its differences.
+                identity = [field for field, _ in blocking if field in IDENTITY_CHECK_FIELDS]
+                if identity:
+                    raise ValueError('Другой товар: не совпадает вид товара (' + ', '.join(dict.fromkeys(identity)) + '). Выбрать нельзя.')
+                blocking = [identifier for _, identifier in blocking]
                 if blocking:
                     state.setdefault('values', {}).update({identifier: 'accepted' for identifier in blocking})
                 state['value_workflow'] = True

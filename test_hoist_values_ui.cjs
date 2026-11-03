@@ -27,3 +27,16 @@ assert.match(doc.querySelector('dialog .supplier-choice-list').textContent,/Не
 assert.equal(doc.querySelector('dialog .supplier-choice-option button').disabled,false);
 assert.equal(doc.querySelector('dialog .supplier-choice-option button').textContent,'Принять отличия и выбрать');
 console.log('PASS: values of a product not shown in the column are hidden; pending hoist is chosen only by accepting its differences');
+{
+  // A product failing a product-kind check cannot be chosen by accepting differences.
+  const d=JSON.parse(JSON.stringify(data));
+  d.rows[0].value_comparison.offers[0].comparison_reasons=['Не разрешено: Проверка категории'];
+  const dom2=new JSDOM(`<p id="message"></p><table id="review-table"><colgroup><col><col><col></colgroup><tr><th>Позиция</th></tr><tr><td><div data-value-position="1"></div></td></tr></table><script id="comparison-data" type="application/json">${JSON.stringify(d)}</script>`,{runScripts:'outside-only',url:'https://example.test/review'});
+  dom2.window.HTMLDialogElement.prototype.showModal=function(){this.open=true};
+  dom2.window.eval(fs.readFileSync(__dirname+'/comparison_assets/values.js','utf8'));
+  dom2.window.document.querySelector('td[data-supplier-column] button').click();
+  const dialog2=dom2.window.document.querySelector('dialog');
+  assert.equal(dialog2.querySelector('.supplier-choice-option button'),null);
+  assert.match(dialog2.querySelector('details').textContent,/Другой товар: Не разрешено: Проверка категории/);
+  console.log('PASS: another kind of product cannot be chosen');
+}

@@ -116,3 +116,19 @@ def test_batch_applies_marked_decisions_per_position_only_and_can_undo():
     import pytest
     with pytest.raises(ValueError):
         mutate(result,dict(action='values_batch',decisions=[dict(position=1,decision='accepted',features=['unknown'])]))
+
+
+def test_product_of_another_kind_cannot_be_chosen_by_accepting_differences():
+    import pytest
+    from unittest.mock import patch
+    import characteristic_comparison
+    result=data(); b=quote_key(result['items'][0]['candidates'][1])
+    real=characteristic_comparison.build
+    def build(item, views, *args, **kwargs):
+        out=real(item, views, *args, **kwargs)
+        out['groups'].append(dict(field='Проверка категории', values=[dict(id='cat-x', field='Проверка категории',
+            value='Не определена', state='pending', required=[], sources=[dict(key=b)])]))
+        return out
+    with patch.object(characteristic_comparison, 'build', build), pytest.raises(ValueError, match='Другой товар'):
+        mutate(result, dict(action='value_accept_select', position=1, key=b))
+    assert not result['items'][0].get('selected')
