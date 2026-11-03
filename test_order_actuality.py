@@ -232,3 +232,15 @@ def test_actuality_filter_uses_last_known_answer_and_keeps_manual_out(panel):
     assert shown('unknown') == {125}  # never checked is not "actual"
     assert shown('garbage') == {123, 124, 125, 'M-1'}  # unknown value falls back to "all"
     assert "name='actuality'" in client.get('/dashboard/automation').text
+
+
+def test_inactive_verdict_shows_the_raw_statuses_zakupay_returned(panel):
+    client, job, fetch, _, order = panel
+    expire()
+    fetch.return_value = {**order, 'actualityStatus': 'NOT_ACTUAL',
+                          'orderItems': [{'actualityStatus': 'ACTUAL'}, {'actualityStatus': 'ACTUAL'}, {'actualityStatus': 'CLOSED'}]}
+    answer = post_check(client, job).json()
+    assert answer['state'] == 'inactive'
+    assert "заявка: 'NOT_ACTUAL'" in answer['detail'] and 'ACTUAL × 2' in answer['detail'] and 'CLOSED × 1' in answer['detail']
+    from order_actuality import BANNER_SCRIPT
+    assert "value.detail" in BANNER_SCRIPT
