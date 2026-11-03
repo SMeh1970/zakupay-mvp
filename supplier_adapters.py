@@ -451,7 +451,10 @@ class KrepKompAdapter(SupplierAdapter):
 
     @property
     def enabled(self) -> bool:
-        return bool(self.username and self.password and self.base_url)
+        # KREP_KOMP_ENABLED switches the supplier off without removing its credentials.
+        # Off by default since 3 Nov 2026: the API host does not accept connections.
+        switched_on = os.getenv("KREP_KOMP_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
+        return bool(switched_on and self.username and self.password and self.base_url)
 
     def status(self) -> dict[str, Any]:
         data = super().status()

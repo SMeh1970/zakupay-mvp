@@ -32,7 +32,7 @@ ITEM = {"Код": "001", "Наименование": "Болт М8х30", "Пол
 class KrepDiagnosticsTests(unittest.TestCase):
     def setUp(self):
         self.env = patch.dict(os.environ, {
-            "KREP_KOMP_API_USERNAME": "secret-user", "KREP_KOMP_API_PASSWORD": "secret-password",
+            "KREP_KOMP_ENABLED": "true", "KREP_KOMP_API_USERNAME": "secret-user", "KREP_KOMP_API_PASSWORD": "secret-password",
             "KREP_KOMP_STORAGE_NAMES": "",
         }, clear=False)
         self.env.start()
