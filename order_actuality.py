@@ -1,5 +1,6 @@
 """Read-only Zakupay actuality checks, separate from invoice and matching snapshots."""
 import html
+import os
 import threading
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from datetime import datetime, timezone
@@ -10,6 +11,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 SCHEMA = "CREATE TABLE IF NOT EXISTS order_actuality (order_id BIGINT PRIMARY KEY, state TEXT NOT NULL, checked_at TEXT NOT NULL)"
 TTL_SECONDS = 600
 CHECK_TIMEOUT = 12
+OPEN_TIMEOUT = max(1.0, float(os.getenv('ACTUALITY_OPEN_TIMEOUT', '6')))
 _pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix='actuality')
 _slots = threading.BoundedSemaphore(4)
 
@@ -54,12 +56,23 @@ def label(value):
 
 
 def install(app, connect, execute, fetch_order):
-    def check(order_id):
+    def check(order_id, timeout=CHECK_TIMEOUT):
         state = 'unknown'
         if fetch_order and _slots.acquire(blocking=False):
             def fetch():
                 try:
-                    return fetch_order(int(order_id), force=True)
+                    order = fetch_order(int(order_id), force=True)
+                    if isinstance(order, dict) and str(order.get('id')) == str(order_id):
+                        known = classify(order)
+                        if known != 'unknown':
+                            # Zakupay answered after the caller stopped waiting: keep the answer,
+                            # so the next click opens at once instead of asking Zakupay again.
+                            try:
+                                with connect() as conn:
+                                    store(conn, execute, order_id, known)
+                            except Exception:
+                                pass
+                    return order
                 finally:
                     _slots.release()
             try:
@@ -69,7 +82,7 @@ def install(app, connect, execute, fetch_order):
                 future = None
             if future:
                 try:
-                    order = future.result(timeout=CHECK_TIMEOUT)
+                    order = future.result(timeout=timeout)
                     if isinstance(order, dict) and str(order.get('id')) == str(order_id):
                         state = classify(order)
                 except Exception:
@@ -110,11 +123,13 @@ def install(app, connect, execute, fetch_order):
             cached = execute(conn, 'SELECT state,checked_at FROM order_actuality WHERE order_id=?', (row['order_id'],)).fetchone()
         value = dict(cached) if cached else None
         if not fresh(value):
-            value = check(row['order_id'])
+            # Check first, then open; but never keep a person waiting for a silent Zakupay.
+            value = check(row['order_id'], OPEN_TIMEOUT)
         if value['state'] == 'active':
             return RedirectResponse(target, 303, headers={'Cache-Control': 'no-store'})
         message = ('Закупай сообщил, что заявка неактуальна. Подбор не запускался.' if value['state'] == 'inactive' else
-                   'Не удалось подтвердить актуальность заявки в Закупай. Это не означает, что она закрыта. Подбор не запускался.')
+                   'Не удалось быстро подтвердить актуальность заявки в Закупай. Это не означает, что она закрыта. Подбор не запускался. '
+                   'Проверка может завершиться в фоне: повторное открытие через несколько секунд откроет заявку сразу, если Закупай ответит.')
         return HTMLResponse("<!doctype html><html lang='ru'><meta charset='utf-8'><title>Актуальность заявки</title>"
             "<body style='font-family:Arial;margin:32px'><h1>" + html.escape(label(value)) + '</h1><p>' + message + '</p>'
             + f"<p><a href='{target}'>Открыть сохранённую версию</a></p><p><a href='/dashboard/automation'>Вернуться к списку</a></p></body></html>",
