@@ -131,3 +131,41 @@ def test_sync_updates_duplicate_actuality_without_overwriting_snapshot(panel):
         assert conn.execute('SELECT state FROM order_actuality WHERE order_id=123').fetchone()[0] == 'inactive'
         assert conn.execute('SELECT result_json FROM automation_jobs WHERE id=?',(job,)).fetchone()[0] == before
     fetch.assert_not_called()
+
+
+def test_slow_zakupay_does_not_hold_the_page_and_late_answer_is_kept(panel):
+    import time
+    client, job, fetch, _, order = panel
+    expire()
+
+    def slow(order_id, force=False):
+        time.sleep(0.6)
+        return order
+    fetch.side_effect = slow
+    with patch.object(a, 'OPEN_TIMEOUT', 0.1):
+        started = time.monotonic()
+        response = client.get(f'/dashboard/automation/jobs/{job}/open', follow_redirects=False)
+        waited = time.monotonic() - started
+    assert waited < 0.5
+    assert response.status_code == 200 and 'Актуальность не подтверждена' in response.text
+    assert 'Открыть сохранённую версию' in response.text
+    time.sleep(0.8)  # the late answer arrives in the background and is stored
+    again = client.get(f'/dashboard/automation/jobs/{job}/open', follow_redirects=False)
+    assert again.status_code == 303 and again.headers['location'].endswith('/review')
+    assert fetch.call_count == 1
+
+
+def test_late_closed_answer_is_kept_and_stops_opening(panel):
+    import time
+    client, job, fetch, _, order = panel
+    expire()
+
+    def slow(order_id, force=False):
+        time.sleep(0.4)
+        return {**order, 'actualityStatus': 'CLOSED'}
+    fetch.side_effect = slow
+    with patch.object(a, 'OPEN_TIMEOUT', 0.1):
+        client.get(f'/dashboard/automation/jobs/{job}/open', follow_redirects=False)
+    time.sleep(0.6)
+    again = client.get(f'/dashboard/automation/jobs/{job}/open', follow_redirects=False)
+    assert again.status_code == 200 and 'Неактуальна' in again.text
