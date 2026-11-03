@@ -105,3 +105,23 @@ def test_respirator_with_valve_is_not_a_valve_and_cardboard_is_not_a_pipe():
     assert kind('Клапан балансировочный Ду 50') == 'клапан'
     assert kind('Двуслойный гофрокартон «С') != 'гофрированная труба'
     assert kind('Труба гофрированная ПНД d32') == 'гофрированная труба'
+
+
+# Products outside the closed kind list: same main noun, every size/designation token and every
+# other word of the request must be present; anything lacking goes to the operator (not comparable yet).
+@pytest.mark.parametrize('requested,correct,wrong', [
+    ('Монолитный поликарбонат 8 мм прозрачный 2050×3050', 'Поликарбонат монолитный прозрачный 8 мм 2050х3050', 'Поликарбонат монолитный прозрачный 4 мм 2050х3050'),
+    ('Монолитный поликарбонат 8 мм прозрачный 2050×3050', 'Поликарбонат монолитный прозрачный 8 мм 2050х3050', 'Поликарбонат сотовый прозрачный 8 мм 2050х3050'),
+    ('Лента конв. 2.2-1000-3-ТК-200-5/2 НБ 11', 'Лента конв. 2.2-1000-3-ТК-200-5/2 НБ 11', 'Лента конв. 2.2-800-3-ТК-200-5/2 НБ 11'),
+    ('Секция заборная оцинкованная 2D Спорт 4.8/6.0 50×200 2500×2030', 'Секция заборная оцинкованная 2D Спорт 4.8/6.0 50х200 2500х2030', 'Секция заборная оцинкованная 2D Спорт 4.8/6.0 50х200 2500х1530'),
+    ('Ограждение сетчатое оцинкованное 3D 4 мм 2500×1530', 'Ограждение сетчатое оцинкованное 3D 4 мм 2500х1530', 'Ограждение сетчатое оцинкованное 3D 4 мм 2500х1230'),
+])
+def test_kind_outside_the_closed_list_is_verified_by_noun_words_and_numbers(requested, correct, wrong):
+    from product_identity import kind
+    assert not kind(requested)
+    assert allowed(result(requested, [correct, wrong])) == [correct]
+
+
+def test_kind_outside_the_list_without_any_number_stays_with_the_operator():
+    # Nothing to verify by name: even an identical name is held for confirmation, not auto-passed.
+    assert not allowed(result('Двуслойный гофрокартон «С', ['Двуслойный гофрокартон «С']))

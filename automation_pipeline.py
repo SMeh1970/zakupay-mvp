@@ -617,6 +617,19 @@ def _search_variants(requested: str) -> list[str]:
                             else [f'клапан балансировочный Ду {dn[1]}'])
     if key_tokens:
         variants.append(" ".join(key_tokens[:10]))
+    # Staged short queries, the way a person searches a shop: the main noun alone, then with the size,
+    # then with the next descriptive words. A long full name often returns nothing from the API while
+    # the shop's own search finds the product; narrowing is done afterwards by the characteristic filters.
+    from generic_identity import head_noun, other_words
+    noun = head_noun(cleaned)
+    if noun:
+        size = re.search(r"\d[\d.,]*(?:\s*[xх×*]\s*\d[\d.,]*)+|\d[\d.,]*\s*(?:мм|см|м|кг|л|мл)\b", cleaned, re.I)
+        descriptors = other_words(cleaned, noun)
+        staged = [noun]
+        if size:
+            staged.append(f"{noun} {size.group(0).strip()}")
+        staged.extend(" ".join([noun, *descriptors[:count]]) for count in (1, 2) if len(descriptors) >= count)
+        variants.extend(staged)
     # Preserve fastener dimensions as a compact search phrase. The retail site
     # understands long descriptions, while the API may rank them differently.
     # Mixed Cyrillic/Latin multiplication signs and decimal commas are common.
@@ -694,14 +707,22 @@ def _search_candidates(suppliers, requested: str, time_budget_seconds: float | N
     suppliers = sorted(suppliers, key=lambda s: getattr(s, "code", "") not in {"price_lists", "own_catalog"})
     quotes = []
     seen = set()
-    max_variants = max(1, int(os.getenv("AUTO_SEARCH_VARIANT_LIMIT", "8")))
+    max_variants = max(1, int(os.getenv("AUTO_SEARCH_VARIANT_LIMIT", "12")))
     enough_candidates = max(VI_CANDIDATE_LIMIT, int(os.getenv("AUTO_SEARCH_ENOUGH_CANDIDATES", "12")))
     deadline = time.monotonic() + time_budget_seconds if time_budget_seconds else None
     diagnostics = []
     timed_out = False
+    # A source that overran the position budget must not cost the sources behind it their search:
+    # each later source still gets a short budget of its own.
+    grace_seconds = max(1.0, float(os.getenv("AUTO_MIN_SUPPLIER_SECONDS", "10")))
+    global_deadline = deadline
     for supplier in suppliers:
         supplier_started = time.monotonic()
+        deadline = global_deadline
+        if global_deadline is not None and supplier_started >= global_deadline:
+            deadline = supplier_started + grace_seconds
         supplier_queries = 0
+        supplier_timed_out = False
         reused_queries = 0
         supplier_errors = []
         # KREP-KOMP ranks a cached full catalogue locally. Repeating VI-style
@@ -718,7 +739,7 @@ def _search_candidates(suppliers, requested: str, time_budget_seconds: float | N
         paging_meta: list[dict] = []
         for query in queries:
             if deadline is not None and time.monotonic() >= deadline:
-                timed_out = True
+                timed_out = supplier_timed_out = True
                 break
             supplier_queries += 1
             if deep_paging:
@@ -773,7 +794,7 @@ def _search_candidates(suppliers, requested: str, time_budget_seconds: float | N
             "candidates": supplier_found,
             "seconds": elapsed,
             "errors": list(dict.fromkeys(supplier_errors))[:3],
-            "timed_out": timed_out,
+            "timed_out": supplier_timed_out,
             "paging": {
                 "pages": sum(m.get("pages", 0) for m in paging_meta),
                 "fetched": sum(m.get("fetched", 0) for m in paging_meta),
@@ -781,8 +802,6 @@ def _search_candidates(suppliers, requested: str, time_budget_seconds: float | N
                 "complete": bool(paging_meta) and all(m.get("stopped") == "exhausted" for m in paging_meta),
             } if deep_paging else None,
         })
-        if timed_out:
-            break
     return quotes, diagnostics, timed_out
 
 
@@ -924,10 +943,22 @@ def _product_types(text: str) -> set[str]:
     if "пистолет" in normalized:
         return {"пистолет"}
     found = set()
-    for product_type, markers in _PRODUCT_TYPE_MARKERS.items():
-        if any(_norm(marker) in normalized for marker in markers):
+    for product_type, markers in _normalized_type_markers().items():
+        if any(marker in normalized for marker in markers):
             found.add(product_type)
     return found
+
+
+_NORMALIZED_TYPE_MARKERS: dict | None = None
+
+
+def _normalized_type_markers() -> dict:
+    """The markers are constants: normalise them once, not on every candidate."""
+    global _NORMALIZED_TYPE_MARKERS
+    if _NORMALIZED_TYPE_MARKERS is None:
+        _NORMALIZED_TYPE_MARKERS = {name: tuple(_norm(marker) for marker in markers)
+                                    for name, markers in _PRODUCT_TYPE_MARKERS.items()}
+    return _NORMALIZED_TYPE_MARKERS
 
 
 def _candidate_key(candidate: dict) -> str:

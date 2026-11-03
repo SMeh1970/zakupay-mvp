@@ -255,10 +255,20 @@ class VseinstrumentiAdapter(SupplierAdapter):
             )]
 
         limit = min(max(int(limit), 1), 40)
-        try:
-            response = self._request_products(query, limit, offset)
-        except requests.RequestException as exc:
-            return [SupplierQuote(supplier=self.name, name=query, error=f"Ошибка сети API ВИ: {exc}")]
+        # One failed call is not proof that the product is absent: repeat transient failures
+        # (network error, 429, 5xx) once before reporting the error.
+        retries = max(0, int(os.getenv("VSEINSTRUMENTI_RETRIES", "1")))
+        response = None
+        for attempt in range(retries + 1):
+            try:
+                response = self._request_products(query, limit, offset)
+            except requests.RequestException as exc:
+                if attempt >= retries:
+                    return [SupplierQuote(supplier=self.name, name=query, error=f"Ошибка сети API ВИ: {exc}")]
+            else:
+                if response.status_code not in {429, 500, 502, 503, 504} or attempt >= retries:
+                    break
+            time.sleep(0.5 * (attempt + 1))
 
         if not response.ok:
             return [SupplierQuote(
@@ -401,6 +411,9 @@ class KrepKompAdapter(SupplierAdapter):
             "https://1cwbsvc.krep-komp.ru:7333/torg1/hs/mp",
         ).rstrip("/")
         self.timeout = float(os.getenv("KREP_KOMP_API_TIMEOUT", "8"))
+        # Prices and stock are requested for the whole window in one call each, so a wider window
+        # costs no extra API requests; it keeps size/model variants that the text rank puts below the top few.
+        self.candidate_window = max(8, min(int(os.getenv("KREP_KOMP_CANDIDATE_WINDOW", "40")), 100))
         self.catalog_ttl = int(os.getenv("KREP_KOMP_CATALOG_TTL", "21600"))
         names = os.getenv("KREP_KOMP_STORAGE_NAMES", "КОЛЕДИНО")
         self.storage_names = {x.strip().casefold() for x in names.split(",") if x.strip()}
@@ -715,7 +728,7 @@ class KrepKompAdapter(SupplierAdapter):
                 item for item in ranked
                 if query_tokens & self._indexed_item(*(str(item.get(k) or '') for k in (
                     'Наименование', 'ПолноеНаименование', 'Артикул', 'Категория')))[1]
-            ), min(max(int(limit), 1), 20)))
+            ), max(min(max(int(limit), 1), 20), self.candidate_window)))
             return self._enrich(candidates)
         except (requests.RequestException, RuntimeError, ValueError) as exc:
             return [SupplierQuote(supplier=self.name, name=query, error=f"Ошибка API КРЕП-КОМП: {exc}")]
