@@ -14,21 +14,14 @@ dom.window.HTMLDialogElement.prototype.showModal=function(){this.open=true};
 dom.window.HTMLDialogElement.prototype.close=function(){this.open=false;this.dispatchEvent(new dom.window.Event('close'))};
 dom.window.fetch=()=>{throw new Error('Reading sources must not change the invoice')};
 dom.window.eval(fs.readFileSync(__dirname+'/comparison_assets/values.js','utf8'));
-const chip=doc.querySelector('.value-chip');
-assert.ok(chip.classList.contains('available'));
-assert.ok(!chip.classList.contains('matched'));
-assert.equal(doc.querySelector('button[aria-label="Разрешить: Вес нетто 162 кг"]').getAttribute('aria-pressed'),'false');
-doc.querySelector('button[aria-label="Источники: Вес нетто 162 кг"]').click();
-assert.match(doc.querySelector('dialog').textContent,/16588376/);
-assert.match(doc.querySelector('dialog').textContent,/Вес нетто: 162/);
-assert.match(doc.querySelector('dialog').textContent,/HHBD05-02T/);
-assert.equal(doc.querySelector('dialog a').href,'https://example.test/tor');
-doc.querySelector('dialog button').click();
-assert.equal(doc.querySelector('dialog'),null);
+// The hoist is not shown in the supplier column (not comparable), so its values do not appear
+// under the request; the offer and the reason it is not allowed stay visible in the supplier dialog.
+assert.equal(doc.querySelector('.supplier-found-values'),null);
+assert.equal(doc.querySelector('button[aria-label="Разрешить: Вес нетто 162 кг"]'),null);
 doc.querySelector('[data-supplier-column] button')?.click();
 // The first supplier-column marker is a col; target its actual price cell.
 doc.querySelector('td[data-supplier-column] button').click();
 assert.match(doc.querySelector('dialog .supplier-choice-list').textContent,/HHBD05-02T/);
 assert.match(doc.querySelector('dialog .supplier-choice-list').textContent,/Не разрешено: Модель тали/);
 assert.equal(doc.querySelector('dialog .supplier-choice-option button').disabled,true);
-console.log('PASS: optional values are neutral, source dialog proves quote provenance, pending hoist is visible without invoice eligibility');
+console.log('PASS: values of a product not shown in the column are hidden; pending hoist is visible in the dialog without invoice eligibility');

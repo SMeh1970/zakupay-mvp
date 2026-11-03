@@ -122,6 +122,10 @@
     const line=node('div','','value-panel');
     line.setAttribute('aria-label','Наименование с выбором значений позиции '+row.position);
     const source=row.name || '', placements=[], used=new Set();
+    // Values are offered only from products shown in the supplier columns (the comparable offers);
+    // products that were found but rejected or never shown must not add values here.
+    const shownKeys=new Set(row.value_comparison.offers.filter(v=>v.comparable).map(v=>v.key));
+    const shown=value=>!Array.isArray(value.sources)||value.sources.some(s=>shownKeys.has(s.key));
     const checks=group=>['Слово в наименовании','Нет слова из заявки','Проверка прайса','Проверка категории','Проверка соответствия'].includes(group.field);
     const chip=(group,value,label)=>{
       const allowed=['matched','accepted'].includes(value.state);
@@ -170,7 +174,7 @@
     line.append(document.createTextNode(source.slice(cursor)));
     const extra=node('div','','supplier-found-values');
     for(const group of row.value_comparison.groups) {
-      const values=group.values.filter(v=>!used.has(group)||checks(group)||v.ambiguous||v.value==='Не указано'||v.offer_label);
+      const values=group.values.filter(v=>(!used.has(group)||checks(group)||v.ambiguous||v.value==='Не указано'||v.offer_label) && shown(v));
       if(!values.length)continue;
       const block=node('div','','value-group-details');block.append(node('b',group.field+': '));
       const byValue=new Map();
@@ -184,8 +188,8 @@
       }
       extra.append(block);
     }
-    // These are values from all primary-matching supplier products, including
-    // specifications not written in the request or in a supplier product title.
+    // Values of the products shown in the supplier columns, including specifications
+    // not written in the request or in a supplier product title.
     if(extra.childNodes.length){extra.prepend(node('div','Значения из найденных товаров','supplier-found-label'));line.append(extra);}
     return line;
   }
