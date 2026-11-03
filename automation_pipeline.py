@@ -69,6 +69,11 @@ GITHUB_REPOSITORY = os.getenv("GITHUB_AUTOMATION_REPOSITORY", "SMeh1970/zakupay-
 _lock = threading.Lock()
 # Supplier searches run as threads inside the web process and hold large catalogues; excess searches
 # wait here (their job stays "processing") instead of all running at once and exhausting memory.
+def _peak_rss_mb():
+    from supplier_adapters import peak_rss_mb
+    return peak_rss_mb()
+
+
 _SEARCH_SLOTS = threading.BoundedSemaphore(max(1, int(os.getenv("MAX_CONCURRENT_SUPPLIER_SEARCHES", "2"))))
 _schema_lock = threading.Lock()
 _initialized_database_key = None
@@ -2638,8 +2643,8 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
             started_at = time.monotonic()
             last_progress_saved_at = 0.0
             logger.warning(
-                "supplier search started job=%s order=%s positions=%s",
-                job_id, order.get("id"), len(order.get("orderItems") or []),
+                "supplier search started job=%s order=%s positions=%s peak_rss_mb=%s",
+                job_id, order.get("id"), len(order.get("orderItems") or []), _peak_rss_mb(),
             )
             try:
                 def save_progress(completed, total, completed_row):
@@ -2691,8 +2696,8 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
                         (result["status"], json.dumps(result, ensure_ascii=False), datetime.now(timezone.utc).isoformat(), job_id),
                     )
                 logger.warning(
-                    "supplier search completed job=%s order=%s seconds=%.1f",
-                    job_id, order.get("id"), time.monotonic() - started_at,
+                    "supplier search completed job=%s order=%s seconds=%.1f peak_rss_mb=%s",
+                    job_id, order.get("id"), time.monotonic() - started_at, _peak_rss_mb(),
                 )
             except Exception as exc:
                 logger.exception("background supplier search failed job=%s", job_id)

@@ -380,6 +380,15 @@ class VseinstrumentiAdapter(SupplierAdapter):
         return quotes, meta
 
 
+def peak_rss_mb():
+    """Peak resident memory of this process in MB (Linux), for the memory-limit diagnosis; None elsewhere."""
+    try:
+        import resource
+        return round(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024)
+    except Exception:
+        return None
+
+
 class KrepKompAdapter(SupplierAdapter):
     """Read-only adapter for the official KREP-KOMP 1C exchange API.
 
@@ -569,7 +578,7 @@ class KrepKompAdapter(SupplierAdapter):
             if saved is not None:
                 cls._catalog, cls._catalog_expires_at = saved
                 cls._catalog_error = None
-                logger.info('krep catalogue restored records=%s', len(cls._catalog))
+                logger.warning('krep catalogue restored records=%s peak_rss_mb=%s', len(cls._catalog), peak_rss_mb())
                 return cls._catalog
             started = time.monotonic()
             items: list[dict[str, Any]] = []
@@ -595,7 +604,7 @@ class KrepKompAdapter(SupplierAdapter):
                 cache.save(self._catalog_cache_key(), items, cls._catalog_expires_at)
             except Exception as exc:
                 logger.warning('krep catalogue cache write failed: %s', type(exc).__name__)
-            logger.info('krep catalogue ready pages=%s records=%s seconds=%.3f', page, len(items), time.monotonic()-started)
+            logger.warning('krep catalogue ready pages=%s records=%s seconds=%.3f peak_rss_mb=%s', page, len(items), time.monotonic()-started, peak_rss_mb())
             return items
 
     @classmethod
