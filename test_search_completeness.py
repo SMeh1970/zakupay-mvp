@@ -55,10 +55,18 @@ class PriceListCompletenessTests(unittest.TestCase):
                 finally:
                     self.tearDown()
 
-    def test_many_valid_offers_of_one_supplier_are_all_kept(self):
+    def test_offers_of_one_supplier_are_capped_at_ten_cheapest_first(self):
+        # Operator decision: keep up to 10 offers per supplier per position (60 made saved jobs and the
+        # review page five times larger and ran the 512 MB service out of memory).
         self.load([(f"Перчатки х/б с ПВХ точкой вариант {i}", 10 + i, f"G{i}") for i in range(25)])
         found = prices.search_prices("Перчатки х/б с ПВХ точкой")
-        self.assertEqual(len(found), 25)
+        self.assertEqual(len(found), 10)
+        self.assertEqual({q.article for q in found}, {f"G{i}" for i in range(10)})  # equally relevant: cheapest kept
+
+    def test_per_supplier_cap_can_be_raised_by_environment(self):
+        self.load([(f"Перчатки х/б с ПВХ точкой вариант {i}", 10 + i, f"G{i}") for i in range(25)])
+        with patch.object(prices, "PRICE_PER_SUPPLIER", 60), patch.object(prices, "PRICE_TOTAL", 300):
+            self.assertEqual(len(prices.search_prices("Перчатки х/б с ПВХ точкой")), 25)
 
     def test_other_type_is_returned_flagged_and_explained(self):
         self.load([("Саморез черный 200 мм", 1, "S1"), ("Маркер черный 200 мм", 2, "M1")])

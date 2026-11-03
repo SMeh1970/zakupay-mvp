@@ -373,9 +373,11 @@ def activate_list(list_id, settings):
 # Retrieval windows are wide on purpose: they only bound the work per query, while the
 # strict characteristic check happens afterwards. Wrong rows are returned flagged, never silently dropped.
 PRICE_SHORTLIST = max(400, int(os.getenv("PRICE_SEARCH_SHORTLIST", "1500")))
-PRICE_PER_SUPPLIER = max(8, int(os.getenv("PRICE_SEARCH_PER_SUPPLIER", "60")))
+# Up to 10 offers per supplier per position are kept (5-10 relevant ones is what the operator reviews). Sixty per supplier
+# made saved jobs and the review page five times larger and ran the 512 MB web service out of memory.
+PRICE_PER_SUPPLIER = max(8, int(os.getenv("PRICE_SEARCH_PER_SUPPLIER", "10")))
 PRICE_NOUN_SCAN = max(500, int(os.getenv("PRICE_SEARCH_NOUN_SCAN", "3000")))
-PRICE_TOTAL = max(80, int(os.getenv("PRICE_SEARCH_TOTAL", "300")))
+PRICE_TOTAL = max(80, int(os.getenv("PRICE_SEARCH_TOTAL", "80")))
 
 
 def _ensure_vocab(conn):
