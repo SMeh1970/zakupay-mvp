@@ -1,7 +1,6 @@
 """Our product catalogue, supplier price observations and confirmed sale history."""
 from __future__ import annotations
 
-import os
 import hashlib
 import html
 import json
@@ -151,9 +150,6 @@ def record_confirmed_sale(job_id, sale_date, competitor_counts=None):
     return sum(row["created"] for row in results)
 
 
-CATALOG_WINDOW = max(8, int(os.getenv("OWN_CATALOG_SEARCH_WINDOW", "100")))
-
-
 def search_catalog(query, limit=8):
     from supplier_adapters import SupplierQuote
     from vi_order_match import _identifiers, _score_details, _requested_brands
@@ -167,7 +163,7 @@ def search_catalog(query, limit=8):
             product_ids.update(row["id"] for row in rows)
         if terms:
             rows = execute(conn, """SELECT product_id,COUNT(*) AS hits FROM own_catalog_tokens
-                WHERE token IN (""" + ",".join("?" for _ in terms) + ") GROUP BY product_id ORDER BY hits DESC,product_id LIMIT 1500", terms).fetchall()
+                WHERE token IN (""" + ",".join("?" for _ in terms) + ") GROUP BY product_id ORDER BY hits DESC,product_id LIMIT 400", terms).fetchall()
             product_ids.update(row["product_id"] for row in rows)
         if not product_ids:
             return []
@@ -187,13 +183,10 @@ def search_catalog(query, limit=8):
     accepted = []
     for item in quotes:
         score, _ = _score_details(query, item)
-        # Conflicts and a low score are not reasons to hide an offer: the pipeline lists such
-        # offers as rejected with the reason, and only a clean offer can be selected. Clean offers sort first.
-        flagged = bool(_hard_conflicts(query, item.to_dict()) or score < 0.48
-                       or (brands and not _candidate_matches_brand(item.to_dict(), brands)))
-        accepted.append((item, score, flagged))
-    accepted.sort(key=lambda row: (row[2], -row[1], row[0].price) if brands else (row[2], row[0].price, -row[1]))
-    return [item for item, *_ in accepted[:max(8, min(limit * 8, 80), CATALOG_WINDOW)]]
+        if score >= 0.48 and not _hard_conflicts(query, item.to_dict()) and (not brands or _candidate_matches_brand(item.to_dict(), brands)):
+            accepted.append((item, score))
+    accepted.sort(key=lambda pair: (-pair[1], pair[0].price) if brands else (pair[0].price, -pair[1]))
+    return [item for item, _ in accepted[:max(8, min(limit * 8, 80))]]
 
 
 def install_own_catalog(app):
