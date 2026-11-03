@@ -541,7 +541,7 @@ def mutate(result, payload, conn=None):
         from comparison_prototype import save_state
         save_state(result, payload)
         return
-    if result.get("live_offer_created") and action != 'value':
+    if result.get("live_offer_created") and action not in {'value', 'values_batch'}:
         raise ValueError("Предложение уже отправлено. Сравнение доступно только для просмотра.")
     if action == "load_catalog":
         if conn is None:
@@ -552,6 +552,42 @@ def mutate(result, payload, conn=None):
         if payload.get("value") not in {"sum", "price"}:
             raise ValueError("Неизвестный режим")
         result.setdefault("comparison", {})["mode"] = payload["value"]
+    elif action == "values_batch":
+        # All ✓/✕ decisions made on the page, applied in one request. Each decision belongs to
+        # its own position only; nothing is copied to other positions.
+        decisions = payload.get("decisions")
+        if not isinstance(decisions, list) or not decisions or len(decisions) > 2000:
+            raise ValueError("Нет решений для применения")
+        from characteristic_comparison import build
+        items = {str(i.get("position")): i for i in result.get("items") or []}
+        for entry in decisions:
+            if not isinstance(entry, dict):
+                raise ValueError("Неверное решение")
+            item = items.get(str(entry.get("position")))
+            if item is None:
+                raise ValueError("Позиция не найдена")
+            identifiers, decision = entry.get("features"), entry.get("decision")
+            state = activate(item)
+            views = [offer_view(item, c) for c in candidates(item)]
+            known = {v['id'] for g in build(item, views)['groups'] for v in g['values']}
+            if (not isinstance(identifiers, list) or not identifiers or len(identifiers) > 1000
+                    or any(not isinstance(i, str) or i not in known for i in identifiers)
+                    or decision not in {'accepted', 'rejected', 'pending'}):
+                raise ValueError("Характеристика не найдена")
+            values = state.setdefault('values', {})
+            for identifier in identifiers:
+                if decision == 'pending':
+                    values.pop(identifier, None)
+                else:
+                    values[identifier] = decision
+            if not result.get('live_offer_created'):
+                state['value_workflow'] = True
+                if item.get('selected'):
+                    state.setdefault('value_selected_key', quote_key(item['selected']))
+        if not result.get('live_offer_created'):
+            reconcile(result)
+            from automation_pipeline import _refresh_summary
+            _refresh_summary(result)
     elif action == "supplier":
         name = payload.get("supplier")
         known = {v["supplier"] for row in model(result)["rows"] for v in row["offers"]}
@@ -737,7 +773,7 @@ def install_supplier_comparison(app):
             raise HTTPException(403, "Обновите страницу и повторите действие")
         with _lock, _connect() as conn:
             row, result = load(job_id, conn)
-            if row["status"] == "processing" or (row["status"] == "offer_created" and payload.get("action") not in {"prototype_state", "value"}):
+            if row["status"] == "processing" or (row["status"] == "offer_created" and payload.get("action") not in {"prototype_state", "value", "values_batch"}):
                 raise HTTPException(409, "Заявка обрабатывается или предложение уже отправлено")
             if payload.get("revision") != revision(row["result_json"]):
                 raise HTTPException(409, "Заявка изменена в другом окне. Обновите страницу.")
@@ -755,7 +791,7 @@ def install_supplier_comparison(app):
                 invoice_number = max(INVOICE_NUMBER_START, (last["maximum"] or INVOICE_NUMBER_START - 1) + 1)
                 result["invoice_number"] = invoice_number
             raw = json.dumps(result, ensure_ascii=False, allow_nan=False)
-            keep_status = payload.get('action') == 'prototype_state' or (payload.get('action') == 'value' and result.get('live_offer_created'))
+            keep_status = payload.get('action') == 'prototype_state' or (payload.get('action') in {'value', 'values_batch'} and result.get('live_offer_created'))
             cursor = _execute(conn, "UPDATE automation_jobs SET result_json=?,status=?,invoice_number=?,updated_at=? WHERE id=? AND result_json=? AND status=?", (raw, row["status"] if keep_status else result["status"], invoice_number, datetime.now(timezone.utc).isoformat(), job_id, row["result_json"], row["status"]))
             if cursor.rowcount != 1:
                 raise HTTPException(409, "Заявка изменена. Обновите страницу.")

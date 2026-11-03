@@ -18,13 +18,17 @@ dom.window.eval(fs.readFileSync(__dirname+'/comparison_assets/values.js','utf8')
   assert.match(panel.textContent,/Класс прочности.*8.*10/);
   assert.match(panel.textContent,/Фасовка.*25 кг/);
   assert.equal(panel.querySelector('details'),null);
+  // ✓ and ✕ only mark a decision; nothing is sent until «Применить».
   panel.querySelector('button[aria-label="Разрешить: Класс прочности 10"]').click();
   await new Promise(resolve=>setImmediate(resolve));
-  assert.equal(payload.action,'value');assert.equal(payload.decision,'accepted');
-  assert.deepEqual(payload.features,['class10']);assert.equal(payload.position,1);
-  panel.querySelector('button[aria-label="Исключить: Класс прочности 10"]').click();
+  assert.equal(payload,undefined);
+  assert.match(doc.querySelector('.value-apply-bar').textContent,/Отмечено решений: 1/);
+  doc.querySelector('[data-value-position="1"] button[aria-label="Исключить: Класс прочности 10"]').click();
+  assert.equal(payload,undefined);
+  doc.querySelector('button[aria-label="Применить отмеченные решения"]').click();
   await new Promise(resolve=>setImmediate(resolve));
-  assert.equal(payload.decision,'rejected');assert.deepEqual(payload.features,['class10']);
+  assert.equal(payload.action,'values_batch');
+  assert.deepEqual(payload.decisions,[{position:1,decision:'rejected',features:['class10']}]);
   assert.equal(initial.rows[0].name,'Гайка М20 DIN 934');
-  console.log('PASS: supplier-only values are visible in the selection column; per-value check/cross save exact decisions');
+  console.log('PASS: supplier-only values are visible in the selection column; check/cross mark decisions and one «Применить» sends them');
 })();

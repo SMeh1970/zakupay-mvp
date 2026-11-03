@@ -97,3 +97,22 @@ def test_choosing_an_offer_with_differences_accepts_exactly_its_differences_and_
     assert accepted=={('Класс прочности','10')}
     assert ('Покрытие','Цинк (способ не указан)') not in accepted
     assert model(result)['rows'][0]['invoice']['included']
+
+
+def test_batch_applies_marked_decisions_per_position_only_and_can_undo():
+    import copy as _c
+    result=data(); second=_c.deepcopy(result['items'][0]); second['position']=2; result['items'].append(second)
+    def states(position):
+        row=model(result)['rows'][position-1]
+        return {(g['field'],v['value']):(v['id'],v['state']) for g in row['value_comparison']['groups'] for v in g['values']}
+    class10=states(1)[('Класс прочности','10')][0]
+    before=states(2)
+    mutate(result,dict(action='values_batch',decisions=[dict(position=1,decision='accepted',features=[class10])]))
+    assert states(1)[('Класс прочности','10')][1]=='accepted'
+    assert states(2)==before
+    assert model(result)['rows'][0]['value_comparison']['minimum']['sku']=='b'
+    mutate(result,dict(action='values_batch',decisions=[dict(position=1,decision='pending',features=[class10])]))
+    assert states(1)[('Класс прочности','10')][1]=='pending'
+    import pytest
+    with pytest.raises(ValueError):
+        mutate(result,dict(action='values_batch',decisions=[dict(position=1,decision='accepted',features=['unknown'])]))

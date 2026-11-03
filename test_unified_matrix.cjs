@@ -34,9 +34,10 @@ function data(alternative=false) {
   assert.equal(doc.querySelectorAll('td[data-supplier-column]').length,3);
   assert.match(doc.querySelectorAll('td[data-supplier-column]')[2].textContent,/Нет сохранённых результатов поставщика/);
   assert.equal(doc.querySelectorAll('td[data-supplier-column] details').length,0);
-  const checkbox=doc.querySelector('.value-panel input[type=checkbox]');checkbox.click();
+  assert.equal(doc.querySelector('.value-panel input[type=checkbox]'),null);
+  doc.querySelector('button[aria-label="Разрешить: Класс прочности 10"]').click();
   assert.equal(calls,0);
-  Array.from(doc.querySelectorAll('.value-batch button')).find(b=>b.getAttribute('aria-label')==='Разрешить выбранные').click();
+  doc.querySelector('button[aria-label="Применить отмеченные решения"]').click();
   await new Promise(resolve=>setImmediate(resolve));
   assert.equal(calls,1);
   assert.equal(doc.querySelectorAll('th[data-supplier-column]').length,3);
