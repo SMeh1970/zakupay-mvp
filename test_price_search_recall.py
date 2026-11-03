@@ -50,13 +50,7 @@ class PriceSearchRecallTests(unittest.TestCase):
     def test_numbers_and_wrong_product_type_do_not_fill_shortlist(self):
         self.load([("Саморез черный 200 мм", 1, "S1"), ("Маркер черный 200 мм", 2, "M1")])
         found = prices.search_prices("Маркер черный 200 мм")
-        # The right product comes first; a row of another type is not hidden but returned last,
-        # and the pipeline lists it as rejected with the reason instead of losing it silently.
-        self.assertEqual([q.article for q in found], ["M1", "S1"])
-        row = self.row("Маркер черный 200 мм")
-        self.assertEqual(row["selected"]["article"], "M1")
-        self.assertTrue(any(c.get("article") == "S1" and "тип товара" in c.get("rejection_reason", "")
-                            for c in row["rejected_candidates"]))
+        self.assertEqual([q.article for q in found], ["M1"])
         self.assertEqual(prices.search_prices("Неизвестный товар 200 мм"), [])
 
     def test_synonym_expansion_is_one_index_query_and_original_requirements_remain(self):
@@ -70,9 +64,7 @@ class PriceSearchRecallTests(unittest.TestCase):
             found = prices.search_prices("Коронка 32 мм")
         self.assertTrue(found)
         self.assertEqual(found[0].article, "P32")
-        # One lookup for all synonym variants plus one main-noun ("Ctrl+F") pass: the count does not
-        # grow with the number of variants.
-        self.assertLessEqual(sum("supplier_price_tokens" in sql for sql in calls), 2)
+        self.assertEqual(sum("supplier_price_tokens" in sql for sql in calls), 1)
         row = self.row("Коронка 32 мм")
         self.assertFalse(row["selected"] and row["selected"]["article"] == "P60")
 

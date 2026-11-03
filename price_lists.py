@@ -11,7 +11,6 @@ import html
 import io
 import json
 import math
-import os
 import re
 import zipfile
 from contextlib import contextmanager
@@ -105,8 +104,6 @@ def initialize_schema(conn, postgres):
         PRIMARY KEY(token,item_id)
     )""")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_supplier_price_tokens_item ON supplier_price_tokens(item_id)")
-    # Distinct words only: a prefix ("Ctrl+F") lookup scans this small table, never the row-per-word index.
-    conn.execute("CREATE TABLE IF NOT EXISTS supplier_price_vocab (token TEXT PRIMARY KEY)")
     # Concurrent imports of the same catalogue cannot leave two active versions.
     conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_supplier_price_active_version ON supplier_price_lists(catalog_key) WHERE status='active'")
     from prepared_catalog import initialize_schema as initialize_prepared_schema
@@ -361,8 +358,6 @@ def activate_list(list_id, settings):
                                "INSERT INTO supplier_price_tokens(item_id,token) VALUES (?,?)", index_rows)
         finally:
             cursor.close()
-        for token in sorted({token for _, token in index_rows}):
-            execute(conn, "INSERT INTO supplier_price_vocab(token) VALUES (?) ON CONFLICT DO NOTHING", (token,))
         execute(conn, "UPDATE supplier_price_lists SET status='superseded' WHERE catalog_key=? AND status='active'", (record["catalog_key"],))
         execute(conn, """UPDATE supplier_price_lists SET status='active',settings_json=?,imported_rows=?,
             skipped_rows=?,activated_at=? WHERE id=?""",
@@ -370,26 +365,10 @@ def activate_list(list_id, settings):
     return {"id": list_id, "duplicate": False, "imported": len(items), "skipped": skipped, **preparation}
 
 
-# Retrieval windows are wide on purpose: they only bound the work per query, while the
-# strict characteristic check happens afterwards. Wrong rows are returned flagged, never silently dropped.
-PRICE_SHORTLIST = max(400, int(os.getenv("PRICE_SEARCH_SHORTLIST", "1500")))
-# Up to 10 offers per supplier per position are kept (5-10 relevant ones is what the operator reviews). Sixty per supplier
-# made saved jobs and the review page five times larger and ran the 512 MB web service out of memory.
-PRICE_PER_SUPPLIER = max(8, int(os.getenv("PRICE_SEARCH_PER_SUPPLIER", "10")))
-PRICE_NOUN_SCAN = max(500, int(os.getenv("PRICE_SEARCH_NOUN_SCAN", "3000")))
-PRICE_TOTAL = max(80, int(os.getenv("PRICE_SEARCH_TOTAL", "80")))
-
-
-def _ensure_vocab(conn):
-    """Lists imported before the vocabulary table existed: fill it once from the token index."""
-    if execute(conn, "SELECT 1 FROM supplier_price_vocab LIMIT 1").fetchone() is None:
-        execute(conn, "INSERT INTO supplier_price_vocab(token) SELECT DISTINCT token FROM supplier_price_tokens WHERE true ON CONFLICT DO NOTHING")
-
-
 def search_prices(query, limit=8):
     from supplier_adapters import SupplierQuote
     from vi_order_match import _identifiers, _score_details
-    from automation_pipeline import _hard_conflicts, _candidate_matches_brand, _requested_brands, _search_variants
+    from automation_pipeline import _hard_conflicts, _candidate_matches_brand, _requested_brands, _search_variants, _product_types
     # Expand once inside the indexed lookup; score against the original request.
     variants = [query, *_search_variants(query)[:8]]
     terms = sorted({term for variant in variants for term in tokens(variant)})[:128]
@@ -398,7 +377,6 @@ def search_prices(query, limit=8):
     if not terms and not ids:
         return []
     rows = {}
-    noun_prefix = ""
     with database() as conn:
         if ids:
             placeholders = ",".join("?" for _ in ids)
@@ -417,25 +395,10 @@ def search_prices(query, limit=8):
                 SELECT h.item_id,h.hits FROM token_hits h
                 JOIN supplier_price_items si ON si.id=h.item_id
                 JOIN supplier_price_lists p ON p.id=si.list_id
-                WHERE p.status='active' ORDER BY h.hits DESC,h.item_id LIMIT {PRICE_SHORTLIST}
+                WHERE p.status='active' ORDER BY h.hits DESC,h.item_id LIMIT 400
                 ) SELECT i.id,i.payload_json,r.hits FROM shortlist r
                 JOIN supplier_price_items i ON i.id=r.item_id ORDER BY r.hits DESC,i.id""", [*sorted(lexical), *terms]).fetchall()
             rows.update((row["id"], row) for row in matched)
-        # "Ctrl+F" pass: every row that has the main noun of the request at the start of a word, whatever
-        # its ending (сверло/сверла, болт/болты) and however few other request words it shares.
-        from generic_identity import head_noun
-        noun = head_noun(query)
-        if noun and len(noun) >= 4:
-            prefix = noun_prefix = noun[:max(4, len(noun) - 1)]
-            _ensure_vocab(conn)
-            words = [r["token"] for r in execute(conn, "SELECT token FROM supplier_price_vocab WHERE token LIKE ? LIMIT 200", [prefix + "%"]).fetchall()]
-            if words:
-                extra = execute(conn, f"""SELECT i.id,i.payload_json FROM supplier_price_items i
-                    JOIN supplier_price_lists p ON p.id=i.list_id
-                    WHERE p.status='active' AND i.id IN (SELECT t.item_id FROM supplier_price_tokens t
-                        WHERE t.token IN ({",".join("?" for _ in words)}) LIMIT {PRICE_NOUN_SCAN})""", words).fetchall()
-                for row in extra:
-                    rows.setdefault(row["id"], row)
         quotes = [SupplierQuote(**json.loads(row["payload_json"])) for row in rows.values()]
         product_ids = sorted({q.catalog_product_id for q in quotes if q.catalog_product_id})
         corrected = {}
@@ -448,20 +411,18 @@ def search_prices(query, limit=8):
     requirements = extract(query)
     brands = _requested_brands(query, [item.brand for item in quotes])
     accepted = []
+    requested_types = _product_types(query)
     id_set = set(ids)
-    from product_identity import kind
-    requested_kind = kind(query)
     for item in quotes:
         # Reject numeric-only and unrelated rows before the expensive parsers.
         # Numeric overlap alone (200 mm, 10 pieces) is not product relevance.
-        item_tokens = set(tokens(item.name))
-        shared_words = lexical & item_tokens
-        noun_hit = bool(noun_prefix) and any(t.startswith(noun_prefix) for t in item_tokens)
+        shared_words = lexical & set(tokens(item.name))
         exact_id = bool(id_set and id_set & _identifiers(" ".join((item.name, item.article or "", item.sku or ""))))
-        if not shared_words and not noun_hit and not exact_id:
+        if not shared_words and not exact_id:
             continue
-        # A different product type is not dropped here: _hard_conflicts reports it below, so the
-        # row reaches the review screen as a rejected offer with its reason.
+        offered_types = _product_types(item.name)
+        if requested_types and offered_types and requested_types.isdisjoint(offered_types) and not exact_id:
+            continue
         analysis = {"category": item.category, "attributes": item.characteristics} if item.category else extract(item.name)
         analysis = corrected.get(item.catalog_product_id, analysis)
         item.category, item.characteristics = analysis["category"], analysis["attributes"]
@@ -475,22 +436,18 @@ def search_prices(query, limit=8):
         # pipeline applies these warnings before selection and exact matching.
         conflicts = _hard_conflicts(query, item.to_dict())
         brand_conflict = bool(brands and not _candidate_matches_brand(item.to_dict(), brands))
-        # Staged order the operator expects: first the main product word (the product kind), then the
-        # more of the other request words a row has, then rows without a conflict. Rows with other values
-        # are kept for the manual ✓/✗ filter instead of being cut off.
-        has_kind = (not requested_kind) or kind(item.name) == requested_kind
-        accepted.append((item, score, bool(conflicts or brand_conflict), bool(item.characteristic_missing),
-                         not has_kind, -len(shared_words) - (1 if noun_hit and not shared_words else 0)))
+        accepted.append((item, score, bool(conflicts or brand_conflict),
+                         bool(item.characteristic_missing)))
     # Return a shortlist per supplier so a large cheap catalogue cannot hide
     # alternatives from every other firm. Final unit-aware selection is shared.
-    accepted.sort(key=lambda row: (row[4], row[2], row[5], row[3], -row[1], row[0].price, row[0].name))
+    accepted.sort(key=lambda pair: (pair[2], pair[3], -pair[1], pair[0].price, pair[0].name))
     result, counts = [], {}
     for item, *_ in accepted:
-        if counts.get(item.supplier, 0) >= max(PRICE_PER_SUPPLIER, limit):
+        if counts.get(item.supplier, 0) >= max(8, limit):
             continue
         result.append(item)
         counts[item.supplier] = counts.get(item.supplier, 0) + 1
-        if len(result) >= PRICE_TOTAL:
+        if len(result) >= 80:
             break
     return result
 

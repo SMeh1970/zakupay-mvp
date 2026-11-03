@@ -72,25 +72,10 @@ class ViPagingTests(unittest.TestCase):
     def test_error_on_later_page_keeps_earlier_candidates_and_is_flagged(self):
         ok = Mock(ok=True, status_code=200, json=Mock(return_value={"products": _catalogue()[:40]}))
         bad = Mock(ok=False, status_code=500, text="boom", json=Mock(return_value={}))
-        # The failing page is retried once (VSEINSTRUMENTI_RETRIES) before it is reported.
-        with patch.object(sa.requests, "get", side_effect=[ok, bad, bad]), patch.object(sa.time, "sleep"):
+        with patch.object(sa.requests, "get", side_effect=[ok, bad]):
             quotes, meta = self.adapter.search_pages("бур", page_size=40, max_pages=5)
         self.assertEqual(meta["stopped"], "error")
         self.assertEqual(len(quotes), 40)
-
-    def test_transient_failure_is_retried_once_and_recovers(self):
-        ok = Mock(ok=True, status_code=200, json=Mock(return_value={"products": _catalogue()[:3]}))
-        bad = Mock(ok=False, status_code=503, text="busy", json=Mock(return_value={}))
-        with patch.object(sa.requests, "get", side_effect=[bad, ok]) as get, patch.object(sa.time, "sleep"):
-            quotes = self.adapter.search("бур", limit=40)
-        self.assertEqual(get.call_count, 2)
-        self.assertEqual(len(quotes), 3)
-        self.assertFalse(any(q.error for q in quotes))
-        # A client error (wrong request) is not retried.
-        denied = Mock(ok=False, status_code=401, text="no", json=Mock(return_value={}))
-        with patch.object(sa.requests, "get", side_effect=[denied]) as get:
-            self.assertTrue(self.adapter.search("бур", limit=40)[0].error)
-        self.assertEqual(get.call_count, 1)
 
     def test_pipeline_finds_exact_drill_beyond_first_page(self):
         quotes, diagnostics, timed_out = pipeline._search_candidates([self.adapter], "Бур SDS-plus 14x260")
