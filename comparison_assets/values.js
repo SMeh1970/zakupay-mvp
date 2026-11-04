@@ -26,6 +26,51 @@
     const message=document.getElementById('message');
     if(message)message.textContent=draft.size?'Решение отмечено. Чтобы применить, нажмите «Применить» внизу экрана.':'';
     render();
+    if(activeDialog)renderChoices();
+  }
+  // State of one product characteristic as the operator currently sees it (marks included).
+  function featureState(row, feature) {
+    const value=row.value_comparison.groups.flatMap(g=>g.values).find(v=>v.id===feature.id||(v.ids||[]).includes(feature.id));
+    if(!value)return feature.state;
+    const marked=draftDecision(row,value);
+    if(marked==='pending')return (value.required||[]).length?'pending':'matched';
+    return marked||value.state;
+  }
+  function offerCharacteristics(row, offer) {
+    const box=node('div','','supplier-choice-features');
+    box.style.cssText='margin:6px 0;font-size:14px;line-height:1.7';
+    for(const feature of offer.features||[]) {
+      if(IDENTITY_FIELDS.includes(feature.field))continue;
+      const state=featureState(row,feature);
+      const required=(feature.required||[]).length>0;
+      if(feature.value==='Не указано' && !(required && state==='pending'))continue;
+      const item=node('span',`${feature.field}: ${feature.value}`);
+      item.style.cssText='display:inline-block;margin:0 10px 0 0;'+(
+        state==='rejected'?'color:#9b4039;text-decoration:line-through':
+        state==='pending'?'color:#8a6414;font-weight:600':
+        required?'color:#367348':'color:#5b655f');
+      item.title=state==='rejected'?'Исключено':state==='pending'?'Нужно решение: в заявке '+(feature.required||[]).join(', '):required?'Совпадает с заявкой':'Разрешено';
+      box.append(item);
+    }
+    return box;
+  }
+  function offerStatus(row, offer) {
+    const line=node('p','','supplier-choice-status');
+    line.style.cssText='margin:6px 0;padding:6px 10px;border-radius:6px;font-size:14px;';
+    if(offer.comparable) {
+      line.textContent='✓ Подходит: характеристики совпадают с заявкой или разрешены';
+      line.style.background='#e7f5ec';line.style.color='#24563a';
+    } else if(otherKind(offer)) {
+      line.textContent='Другой товар: '+offer.comparison_reasons.join('; ');
+      line.style.background='#eef0ee';line.style.color='#5b655f';
+    } else {
+      const differs=(offer.features||[]).filter(f=>!IDENTITY_FIELDS.includes(f.field)&&featureState(row,f)!=='matched'&&featureState(row,f)!=='accepted'&&(f.required||[]).length)
+        .map(f=>`${f.field}: ${f.value} (в заявке ${(f.required||[]).join(', ')})`);
+      const other=offer.comparison_reasons.filter(r=>!/^Не разрешено:/.test(r));
+      line.textContent='Нужно решение: '+[...(differs.length?['отличия — '+differs.join('; ')]:offer.comparison_reasons.filter(r=>/^Не разрешено:/.test(r))),...other].join('; ');
+      line.style.background='#fff7df';line.style.color='#6b4e10';
+    }
+    return line;
   }
   let applyBar=null;
   function renderApplyBar() {
@@ -117,7 +162,7 @@
       const priceBasis=offer.factor>1?` · ${money(offer.factor)} ${row.unit} = ${money(offer.price)} ₽ / ${offer.unit}`:'';
       description.append(node('p',offer.unit_price!=null?`${money(offer.unit_price)} ₽ / ${row.unit}${priceBasis}`:offer.price!=null?`${money(offer.price)} ₽ / ${offer.unit} · пересчёт не подтверждён`:'Цена не получена','supplier-choice-price'));
       if(offer.converted_quantity!=null)description.append(node('p',`Для ${money(row.quantity)} ${row.unit}: ${money(offer.quantity)} ${offer.unit} = ${money(offer.converted_quantity)} ${row.unit} · ${money(offer.total)} ₽`,'supplier-choice-detail'));
-      if(!offer.comparable)description.append(node('p','Нужно решение: '+offer.comparison_reasons.join('; '),'supplier-choice-detail'));
+      description.append(offerStatus(row,offer),offerCharacteristics(row,offer));
       description.append(node('p',offer.availability,'supplier-choice-detail'));
       const href=offer.product_url||offer.url;
       if(href){const link=node('a','Карточка товара'+(offer.sku?' · '+offer.sku:''));link.href=href;link.target='_blank';link.rel='noopener noreferrer';description.append(link);}
