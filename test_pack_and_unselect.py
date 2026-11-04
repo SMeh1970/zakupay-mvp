@@ -50,3 +50,11 @@ def test_a_chosen_product_can_be_taken_out_of_the_invoice():
     assert item['selected'] is None and item['decision'] == 'excluded'
     assert not model(r)['rows'][0]['invoice']['included']
     assert offer(r)['comparable']
+
+
+def test_pack_unit_with_count_in_brackets_or_words():
+    from supplier_comparison import conversion
+    item = dict(position=2, requested_name='Анкерный болт для бетона M10x100', quantity=100, unit='шт')
+    for name in ('Анкер-болт Fasty amt plus m10x90 magnisilver1000 (100 шт.) AMT10090AM',
+                 'Анкер болт SORREX оцинкованный гильза PFG M6x40 универсальный (100 штук) CPFG-1-6-100'):
+        assert conversion(item, dict(name=name, unit='Упаковка 1 шт', price=1, supplier='ВсеИнструменты.ру'))[0] == 100.0

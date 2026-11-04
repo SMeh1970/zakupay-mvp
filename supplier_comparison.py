@@ -168,7 +168,7 @@ def supplier_pack_pieces(candidate) -> int:
         match = re.fullmatch(r"\s*(\d{1,5})\s*(?:шт\.?|штук\w*)\s*", text)
         if match and int(match[1]) > 1:
             return int(match[1])
-    match = re.search(r"\(\s*(\d{1,5})\s*шт\.?\s*\)", str(candidate.get("name") or ""), re.I)
+    match = re.search(r"\(\s*(\d{1,5})\s*(?:шт\.?|штук\w*)\s*\)", str(candidate.get("name") or ""), re.I)
     return int(match[1]) if match and int(match[1]) > 1 else 0
 
 
@@ -196,8 +196,9 @@ def conversion(item, candidate):
     length = reel_length(candidate.get('name'), candidate.get('unit'), source.get('unit'))
     if length:
         return length, 'Длина кабеля в бухте'
-    if requested == "шт" and supplied == "упак":
-        pack = _candidate_pack_size(candidate, source.get("unit") or "")
+    if requested == "шт" and str(supplied or "").startswith("упак"):
+        # «Упаковка», «Упаковка 1 шт» (one pack): pieces from the supplier's data or the name.
+        pack = supplier_pack_pieces(candidate) or _candidate_pack_size(candidate, source.get("unit") or "")
         if pack > 1:
             return float(pack), "Количество в упаковке"
     factors = {("т", "кг"): 1000, ("кг", "т"): .001, ("г", "кг"): .001,
