@@ -846,7 +846,10 @@ def _pack_size(name: str, supplier_unit: str | None, requested_unit: str) -> int
     """Return pieces in one supplier sales unit when that can be read safely."""
     if "упак" in _norm(requested_unit) or "комплект" in _norm(requested_unit):
         return 1
-    text = f"{name or ''} {supplier_unit or ''}".lower().replace("штук", "шт")
+    # The unit is added only when it carries a number («упак 50 шт»): appending a bare «шт» turned
+    # an article at the end of a name («… 45655») into «45655 шт».
+    unit_text = supplier_unit if re.search(r"\d", str(supplier_unit or "")) else ""
+    text = f"{name or ''} {unit_text or ''}".lower().replace("штук", "шт")
     matches = re.findall(r"(?<![xх×*])\b(\d{1,6})\s*шт\.?\b", text)
     values = [int(value) for value in matches if int(value) > 1]
     return max(values) if values else 1

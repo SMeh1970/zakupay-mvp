@@ -54,7 +54,9 @@ function data(alternative=false) {
   doc.querySelector('.supplier-choice-option button').click();
   await new Promise(resolve=>setImmediate(resolve));
   assert.equal(doc.querySelector('dialog').open,true);
-  assert.match(doc.querySelector('.supplier-choice-option button').textContent,/✓ Выбрано/);
+  assert.match(doc.querySelector('.supplier-choice-option').textContent,/✓ Выбрано в счёт/);
+  assert.equal(doc.querySelector('.supplier-choice-option button').textContent,'Убрать из счёта');
+  assert.equal(doc.querySelector('.supplier-choice-option button').disabled,false);
   const failed=data();
   doc.querySelectorAll('dialog').forEach(d=>d.remove());
   failed.rows[0].supplier_search={В:{state:'error',label:'Ошибка интеграции',errors:['HTTP 500'],rejected:[{name:'Клапан Ду125',price:42,url:'https://example.test/product',reasons:['Не совпадает Ду']}]}};

@@ -153,6 +153,25 @@ def settings(item):
     return state if state.get("request_signature") == signature(item) else {}
 
 
+_PACK_FIELDS = {"фасовка", "количество в упаковке", "штук в упаковке", "кол-во в упаковке", "количество в упак"}
+
+
+def supplier_pack_pieces(candidate) -> int:
+    """Pieces in one supplier sales unit, from the supplier's own data or «(N шт.)» in the name; 0 if unknown."""
+    for spec in list(candidate.get("technical_specifications") or []) + list(candidate.get("characteristics") or []):
+        if not isinstance(spec, dict):
+            continue
+        name = str(spec.get("name") or spec.get("parameter") or "").strip().lower()
+        if name not in _PACK_FIELDS:
+            continue
+        text = (str(spec.get("value") or "") + " " + str(spec.get("unit") or "")).lower()
+        match = re.fullmatch(r"\s*(\d{1,5})\s*(?:шт\.?|штук\w*)\s*", text)
+        if match and int(match[1]) > 1:
+            return int(match[1])
+    match = re.search(r"\(\s*(\d{1,5})\s*шт\.?\s*\)", str(candidate.get("name") or ""), re.I)
+    return int(match[1]) if match and int(match[1]) > 1 else 0
+
+
 def conversion(item, candidate):
     from automation_pipeline import _candidate_pack_size
     source = item.get("comparison_source") or item
@@ -160,8 +179,14 @@ def conversion(item, candidate):
     manual = (settings(item).get("conversions") or {}).get(quote_key(candidate))
     if manual and manual.get("supplier_unit") == supplied and manual.get("request_unit") == requested:
         return manual["factor"], "Задан вручную"
+    if requested == "шт" and supplied == "шт" and candidate.get("source_type") not in {"price_list", "own_catalog"}:
+        # A supplier API (ВсеИнструменты) reports «Штука» for a pack as well: «анкер … (50 шт.)»
+        # at 5 898 ₽ is a pack of 50. Its own data (Фасовка: 50 шт) or «(N шт.)» in the name decide.
+        pack = supplier_pack_pieces(candidate)
+        if pack > 1:
+            return float(pack), f"Фасовка {pack} шт из данных товара — проверьте"
     if requested and supplied == requested:
-        # Name may mention a pack, but a price explicitly per piece is per piece.
+        # A price list states its unit explicitly: a price per piece is per piece.
         return 1.0, "Одинаковые единицы"
     from supplier_characteristics import nail_pack_mass
     mass = nail_pack_mass(candidate, supplied, requested)
@@ -626,6 +651,12 @@ def mutate(result, payload, conn=None):
                 from automation_pipeline import _refresh_summary
                 _refresh_summary(result)
             return
+        elif action == 'value_unselect':
+            # The operator takes the product out of the invoice; decisions on values stay.
+            state['value_workflow'] = True
+            state.pop('value_selected_key', None)
+            item.update(selected=None, purchase_price=None, proposed_unit_price=0, purchase_units=0,
+                        pack_size=0, decision='excluded', operator_included=False)
         elif action in {'value_select', 'value_accept_select'}:
             candidate = next((c for c in candidates(item) if quote_key(c) == payload.get('key')),None)
             if candidate is None:

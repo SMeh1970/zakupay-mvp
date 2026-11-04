@@ -128,8 +128,12 @@
       if(!offer.comparable)choose.textContent=otherKind(offer)?'Другой товар — выбрать нельзя':'Принять отличия и выбрать';
       choose.disabled=busy||data.selection_read_only||otherKind(offer)||offer.shortage>0||!offer.quantity||offer.unit_price==null;
       const selected=row.invoice?.key===offer.key&&row.invoice?.included;
-      if(selected){choose.textContent='✓ Выбрано в счёт';line.style.background='#e7f5ec';choose.disabled=true;}
-      choose.onclick=()=>save({action:offer.comparable?'value_select':'value_accept_select',position:row.position,key:offer.key});
+      if(selected){
+        description.append(node('p','✓ Выбрано в счёт','matched'));
+        choose.textContent='Убрать из счёта';line.style.background='#e7f5ec';
+        choose.disabled=busy||data.selection_read_only;
+        choose.onclick=()=>save({action:'value_unselect',position:row.position,key:offer.key});
+      } else choose.onclick=()=>save({action:offer.comparable?'value_select':'value_accept_select',position:row.position,key:offer.key});
       line.append(description,choose);list.append(line);
     }
     dialog.append(list,node('p',data.selection_read_only?'Отправленный счёт доступен только для просмотра.':'Выбор применяется к строке счёта. Разрешённые характеристики сохраняются.','supplier-choice-footer'));
@@ -346,7 +350,7 @@
       if(response.redirected || !response.headers.get('content-type')?.includes('application/json'))throw new Error('Обновите страницу и войдите заново.');
       const next=await response.json();if(!response.ok)throw new Error(next.detail || 'Не удалось сохранить решение');
       data=next;message.textContent='Решение сохранено. Минимум пересчитан.';
-      syncInvoice(payload.position,['value_select','value_accept_select'].includes(payload.action));return true;
+      syncInvoice(payload.position,['value_select','value_accept_select','value_unselect'].includes(payload.action));return true;
     } catch(error) { message.textContent=error.message;choiceError=error.message;return false; }
     finally {busy=false;render();if(activeDialog)renderChoices();}
   }
