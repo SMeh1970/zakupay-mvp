@@ -135,3 +135,15 @@ def test_real_saved_benarmo_dn100_requires_evidence_but_wrong_dn_conflicts():
 def test_material_of_inner_part_does_not_prove_body_material():
     name='Клапан обратный пружинный 1/2" с латунным сердечником В/В'
     assert 'не подтверждено: Материал корпуса клапана' in _required_clarifications(REQUEST,dict(name=name))
+
+
+def test_label_says_found_only_when_the_dialog_has_something_to_choose():
+    from supplier_search_state import search_states
+    def state(offer):
+        view = dict(supplier='ВсеИнструменты.ру', key='k', name=offer['name'], price=100)
+        comparison = dict(offers=[dict(view, **offer)])
+        return search_states(dict(search_diagnostics=[]), {}, [view], comparison)['ВсеИнструменты.ру']['label']
+    base = dict(comparable=False, unit_price=100.0, quantity=1, shortage=0)
+    assert state(dict(base, name='Фланец 200', comparison_reasons=['Не разрешено: Условный проход'])) == 'Найдены варианты: выберите характеристики'
+    assert state(dict(base, name='Песочница', comparison_reasons=['Не разрешено: Проверка категории'])) == 'Найденные товары не подходят'
+    assert state(dict(base, name='Фланец 300', unit_price=None, comparison_reasons=['Нет коэффициента пересчёта единиц'])) == 'Найденные товары не подходят'
