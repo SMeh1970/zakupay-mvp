@@ -168,7 +168,8 @@ def supplier_pack_pieces(candidate) -> int:
         match = re.fullmatch(r"\s*(\d{1,5})\s*(?:шт\.?|штук\w*)\s*", text)
         if match and int(match[1]) > 1:
             return int(match[1])
-    match = re.search(r"\(\s*(\d{1,5})\s*(?:шт\.?|штук\w*)\s*\)", str(candidate.get("name") or ""), re.I)
+    # «(50 шт.)», «(100 штук)», «…, 5 шт.», «…, 4 шт. в пакете»
+    match = re.search(r"[(,]\s*(\d{1,5})\s*(?:шт\.?|штук\w*)(?=[\s).,]|$)", str(candidate.get("name") or ""), re.I)
     return int(match[1]) if match and int(match[1]) > 1 else 0
 
 
