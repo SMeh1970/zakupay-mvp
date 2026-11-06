@@ -23,6 +23,7 @@ KINDS = [
  ('ковёр', r'\bков[её]р\w*'),
  ('хомут', r'\bхомут\w*'),
  ('болт', r'\bболт\w*'),
+ ('держатель', r'\bдержател\w*'),
  ('набор', r'\b(?:набор\w*|комплект\w*)'),
  ('запчасть', r'\b(?:якорь|статор|ротор|запчаст\w*)'),
  ('скотч', r'\b(?:скотч|лент\w*\s+малярн\w*)'),
@@ -59,8 +60,16 @@ KINDS = [
 @lru_cache(maxsize=8192)
 def _kind_uncached(text):
     text = str(text or '')
-    matches = [(m.start(), i, name) for i,(name,pattern) in enumerate(KINDS)
-               if (m := re.search(pattern,text,re.I))]
+    # A noun after «с/со/для/под/без» names a part or a purpose, not the product itself:
+    # «Держатель … со шпилькой М8» is a holder, «Гайка для шпильки» is a nut.
+    component = re.compile(r'(?:^|[\s(,])(?:с|со|для|под|без)\s+(?:[а-яё-]+\s+){0,2}$', re.I)
+    matches, parts = [], []
+    for i, (name, pattern) in enumerate(KINDS):
+        for m in re.finditer(pattern, text, re.I):
+            (parts if component.search(text[:m.start()]) else matches).append((m.start(), i, name))
+    # Only when nothing else names the product does the part decide («Втулочный анкер с болтом»
+    # is still a bolt for «Анкерный болт»); «Держатель … со шпилькой» is a holder.
+    matches = matches or parts
     if matches:
         return min(matches)[2]
     from product_characteristics import extract

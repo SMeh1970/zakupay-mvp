@@ -49,3 +49,17 @@ def test_unknown_kind_keeps_only_products_with_the_request_words():
                     quote('k', 'Компенсатор сильфонный осевой DN200 PN16 приварной')])])
     offers = model(result)['rows'][0]['value_comparison']['offers']
     assert [o['sku'] for o in offers] == ['k'], [o['name'] for o in offers]
+
+
+def test_holder_with_a_rod_is_not_a_rod_but_an_anchor_with_a_bolt_is_a_bolt():
+    from product_identity import kind
+    assert kind('Держатель для прутка D6-10 мм вкручиваемый со шпилькой М8 Система КМ L100 мм AURAFORT TD') == 'держатель'
+    assert kind('Гайка для шпильки М8') == 'гайка'
+    assert kind('Втулочный анкер с болтом fischer FSL M10x100/35') == 'болт'
+    assert kind('Шпилька М8 L=1м') == 'шпилька'
+
+
+def test_threaded_rod_is_searched_by_its_catalogue_name_and_length():
+    queries = p._search_variants('Шпилька М8 L=1м')
+    assert queries[0] == 'Шпилька М8 L=1м'
+    assert 'шпилька резьбовая М8 1 м' in queries and 'шпилька резьбовая М8х1000' in queries

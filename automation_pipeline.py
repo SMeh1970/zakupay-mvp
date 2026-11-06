@@ -647,6 +647,19 @@ def _search_variants(requested: str) -> list[str]:
     # words ("Компенсатор сильфонный AWMP.16.0200.005"). Article results are kept only if the
     # product carries the whole article (see _article_query_map).
     variants.extend(_article_query_map(requested))
+    # «Шпилька М8 L=1м»: the supplier search returns holders «со шпилькой М8»; ask for the
+    # threaded rod by its usual catalogue name and length.
+    if product_kind == "шпилька":
+        thread = re.search(r'(?<!\w)[МM]\s*(\d+)(?!\d)', cleaned)
+        length = re.search(r'(?:L\s*=?\s*)?(\d+(?:[.,]\d+)?)\s*(м|мм)(?![а-яa-z])', cleaned, re.I)
+        if thread:
+            metres = None
+            if length:
+                value = float(length[1].replace(',', '.'))
+                metres = value if length[2].lower() == 'м' else value / 1000
+            size = f'{metres:g} м' if metres else ''
+            variants.extend([f'шпилька резьбовая М{thread[1]} {size}'.strip(),
+                             *([f'шпилька резьбовая М{thread[1]}х{int(round(metres * 1000))}'] if metres else [])])
     # Supplier search does not reliably understand specification-column prose.
     # Retrieve nuts by their identity; matching still receives every requirement.
     if re.search(r'\bгайк\w*', cleaned, re.I):
