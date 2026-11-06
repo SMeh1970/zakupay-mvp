@@ -31,9 +31,11 @@ def search_states(item, result, views, comparison):
         elif comparable:
             state, label = 'found', 'Есть допустимые варианты'
         elif offers:
-            primary = [v for v in comparison['offers'] if v['supplier'] == name]
+            # The label must match what the supplier dialog lets the operator choose: products of
+            # another kind, without a recalculated price or short of quantity are not choices.
+            primary = [v for v in comparison['offers'] if v['supplier'] == name and choosable(v)]
             if not primary:
-                state, label = 'rejected', 'Нет совпадений по основным параметрам'
+                state, label = 'rejected', 'Найденные товары не подходят'
             else:
                 state, label = 'review', 'Найдены варианты: выберите характеристики'
         elif ds and any(d.get('queries', 0) > 0 for d in ds):
@@ -47,3 +49,12 @@ def search_states(item, result, views, comparison):
                                                         ['Не совпадают или не подтверждены основные параметры']))
                                       for v in offers if not any(c['key'] == v['key'] for c in comparable)])
     return states
+
+
+def choosable(offer):
+    """Can be chosen with «Принять отличия и выбрать»: same kind, a price per request unit, enough quantity."""
+    from supplier_comparison import IDENTITY_CHECK_FIELDS
+    if any(reason.startswith('Не разрешено: ') and reason[len('Не разрешено: '):] in IDENTITY_CHECK_FIELDS
+           for reason in offer.get('comparison_reasons') or []):
+        return False
+    return offer.get('unit_price') is not None and not (offer.get('shortage') or 0) > 0 and bool(offer.get('quantity'))
