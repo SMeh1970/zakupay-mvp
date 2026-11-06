@@ -22,6 +22,7 @@ def build(item, views, enabled=lambda supplier: True, today=None, respect_row_ex
     request_records = records(source.get('requested_name'))
     views = [v for v in views if primary_match(request_records, v['features'], requested_kind)]
     decisions = {**settings(item).get('features', {}), **settings(item).get('values', {})}
+    word_decisions = dict(settings(item).get('words') or {})
     # Features of every offer indexed by field once: the loops below ask "which features of this
     # offer belong to this field" for every field and every offer, which was the slow part.
     by_field = []
@@ -104,6 +105,10 @@ def build(item, views, enabled=lambda supplier: True, today=None, respect_row_ex
             reasons.append('Дата цены не указана')
         if 'Предложение отсутствует в актуальном подборе прайсов' in view['reasons']:
             reasons.append('Предложение отсутствует в актуальном подборе')
+        # Operator decisions on raw words of product names: ✕ excludes, ✓ requires.
+        own = name_words(view.get('name'))
+        reasons.extend('Исключено слово: ' + word for word, state in word_decisions.items() if state == 'rejected' and word in own)
+        reasons.extend('Нет слова: ' + word for word, state in word_decisions.items() if state == 'accepted' and word not in own)
         output.append({**view, 'comparable': not reasons, 'comparison_reasons': reasons})
     suitable = [v for v in output if v['comparable']]
     best = min(suitable, key=lambda v: (v['unit_price'], v['key']), default=None)
@@ -112,7 +117,8 @@ def build(item, views, enabled=lambda supplier: True, today=None, respect_row_ex
     return dict(groups=[dict(field=field, values=list(values.values()), request_spans=[dict(text=r['evidence'],value=r['value']) for r in request_records if r['field']==field and r['evidence']]) for field, values in sorted(groups.items())],
                 filter_stages=stages,
                 unrelated_count=len(all_views)-len(views),
-                offers=output, minimum=best, suitable_count=len(suitable))
+                offers=output, minimum=best, suitable_count=len(suitable),
+                words=word_list(all_views, word_decisions))
 
 
 def request_stems(requested):
@@ -129,3 +135,28 @@ def request_stems(requested):
         elif words or re.search(r'\d', word):
             break
     return [w[:-2] if len(w) >= 7 else w[:-1] if len(w) >= 5 else w for w in words]
+
+
+_WORD = None
+
+
+def name_words(name):
+    """Words of a product name as written (lower case), each once: «M8x1», «8.8», «din», «оцинкованная»."""
+    import re
+    global _WORD
+    if _WORD is None:
+        _WORD = re.compile(r"[0-9a-zа-яё]+(?:[.,/×xх-][0-9a-zа-яё]+)*", re.I)
+    # In words with digits Latin look-alikes are the same letters: «M8x1» and «М8х1» are one word.
+    same = str.maketrans('aceopxkmtbh', 'асеорхкмтвн')
+    return {(w.lower().replace('ё', 'е').translate(same) if any(c.isdigit() for c in w) else w.lower().replace('ё', 'е'))
+            for w in _WORD.findall(str(name or ''))}
+
+
+def word_list(views, decisions):
+    """Every word of every found product name, once, with the number of products that contain it."""
+    counts = {}
+    for view in views:
+        for word in name_words(view.get('name')):
+            counts[word] = counts.get(word, 0) + 1
+    return [dict(word=word, count=count, state=decisions.get(word, 'pending'))
+            for word, count in sorted(counts.items(), key=lambda pair: (-pair[1], pair[0]))]

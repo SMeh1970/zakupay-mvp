@@ -602,17 +602,21 @@ def mutate(result, payload, conn=None):
             identifiers, decision = entry.get("features"), entry.get("decision")
             state = activate(item)
             views = [offer_view(item, c) for c in candidates(item)]
-            known = {v['id'] for g in build(item, views)['groups'] for v in g['values']}
+            built = build(item, views)
+            known = {v['id'] for g in built['groups'] for v in g['values']}
+            known.update('word:' + w['word'] for w in built.get('words') or [])
             if (not isinstance(identifiers, list) or not identifiers or len(identifiers) > 1000
                     or any(not isinstance(i, str) or i not in known for i in identifiers)
                     or decision not in {'accepted', 'rejected', 'pending'}):
                 raise ValueError("Характеристика не найдена")
             values = state.setdefault('values', {})
+            words = state.setdefault('words', {})
             for identifier in identifiers:
+                target, key = (words, identifier[5:]) if identifier.startswith('word:') else (values, identifier)
                 if decision == 'pending':
-                    values.pop(identifier, None)
+                    target.pop(key, None)
                 else:
-                    values[identifier] = decision
+                    target[key] = decision
             if not result.get('live_offer_created'):
                 state['value_workflow'] = True
                 if item.get('selected'):
