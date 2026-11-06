@@ -57,7 +57,8 @@ def _records_uncached(name, candidate=None):
         field = ALIASES.get(a["parameter"], a["parameter"])
         if product_kind == 'гвозди':
             field = {'Длина изделия': 'Длина гвоздя', 'Диаметр': 'Диаметр гвоздя'}.get(field, field)
-        if product_kind in {"бур", "гвозди"} and field in {"Размер 1", "Размер 2", "Длина", "Длина изделия", "Ширина", "Толщина"}:
+        if product_kind in {"бур", "гвозди", "шпилька"} and field in {"Размер 1", "Размер 2", "Длина", "Длина изделия", "Ширина", "Толщина"} or (
+                product_kind == "шпилька" and field == "Угол"):
             continue
         if field in typed_fields or (product_kind == "наконечник" and field in {"Марка кабеля", "Число жил", "Сечение жилы"}):
             continue
@@ -72,7 +73,7 @@ def _records_uncached(name, candidate=None):
         import re
         attribute_name = re.split(r"\(\s*для\b", str(name), maxsplit=1, flags=re.I)[0] if product_kind == "наконечник" else name
         for field, values in attributes(attribute_name).items():
-            if field in typed_fields or (product_kind in {"бита", "рулетка", "плоскогубцы", "очиститель пены", "монтажная пена", "гофрированная труба", "бур", "гвозди"} and field in {"Размер 1", "Размер 2", "Длина", "Ширина", "Толщина", "Наружный диаметр", "Толщина стенки", "Длина изделия"}):
+            if field in typed_fields or (product_kind in {"бита", "рулетка", "плоскогубцы", "очиститель пены", "монтажная пена", "гофрированная труба", "бур", "гвозди", "шпилька"} and field in {"Размер 1", "Размер 2", "Длина", "Ширина", "Толщина", "Наружный диаметр", "Толщина стенки", "Длина изделия", "Угол"}):
                 continue
             if extract(name)['category'] == 'Кабели' and field in {'Размер 1', 'Размер 2', 'Длина', 'Ширина', 'Толщина'}:
                 continue
