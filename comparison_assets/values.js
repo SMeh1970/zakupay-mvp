@@ -279,6 +279,19 @@
     // Values of the products shown in the supplier columns, including specifications
     // not written in the request or in a supplier product title.
     if(extra.childNodes.length){extra.prepend(node('div','Значения из найденных товаров','supplier-found-label'));line.append(extra);}
+    // Every word of every found product name, once, with how many products contain it.
+    // ✕ removes products with the word, ✓ keeps only products with it (applied with «Применить»).
+    const words=row.value_comparison.words||[];
+    if(words.length) {
+      const box=node('details','','found-words');box.open=true;
+      box.append(node('summary',`Все слова найденных товаров (${words.length})`));
+      const group={field:'Слово'};
+      for(const word of words) {
+        const value={id:'word:'+word.word,field:'Слово',value:word.word,required:[],state:word.state==='pending'?'matched':word.state};
+        box.append(chip(group,value,`${word.word} (${word.count})`),document.createTextNode(' '));
+      }
+      line.append(box);
+    }
     return line;
   }
   function showValueSources(group,value) {
