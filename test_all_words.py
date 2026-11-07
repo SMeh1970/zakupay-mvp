@@ -38,7 +38,7 @@ def test_every_word_once_with_count_and_latin_lookalikes_merged():
     assert w['шпилька']['count'] == 3
     assert w['m8x1000']['count'] == 3  # «M8x1000» in Latin is the same word
     assert w['zitar']['count'] == 1 and w['976']['count'] == 1
-    assert all(v['state'] == 'pending' for v in w.values())
+    assert all(v['state'] == ('accepted' if v['from_request'] else 'pending') for v in w.values())
     assert name_words('M8x1') == name_words('М8х1')
 
 
@@ -79,6 +79,7 @@ def test_accepted_word_takes_products_the_automatic_kind_check_refused():
                                                         c('2', 'Фланец стальной воротниковый DN100 PN16'),
                                                         c('3', 'Прокладка для фланца DN100')])])
     apply(r, 'accepted', 'фланец')
+    apply(r, 'pending', 'плоский')  # «плоский» is a request word, ✓ by default: taken off here
     offers = model(r)['rows'][0]['value_comparison']['offers']
     assert sorted(o['name'] for o in offers if o['comparable']) == [
         'Фланец стальной воротниковый DN100 PN16', 'Фланец стальной плоский DN100 PN16 ГОСТ 33259']
@@ -86,3 +87,23 @@ def test_accepted_word_takes_products_the_automatic_kind_check_refused():
     apply(r, 'rejected', 'воротниковый')
     offers = model(r)['rows'][0]['value_comparison']['offers']
     assert [o['name'] for o in offers if o['comparable']] == ['Фланец стальной плоский DN100 PN16 ГОСТ 33259']
+
+
+def test_request_words_are_checked_by_default_and_can_be_taken_off():
+    r = result()  # request «Шпилька резьбовая М8 1000 мм»
+    w = words(r)
+    assert w['шпилька']['state'] == 'accepted' and w['шпилька']['from_request']
+    assert w['zitar']['state'] == 'pending' and not w['zitar']['from_request']
+    apply(r, 'pending', 'шпилька')
+    assert words(r)['шпилька']['state'] == 'neutral'
+    apply(r, 'accepted', 'шпилька')
+    assert words(r)['шпилька']['state'] == 'accepted'
+
+
+def test_roll_sold_per_piece_is_priced_per_metre():
+    r = dict(items=[dict(position=1, requested_name='Двуслойный гофрокартон', quantity=1000, unit='м.п.', decision='review',
+                         candidates=[dict(supplier='ВсеИнструменты.ру', sku='9', unit='Штука', price=763, stock=500,
+                                          price_observed_at=NOW,
+                                          name='Гофрокартон в рулоне MW 1,05x10 м Д21 двухслойный бурый')])])
+    offer = model(r)['rows'][0]['value_comparison']['offers'][0]
+    assert offer['unit_price'] == 76.3 and offer['quantity'] == 100

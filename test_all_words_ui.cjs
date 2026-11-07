@@ -38,3 +38,55 @@ setTimeout(()=>{
   assert.deepEqual(body.decisions,[{position:1,decision:'accepted',features:['word:zitar']}]);
   console.log('ok');
 },50);
+{
+  // ✕ marks only its own word; words left without products are dimmed, not marked ✕.
+  const d=JSON.parse(JSON.stringify(data));
+  d.rows[0].value_comparison.words=[{word:'фланец',count:2,state:'pending'},{word:'стальной',count:2,state:'pending'},{word:'щетка',count:1,state:'pending'}];
+  d.rows[0].value_comparison.word_products=[['фланец','стальной'],['фланец','стальной'],['щетка']];
+  const dom2=new JSDOM(`<p id="message"></p><table id="review-table"><colgroup>${'<col>'.repeat(5)}</colgroup><tr><td><div data-value-position="1"></div></td></tr></table><script id="comparison-data" type="application/json">${JSON.stringify(d)}</script>`,{runScripts:'outside-only'});
+  dom2.window.HTMLDialogElement.prototype.showModal=function(){};
+  dom2.window.eval(fs.readFileSync(__dirname+'/comparison_assets/values.js','utf8'));
+  const q=s=>dom2.window.document.querySelector('.found-words [aria-label="'+s+'"]');
+  q('Исключить: Слово фланец').click();
+  assert.equal(q('Исключить: Слово стальной').getAttribute('aria-pressed'),'false');
+  assert.equal(q('Исключить: Слово фланец').getAttribute('aria-pressed'),'true');
+  q('Исключить: Слово фланец').click();
+  q('Разрешить: Слово фланец').click();
+  assert.equal(q('Исключить: Слово щетка').getAttribute('aria-pressed'),'true');
+  assert.equal(q('Разрешить: Слово стальной').getAttribute('aria-pressed'),'true');
+  console.log('ok cross');
+}
+{
+  // Request words are ✓ by default, framed green, listed under «Выбрано» and can be taken off.
+  const d=JSON.parse(JSON.stringify(data));
+  d.rows[0].value_comparison.words=[{word:'фланец',count:2,state:'accepted',from_request:true},{word:'стальной',count:2,state:'pending'},{word:'щетка',count:1,state:'pending'}];
+  d.rows[0].value_comparison.word_products=[['фланец','стальной'],['фланец','стальной'],['щетка']];
+  const dom3=new JSDOM(`<p id="message"></p><table id="review-table"><colgroup>${'<col>'.repeat(5)}</colgroup><tr><td><div data-value-position="1"></div></td></tr></table><script id="comparison-data" type="application/json">${JSON.stringify(d)}</script>`,{runScripts:'outside-only'});
+  dom3.window.HTMLDialogElement.prototype.showModal=function(){};
+  dom3.window.eval(fs.readFileSync(__dirname+'/comparison_assets/values.js','utf8'));
+  const doc3=dom3.window.document;
+  const q=s=>doc3.querySelector('[aria-label="'+s+'"]');
+  assert.equal(q('Разрешить: Слово фланец').getAttribute('aria-pressed'),'true');
+  assert.match(doc3.querySelector('.found-words-chosen').textContent,/✓ фланец/);
+  assert.equal(q('Исключить: Слово щетка').getAttribute('aria-pressed'),'true'); // only in non-flange products
+  q('Отменить выбор: фланец').click();
+  assert.equal(doc3.querySelector('.found-words-chosen'),null);
+  assert.equal(q('Разрешить: Слово фланец').getAttribute('aria-pressed'),'false');
+  assert.equal(q('Исключить: Слово щетка').getAttribute('aria-pressed'),'false');
+  console.log('ok defaults');
+}
+{
+  // Default ✓ is a proposal until taken: «Принять слова заявки» marks them for «Применить».
+  const d=JSON.parse(JSON.stringify(data));
+  d.rows[0].value_comparison.words=[{word:'фланец',count:2,state:'accepted',from_request:true,explicit:false},{word:'щетка',count:1,state:'pending'}];
+  d.rows[0].value_comparison.word_products=[['фланец'],['фланец'],['щетка']];
+  const dom4=new JSDOM(`<p id="message"></p><table id="review-table"><colgroup>${'<col>'.repeat(5)}</colgroup><tr><td><div data-value-position="1"></div></td></tr></table><script id="comparison-data" type="application/json">${JSON.stringify(d)}</script>`,{runScripts:'outside-only'});
+  dom4.window.HTMLDialogElement.prototype.showModal=function(){};
+  dom4.window.eval(fs.readFileSync(__dirname+'/comparison_assets/values.js','utf8'));
+  const doc4=dom4.window.document;
+  assert.match(doc4.querySelector('.found-words summary').textContent,/как предложение/);
+  [...doc4.querySelectorAll('button')].find(b=>b.textContent==='Принять слова заявки').click();
+  assert.match(doc4.querySelector('.value-apply-bar').textContent,/Отмечено решений: 1/);
+  assert.doesNotMatch(doc4.querySelector('.found-words summary').textContent,/как предложение/);
+  console.log('ok proposal');
+}
