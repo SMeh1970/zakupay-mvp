@@ -72,7 +72,10 @@
     }
     return line;
   }
-  let applyBar=null;
+  let applyBar=null, applyResult='', applyTimer=null;
+  // The result of «Применить» is shown in the bar next to the button: the page message is at the top
+  // of the page and is not seen while working at the bottom.
+  function showApplyResult(text){applyResult=text;clearTimeout(applyTimer);applyTimer=setTimeout(()=>{applyResult='';renderApplyBar();},8000);renderApplyBar();}
   function renderApplyBar() {
     if(data.read_only && !draft.size){applyBar?.remove();applyBar=null;return;}
     if(!applyBar) {
@@ -83,8 +86,8 @@
     }
     applyBar.replaceChildren();
     const count=draft.size;
-    applyBar.style.display=count?'flex':'none';
-    applyBar.append(node('span',`Отмечено решений: ${count}. Они ещё не применены.`));
+    applyBar.style.display=count||applyResult?'flex':'none';
+    applyBar.append(node('span',count?`Отмечено решений: ${count}. Они ещё не применены.`:applyResult));
     const apply=node('button','Применить');apply.type='button';apply.disabled=busy||!count;
     apply.setAttribute('aria-label','Применить отмеченные решения');
     apply.onclick=applyDrafts;
@@ -100,7 +103,14 @@
       groups.get(key).features.push(id);
     }
     if(!groups.size)return;
-    if(await save({action:'values_batch',decisions:[...groups.values()]})){draft.clear();render();}
+    const positions=[...new Set([...groups.values()].map(g=>g.position))];
+    if(await save({action:'values_batch',decisions:[...groups.values()]})) {
+      draft.clear();
+      const rows=data.rows.filter(r=>positions.some(p=>String(p)===String(r.position)));
+      const suitable=rows.reduce((sum,r)=>sum+(r.value_comparison.offers||[]).filter(o=>o.comparable).length,0);
+      showApplyResult(`Применено. Подходящих товаров: ${suitable}.`);
+      render();
+    } else showApplyResult('Не применено: '+(choiceError||'ошибка сохранения'));
   }
   window.addEventListener('beforeunload',event=>{if(draft.size){event.preventDefault();event.returnValue='';}});
   // Product-kind checks: a product failing one of them is another product, never a choice.
@@ -213,7 +223,7 @@
     const checks=group=>['Слово в наименовании','Нет слова из заявки','Проверка прайса','Проверка категории','Проверка соответствия'].includes(group.field);
     const chip=(group,value,label)=>{
       const marked=draftDecision(row,value);
-      const state=marked==='pending'?(value.required||[]).length?'pending':'matched':marked||value.state;
+      const state=marked==='pending'?(value.required||[]).length?'pending':'matched':marked||value.display||value.state;
       const allowed=['matched','accepted'].includes(state);
       const neutral=state==='matched' && !(value.required||[]).length;
       const span=node('span','','value-chip '+(neutral?'available':allowed?'matched':state)+(marked?' draft':''));
@@ -281,14 +291,41 @@
     if(extra.childNodes.length){extra.prepend(node('div','Значения из найденных товаров','supplier-found-label'));line.append(extra);}
     // Every word of every found product name, once, with how many products contain it.
     // ✕ removes products with the word, ✓ keeps only products with it (applied with «Применить»).
+    // While marking, the list narrows at once: products that fail a mark drop out, and words found
+    // only in those products are shown crossed out with ✕ (count 0); counts are of remaining products.
     const words=row.value_comparison.words||[];
     if(words.length) {
       const box=node('details','','found-words');box.open=true;
-      box.append(node('summary',`Все слова найденных товаров (${words.length})`));
-      const group={field:'Слово'};
+      const marks=new Map();
       for(const word of words) {
+        const marked=draftDecision(row,{id:'word:'+word.word});
+        const state=marked==='pending'?null:marked||(word.state==='pending'?null:word.state);
+        if(state)marks.set(word.word,state);
+      }
+      const products=(row.value_comparison.word_products||[]).map(list=>new Set(list));
+      const alive=products.filter(set=>[...marks].every(([word,state])=>state==='accepted'?set.has(word):!set.has(word)));
+      const count=new Map();
+      for(const set of alive)for(const word of set)count.set(word,(count.get(word)||0)+1);
+      const known=products.length>0;
+      const left=words.filter(w=>!known||count.get(w.word)||marks.has(w.word)).length;
+      box.append(node('summary',known&&marks.size?
+        `Все слова найденных товаров: осталось товаров ${alive.length} из ${products.length}, слов ${left} из ${words.length}`:
+        `Все слова найденных товаров (${words.length})`));
+      const group={field:'Слово'};
+      const ordered=known?[...words].sort((a,b)=>(count.get(b.word)||0)-(count.get(a.word)||0)||b.count-a.count||a.word.localeCompare(b.word)):words;
+      for(const word of ordered) {
+        const n=known?(count.get(word.word)||0):word.count;
         const value={id:'word:'+word.word,field:'Слово',value:word.word,required:[],state:word.state==='pending'?'matched':word.state};
-        box.append(chip(group,value,`${word.word} (${word.count})`),document.createTextNode(' '));
+        const gone=known && !n && !marks.has(word.word);
+        // A word every remaining product has is green: it is already part of the choice.
+        const every=known && marks.size>0 && n>0 && n===alive.length && !marks.has(word.word);
+        // Shown state only: an automatic ✓/✕ is not a mark and is not sent.
+        if(gone)value.display='rejected';
+        if(every)value.display='accepted';
+        const item=chip(group,value,`${word.word} (${n})`);
+        if(gone){item.style.opacity='.55';item.style.textDecoration='line-through';item.title='Слово есть только в товарах, которые отсеяны отметками';}
+        if(every){item.style.background='#e3f3e6';item.style.color='#1f6b34';item.title='Слово есть во всех оставшихся товарах';}
+        box.append(item,document.createTextNode(' '));
       }
       line.append(box);
     }

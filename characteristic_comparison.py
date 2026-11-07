@@ -23,6 +23,17 @@ def build(item, views, enabled=lambda supplier: True, today=None, respect_row_ex
     views = [v for v in views if primary_match(request_records, v['features'], requested_kind)]
     decisions = {**settings(item).get('features', {}), **settings(item).get('values', {})}
     word_decisions = dict(settings(item).get('words') or {})
+    # A word marked ✓ is the operator's own choice of products: every found product with all ✓
+    # words and no ✕ word is taken, whatever the automatic product-kind checks said.
+    chosen_words = {word for word, state in word_decisions.items() if state == 'accepted'}
+    word_chosen = set()
+    if chosen_words:
+        banned = {word for word, state in word_decisions.items() if state == 'rejected'}
+        def by_words(view):
+            own = name_words(view.get('name'))
+            return chosen_words <= own and not (banned & own)
+        word_chosen = {v['key'] for v in all_views if by_words(v)}
+        views = [v for v in all_views if v['key'] in word_chosen]
     # Features of every offer indexed by field once: the loops below ask "which features of this
     # offer belong to this field" for every field and every offer, which was the slow part.
     by_field = []
@@ -85,7 +96,7 @@ def build(item, views, enabled=lambda supplier: True, today=None, respect_row_ex
             # Unknown-word checks are separate constraints, never alternatives
             # within a single catch-all word parameter.
             passed = all(allowed(i) for i in ids) if field in {'Слово в наименовании', 'Нет слова из заявки', 'Проверка прайса'} else any(allowed(i) for i in ids)
-            if not passed:
+            if not passed and not (view['key'] in word_chosen and field in WORD_OVERRIDES):
                 reasons.append('Не разрешено: ' + field)
         if not view['enabled'] or not enabled(view['supplier']) or (respect_row_exclusion and item.get('decision') == 'excluded' and not settings(item).get('value_workflow')):
             reasons.append('Предложение, поставщик или позиция исключены')
@@ -118,7 +129,13 @@ def build(item, views, enabled=lambda supplier: True, today=None, respect_row_ex
                 filter_stages=stages,
                 unrelated_count=len(all_views)-len(views),
                 offers=output, minimum=best, suitable_count=len(suitable),
-                words=word_list(all_views, word_decisions))
+                words=word_list(all_views, word_decisions),
+                # Words of each found product: the page narrows the word list while ✓/✕ are marked.
+                word_products=[sorted(name_words(v.get('name'))) for v in all_views])
+
+
+# Automatic product-kind checks that the operator's ✓ on a word replaces.
+WORD_OVERRIDES = {'Слово в наименовании', 'Нет слова из заявки', 'Проверка категории', 'Проверка соответствия', 'Тип товара'}
 
 
 def request_stems(requested):
@@ -146,8 +163,8 @@ def name_words(name):
     global _WORD
     if _WORD is None:
         _WORD = re.compile(r"[0-9a-zа-яё]+(?:[.,/×xх-][0-9a-zа-яё]+)*", re.I)
-    # In words with digits Latin look-alikes are the same letters: «M8x1» and «М8х1» are one word.
-    same = str.maketrans('aceopxkmtbh', 'асеорхкмтвн')
+    # In words with digits Cyrillic look-alikes are the same letters: «M8x1» and «М8х1» are one word.
+    same = str.maketrans('асеорхкмтвн', 'aceopxkmtbh')
     return {(w.lower().replace('ё', 'е').translate(same) if any(c.isdigit() for c in w) else w.lower().replace('ё', 'е'))
             for w in _WORD.findall(str(name or ''))}
 
