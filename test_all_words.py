@@ -36,7 +36,7 @@ def apply(r, decision, *ws, position=1):
 def test_every_word_once_with_count_and_latin_lookalikes_merged():
     w = words(result())
     assert w['шпилька']['count'] == 3
-    assert w['м8х1000']['count'] == 3  # «M8x1000» in Latin is the same word
+    assert w['m8x1000']['count'] == 3  # «M8x1000» in Latin is the same word
     assert w['zitar']['count'] == 1 and w['976']['count'] == 1
     assert all(v['state'] == 'pending' for v in w.values())
     assert name_words('M8x1') == name_words('М8х1')
@@ -70,3 +70,19 @@ def test_unknown_word_is_refused():
     import pytest
     with pytest.raises(ValueError):
         apply(result(), 'rejected', 'несуществующее')
+
+
+def test_accepted_word_takes_products_the_automatic_kind_check_refused():
+    c = lambda s, n: candidate(s, n)
+    r = dict(items=[dict(position=1, requested_name='Фланец стальной плоский DN100 PN16', quantity=2, unit='шт',
+                         decision='review', candidates=[c('1', 'Фланец стальной плоский DN100 PN16 ГОСТ 33259'),
+                                                        c('2', 'Фланец стальной воротниковый DN100 PN16'),
+                                                        c('3', 'Прокладка для фланца DN100')])])
+    apply(r, 'accepted', 'фланец')
+    offers = model(r)['rows'][0]['value_comparison']['offers']
+    assert sorted(o['name'] for o in offers if o['comparable']) == [
+        'Фланец стальной воротниковый DN100 PN16', 'Фланец стальной плоский DN100 PN16 ГОСТ 33259']
+    assert all('Прокладка' not in o['name'] for o in offers)
+    apply(r, 'rejected', 'воротниковый')
+    offers = model(r)['rows'][0]['value_comparison']['offers']
+    assert [o['name'] for o in offers if o['comparable']] == ['Фланец стальной плоский DN100 PN16 ГОСТ 33259']
