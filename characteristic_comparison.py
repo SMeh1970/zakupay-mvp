@@ -22,10 +22,17 @@ def build(item, views, enabled=lambda supplier: True, today=None, respect_row_ex
     request_records = records(source.get('requested_name'))
     views = [v for v in views if primary_match(request_records, v['features'], requested_kind)]
     decisions = {**settings(item).get('features', {}), **settings(item).get('values', {})}
-    word_decisions = dict(settings(item).get('words') or {})
+    explicit_words = dict(settings(item).get('words') or {})
+    # Words of the request are ✓ by default; the operator can take the mark off ('neutral') or ✕ it.
+    request_words = name_words(source.get('requested_name'))
+    found_words = set().union(*(name_words(v.get('name')) for v in all_views)) if all_views else set()
+    shown_words = {**{w: 'accepted' for w in request_words & found_words}, **explicit_words}
+    # The default ✓ of request words filters products only once the operator works with the words of
+    # this position: untouched positions keep the automatic matching (suppliers write «0,5 л» for «500 мл»).
+    word_decisions = shown_words if explicit_words else {}
     # A word marked ✓ is the operator's own choice of products: every found product with all ✓
     # words and no ✕ word is taken, whatever the automatic product-kind checks said.
-    chosen_words = {word for word, state in word_decisions.items() if state == 'accepted'}
+    chosen_words = {word for word, state in explicit_words.items() if state == 'accepted'}
     word_chosen = set()
     if chosen_words:
         banned = {word for word, state in word_decisions.items() if state == 'rejected'}
@@ -129,7 +136,7 @@ def build(item, views, enabled=lambda supplier: True, today=None, respect_row_ex
                 filter_stages=stages,
                 unrelated_count=len(all_views)-len(views),
                 offers=output, minimum=best, suitable_count=len(suitable),
-                words=word_list(all_views, word_decisions),
+                words=[{**w, 'from_request': w['word'] in request_words, 'explicit': w['word'] in explicit_words} for w in word_list(all_views, shown_words)],
                 # Words of each found product: the page narrows the word list while ✓/✕ are marked.
                 word_products=[sorted(name_words(v.get('name'))) for v in all_views])
 

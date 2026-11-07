@@ -299,7 +299,7 @@
       const marks=new Map();
       for(const word of words) {
         const marked=draftDecision(row,{id:'word:'+word.word});
-        const state=marked==='pending'?null:marked||(word.state==='pending'?null:word.state);
+        const state=marked==='pending'?null:marked||(['pending','neutral'].includes(word.state)?null:word.state);
         if(state)marks.set(word.word,state);
       }
       const products=(row.value_comparison.word_products||[]).map(list=>new Set(list));
@@ -308,15 +308,53 @@
       for(const set of alive)for(const word of set)count.set(word,(count.get(word)||0)+1);
       const known=products.length>0;
       const left=words.filter(w=>!known||count.get(w.word)||marks.has(w.word)).length;
-      box.append(node('summary',known&&marks.size?
+      // Until a word of this position is marked and applied, the default ✓ of request words is a
+      // proposal only: the supplier columns still show the automatic matching.
+      const proposal=!words.some(w=>w.explicit) && ![...draft.values()].some(m=>String(m.position)===String(row.position)&&String(m.id).startsWith('word:'));
+      box.append(node('summary',(known&&marks.size?
         `Все слова найденных товаров: осталось товаров ${alive.length} из ${products.length}, слов ${left} из ${words.length}`:
-        `Все слова найденных товаров (${words.length})`));
+        `Все слова найденных товаров (${words.length})`)+(proposal&&marks.size?' · слова заявки отмечены ✓ как предложение: нажмите «Принять слова заявки» и «Применить», чтобы отбор заработал':'')));
+      // The operator's current choice in this position, each with × to take it off, and «Сбросить всё».
+      if(marks.size) {
+        const chosen=node('div','','found-words-chosen');chosen.style.cssText='margin:4px 0 6px;font-size:14px';
+        chosen.append(node('span','Выбрано: '));
+        const saved=new Map(words.map(w=>[w.word,w.state]));
+        // Taking a choice off: nothing to send if it was only marked; a saved one is sent as undone.
+        const undo=word=>{
+          const key=draftKey(row.position,'word:'+word);
+          if(['accepted','rejected'].includes(saved.get(word)))draft.set(key,{position:row.position,id:'word:'+word,decision:'pending'});
+          else draft.delete(key);
+        };
+        for(const [word,state] of marks) {
+          const tag=node('span',(state==='accepted'?'✓ ':'✕ ')+word);
+          tag.style.cssText='display:inline-block;margin:0 6px 4px 0;padding:2px 6px;border-radius:6px;'+(state==='accepted'?'background:#e1f3e8;color:#1f6b34':'background:#f6e6dd;color:#8c3020');
+          const x=node('button','×');x.type='button';x.disabled=data.read_only;
+          x.setAttribute('aria-label','Отменить выбор: '+word);x.title='Отменить выбор (применится кнопкой «Применить»)';
+          x.style.cssText='margin-left:4px;border:0;background:transparent;cursor:pointer';
+          x.onclick=()=>{undo(word);render();};
+          tag.append(x);chosen.append(tag);
+        }
+        const reset=node('button','Сбросить всё');reset.type='button';reset.disabled=data.read_only;
+        reset.setAttribute('aria-label','Сбросить выбор слов позиции '+row.position);
+        reset.onclick=()=>{for(const word of marks.keys())undo(word);render();};
+        chosen.append(reset);
+        if(proposal) {
+          const take=node('button','Принять слова заявки');take.type='button';take.disabled=data.read_only;
+          take.onclick=()=>{for(const w of words)if(w.from_request&&w.state==='accepted')draft.set(draftKey(row.position,'word:'+w.word),{position:row.position,id:'word:'+w.word,decision:'accepted'});render();};
+          chosen.append(document.createTextNode(' '),take);
+        }
+        box.append(chosen);
+      }
       const group={field:'Слово'};
       const ordered=known?[...words].sort((a,b)=>(count.get(b.word)||0)-(count.get(a.word)||0)||b.count-a.count||a.word.localeCompare(b.word)):words;
       for(const word of ordered) {
         const n=known?(count.get(word.word)||0):word.count;
-        const value={id:'word:'+word.word,field:'Слово',value:word.word,required:[],state:word.state==='pending'?'matched':word.state};
-        const gone=known && !n && !marks.has(word.word);
+        const value={id:'word:'+word.word,field:'Слово',value:word.word,required:[],state:['pending','neutral'].includes(word.state)?'matched':word.state};
+        // Words left without products are crossed out automatically only after a ✓ (a choice of
+        // products). A ✕ excludes just its own word: other words are dimmed, never marked ✕.
+        const chose=[...marks.values()].includes('accepted');
+        const gone=known && !n && !marks.has(word.word) && chose;
+        const dim=known && !n && !marks.has(word.word) && !chose;
         // A word every remaining product has is green: it is already part of the choice.
         const every=known && marks.size>0 && n>0 && n===alive.length && !marks.has(word.word);
         // Shown state only: an automatic ✓/✕ is not a mark and is not sent.
@@ -324,7 +362,10 @@
         if(every)value.display='accepted';
         const item=chip(group,value,`${word.word} (${n})`);
         if(gone){item.style.opacity='.55';item.style.textDecoration='line-through';item.title='Слово есть только в товарах, которые отсеяны отметками';}
+        if(dim){item.style.opacity='.45';item.title='Слово было только в товарах, исключённых вашим ✕';}
         if(every){item.style.background='#e3f3e6';item.style.color='#1f6b34';item.title='Слово есть во всех оставшихся товарах';}
+        // Words of the request keep a green frame even when their ✓ is taken off.
+        if(word.from_request){item.style.boxShadow='inset 0 0 0 2px #78a88a';item.title=(item.title?item.title+' · ':'')+'Слово из заявки';}
         box.append(item,document.createTextNode(' '));
       }
       line.append(box);

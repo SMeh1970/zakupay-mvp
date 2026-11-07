@@ -173,6 +173,18 @@ def supplier_pack_pieces(candidate) -> int:
     return int(match[1]) if match and int(match[1]) > 1 else 0
 
 
+def roll_length(name, supplied, requested):
+    """Metres in one roll sold per piece: «в рулоне 1,05x10 м», «Рулонный … 1,4x20 м» -> 10 / 20."""
+    text = str(name or '')
+    if requested != 'м' or supplied not in {'шт', 'рулон'} or not re.search(r'рулон', text, re.I):
+        return None
+    match = re.search(r'(\d+(?:[.,]\d+)?)\s*[xх×*]\s*(\d+(?:[.,]\d+)?)\s*м(?![\wм²])', text, re.I)
+    if not match:
+        return None
+    length = float(match[2].replace(',', '.'))
+    return length if length > 0 else None
+
+
 def conversion(item, candidate):
     from automation_pipeline import _candidate_pack_size
     source = item.get("comparison_source") or item
@@ -197,6 +209,9 @@ def conversion(item, candidate):
     length = reel_length(candidate.get('name'), candidate.get('unit'), source.get('unit'))
     if length:
         return length, 'Длина кабеля в бухте'
+    roll = roll_length(candidate.get('name'), supplied, requested)
+    if roll:
+        return roll, 'Длина рулона из наименования — проверьте'
     if requested == "шт" and str(supplied or "").startswith("упак"):
         # «Упаковка», «Упаковка 1 шт» (one pack): pieces from the supplier's data or the name.
         pack = supplier_pack_pieces(candidate) or _candidate_pack_size(candidate, source.get("unit") or "")
@@ -605,6 +620,7 @@ def mutate(result, payload, conn=None):
             built = build(item, views)
             known = {v['id'] for g in built['groups'] for v in g['values']}
             known.update('word:' + w['word'] for w in built.get('words') or [])
+            request_words = {w['word'] for w in built.get('words') or [] if w.get('from_request')}
             if (not isinstance(identifiers, list) or not identifiers or len(identifiers) > 1000
                     or any(not isinstance(i, str) or i not in known for i in identifiers)
                     or decision not in {'accepted', 'rejected', 'pending'}):
@@ -613,7 +629,9 @@ def mutate(result, payload, conn=None):
             words = state.setdefault('words', {})
             for identifier in identifiers:
                 target, key = (words, identifier[5:]) if identifier.startswith('word:') else (values, identifier)
-                if decision == 'pending':
+                if decision == 'pending' and target is words and key in request_words:
+                    target[key] = 'neutral'  # a request word is ✓ by default: taking the mark off is stored
+                elif decision == 'pending':
                     target.pop(key, None)
                 else:
                     target[key] = decision
