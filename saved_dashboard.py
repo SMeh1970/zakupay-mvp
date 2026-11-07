@@ -4,8 +4,9 @@ import html
 import json
 import math
 import re
+import threading
 import unicodedata
-from datetime import datetime
+from datetime import datetime, timedelta
 from urllib.parse import urlencode
 from zoneinfo import ZoneInfo
 
@@ -137,6 +138,42 @@ def listing_query(postgres=False):
         "SELECT id,order_id,event_type,subject,status,viewed_at,order_json,"
         f"{result} AS result_json FROM automation_jobs WHERE status != 'skipped_not_prepayment'"
     )
+
+
+# Described requests of the list kept in memory: one small query of change marks per page view,
+# and the full listing row is read again only for a new or changed request. Before this cache
+# every «Далее» read all requests from Neon (≈20 s and most of the monthly transfer limit).
+_LISTING_CACHE = {}
+_LISTING_LOCK = threading.Lock()
+STAMP_QUERY = ("SELECT id,updated_at,viewed_at,status,LENGTH(result_json) AS rlen,LENGTH(order_json) AS olen "
+               "FROM automation_jobs WHERE status != 'skipped_not_prepayment'")
+
+
+def described_items(execute, conn, postgres=False, database=""):
+    """Described list items of all saved requests, reading only new or changed ones from the database."""
+    stamps = {int(r["id"]): (r["updated_at"], r["viewed_at"], r["status"], r["rlen"], r["olen"])
+              for r in execute(conn, STAMP_QUERY).fetchall()}
+    with _LISTING_LOCK:
+        if _LISTING_CACHE.get("database") != database:  # another database (tests, a changed URL)
+            _LISTING_CACHE.clear()
+            _LISTING_CACHE["database"] = database
+        for job_id in [i for i in _LISTING_CACHE if i != "database" and i not in stamps]:
+            del _LISTING_CACHE[job_id]
+        missing = [i for i, stamp in stamps.items() if _LISTING_CACHE.get(i, (None,))[0] != stamp]
+    for start in range(0, len(missing), 200):
+        chunk = missing[start:start + 200]
+        rows = execute(conn, listing_query(postgres) + " AND id IN (" + ",".join("?" for _ in chunk) + ")", tuple(chunk)).fetchall()
+        described = {int(row["id"]): describe(row) for row in rows}
+        with _LISTING_LOCK:
+            for job_id, item in described.items():
+                _LISTING_CACHE[job_id] = (stamps[job_id], item)
+    with _LISTING_LOCK:
+        return [dict(_LISTING_CACHE[job_id][1]) for job_id in stamps if job_id in _LISTING_CACHE]
+
+
+def reset_listing_cache():
+    with _LISTING_LOCK:
+        _LISTING_CACHE.clear()
 
 
 def describe(row):
@@ -287,9 +324,14 @@ def matches(item, filters, selected_categories=None):
     return True
 
 
-def select_page(rows, query, reference=None, reference_updated="", actuality=None):
+RECENT_DAYS = 3
+# A search by text, number, customer or an explicit date looks through all dates.
+_SEARCH_FIELDS = ("keyword", "title", "order_id", "customer", "inn", "creationDateFrom", "creationDateTo")
+
+
+def select_page(rows, query, reference=None, reference_updated="", actuality=None, items=None, recent_days=0, today=None):
     filters, errors = filters_from_query(query)
-    saved = [describe(row) for row in rows]
+    saved = items if items is not None else [describe(row) for row in rows]
     # Last known Zakupay answer per request; manual requests have none and are not matched by it.
     for item in saved:
         if item["source"] == "manual":
@@ -326,6 +368,12 @@ def select_page(rows, query, reference=None, reference_updated="", actuality=Non
     for key in filters["category_id"]:
         selected.update(category_descendants(key, reference))
     filtered = [] if errors else [item for item in saved if matches(item, filters, selected)]
+    # By default only the last few days are listed; «Все даты» (all_dates=1) or any search shows everything.
+    recent_from = None
+    if recent_days and str(query.get("all_dates", "")) != "1" and not any(filters[key] for key in _SEARCH_FIELDS):
+        today = today or datetime.now(ZoneInfo("Europe/Moscow")).date()
+        recent_from = today - timedelta(days=recent_days - 1)
+        filtered = [item for item in filtered if item["date"] and item["date"].date() >= recent_from]
     filtered.sort(key=lambda item: (item["date"].timestamp() if item["date"] else float("-inf"), item["id"]), reverse=True)
     size = int(filters["page_size"])
     pages = max(1, (len(filtered) + size - 1) // size)
@@ -337,7 +385,8 @@ def select_page(rows, query, reference=None, reference_updated="", actuality=Non
     for item in visible:
         item["matching_quantity_rows"] = matching_quantity_rows(item, filters, selected) if filters["quantity_unit"] else []
     return {
-        "filters": filters, "errors": errors, "total": len(saved), "matched": len(filtered),
+        "filters": filters, "errors": errors, "total": len(saved), "matched": len(filtered), "recent_from": recent_from,
+        "all_dates": str(query.get("all_dates", "")) == "1",
         "page": page, "pages": pages, "size": size,
         "items": visible, "matching_items": filtered,
         "category_choices": choices, "category_reference_updated": reference_updated,
@@ -511,7 +560,9 @@ def filter_form(state):
         + region_picker(state) + f"<div class='filters'>{advanced}</div></details>"
         f"{errors}<div class='actions'><button class='button' type='submit'>Применить фильтры</button>"
         f"<a class='button secondary' href='{URL}?unfiltered=1'>Показать всё временно</a></div></form></section>"
-        f"<p class='list-count' role='status'>Сохранено: <b>{state['total']}</b> · По фильтрам: <b>{state['matched']}</b> · Свежие даты сверху</p>"
+        f"<p class='list-count' role='status'>Сохранено: <b>{state['total']}</b> · По фильтрам: <b>{state['matched']}</b> · Свежие даты сверху"
+        + (f" · Показаны заявки с {state['recent_from']:%d.%m.%Y} (за {RECENT_DAYS} дн.) · <a href='{URL}?all_dates=1{"&unfiltered=1" if state.get("unfiltered") else ""}'>Все даты</a>" if state.get('recent_from') else "")
+        + "</p>"
     )
 
 
@@ -552,6 +603,8 @@ def pagination(state):
     params = {key: value for key, value in state.get("listing_filters", state["filters"]).items() if value != DEFAULTS[key]}
     if state.get("unfiltered"):
         params["unfiltered"] = "1"
+    if state.get("all_dates"):
+        params["all_dates"] = "1"
     def link(page, text):
         target = URL + "?" + urlencode({**params, "page": page}, doseq=True)
         return f"<a class='button secondary' href='{html.escape(target, quote=True)}'>{text}</a>"
