@@ -32,9 +32,10 @@ DEFAULTS = {
     "min_positions": "", "max_positions": "", "max_competitors": "",
     "quantity_min": "", "quantity_max": "", "quantity_unit": "",
     "delayFrom": "", "delayTo": "", "page_size": "25",
+    "rubric_mode": "any", "rubric_big_qty": "",
 }
 DATE_FIELDS = {"creationDateFrom", "creationDateTo", "finishDateFrom", "finishDateTo"}
-NUMBER_FIELDS = {"min_positions", "max_positions", "max_competitors", "delayFrom", "delayTo", "quantity_min", "quantity_max"}
+NUMBER_FIELDS = {"rubric_big_qty", "min_positions", "max_positions", "max_competitors", "delayFrom", "delayTo", "quantity_min", "quantity_max"}
 
 UNIT_ALIASES = {
     "шт": "шт", "штука": "шт", "штуки": "шт", "штук": "шт", "pcs": "шт",
@@ -246,7 +247,7 @@ def filters_from_query(query):
     filters["quantity_unit"] = normalize_unit(filters["quantity_unit"])
     enums = {"source": {"all", "manual", "zakupay"}, "status": {"all", *STATUSES},
              "viewed": {"all", "yes", "no"}, "offer": {"all", "sent", "unsent"},
-             "payment": {"all", "prepayment", "delay"}, "actuality": {"all", "active", "inactive", "unknown"}}
+             "payment": {"all", "prepayment", "delay"}, "rubric_mode": {"any", "half"}, "actuality": {"all", "active", "inactive", "unknown"}}
     for key, allowed in enums.items():
         if filters[key] not in allowed:
             filters[key] = DEFAULTS[key]
@@ -286,6 +287,17 @@ def matching_quantity_rows(item, filters, selected_categories=None):
             and (upper is None or (row["quantity"] is not None and row["quantity"] <= upper))]
 
 
+def rubric_share_ok(item, filters, selected_categories=None):
+    """At least half of the positions are in my rubrics, or one of them has a large quantity."""
+    mine = selected_categories or set(filters["category_id"])
+    rows = item["quantity_rows"]
+    own = [row for row in rows if row["category"] in mine]
+    if rows and len(own) * 2 >= len(rows):
+        return True
+    big = _number(filters["rubric_big_qty"])
+    return big is not None and any(row["quantity"] is not None and row["quantity"] >= big for row in own)
+
+
 def matches(item, filters, selected_categories=None):
     if filters["regions"] and _norm(item["region"]) not in {_norm(region) for region in filters["regions"]}:
         return False
@@ -293,6 +305,8 @@ def matches(item, filters, selected_categories=None):
         if filters[key] and _norm(filters[key]) not in _norm(item[field]):
             return False
     if filters["category_id"] and not set(item["categories"]).intersection(selected_categories or set(filters["category_id"])):
+        return False
+    if filters["category_id"] and filters["rubric_mode"] == "half" and not rubric_share_ok(item, filters, selected_categories):
         return False
     if filters["order_id"] and filters["order_id"] not in {item["order_id"], item["reference"]}:
         return False
@@ -465,6 +479,12 @@ def category_picker(state):
         f"<details class='category-picker{' active-filter' if selected else ''}' id='category-picker' open>"
         f"<summary>Рубрики Закупай · <span id='category-count'>{count}</span></summary>"
         "<p class='category-help'>Отметьте одну или несколько рубрик. Заявка попадёт в список, если содержит товар хотя бы из одной выбранной рубрики или её подкатегорий. Без отметок — все рубрики.</p>"
+        "<div class='rubric-mode'><label>Какие заявки показывать<select name='rubric_mode'>"
+        f"<option value='any'{' selected' if state['filters']['rubric_mode'] == 'any' else ''}>Хотя бы одна позиция из моих рубрик</option>"
+        f"<option value='half'{' selected' if state['filters']['rubric_mode'] == 'half' else ''}>Не меньше половины позиций из моих рубрик</option>"
+        "</select></label> <label>или позиция моей рубрики с количеством от"
+        f"<input name='rubric_big_qty' inputmode='decimal' value='{html.escape(state['filters']['rubric_big_qty'], quote=True)}' placeholder='например 100'></label>"
+        "<p class='category-help'>Количество сравнивается в единицах заявки (шт, м, т и т. д.) без пересчёта. Действует при выбранных рубриках и режиме «не меньше половины».</p></div>"
         "<div class='category-tools' hidden><label>Найти рубрику<input type='search' id='category-search' placeholder='Название рубрики' autocomplete='off'></label>"
         "<button class='category-clear' id='category-clear' type='button'>Снять выбор рубрик</button></div>"
         f"<div class='category-options' role='group' aria-label='Рубрики Закупай'>{options}</div>"
