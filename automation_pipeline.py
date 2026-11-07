@@ -2843,10 +2843,13 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
             unfiltered = request.query_params.get("unfiltered") == "1"
             query = request.query_params
             if not explicit and preferences and preferences["enabled"] and not unfiltered:
-                query = {**preferences["filters"], "page": request.query_params.get("page", "1")}
+                query = {**preferences["filters"], "page": request.query_params.get("page", "1"),
+                         "all_dates": request.query_params.get("all_dates", "")}
             actuality = {str(r['order_id']): dict(r) for r in _execute(conn, 'SELECT * FROM order_actuality').fetchall()}
-            state = select_page(_execute(conn, listing_query(bool(DATABASE_URL))).fetchall(), query,
-                                reference, reference_updated, actuality)
+            from saved_dashboard import described_items, RECENT_DAYS
+            items = described_items(_execute, conn, bool(DATABASE_URL), DATABASE_URL or os.path.abspath(DB_PATH))
+            state = select_page(None, query, reference, reference_updated, actuality, items=items,
+                                recent_days=int(os.getenv("LIST_RECENT_DAYS", RECENT_DAYS)))
             state["listing_filters"] = state["filters"]
             if preferences and not explicit and (not preferences["enabled"] or unfiltered):
                 state["filters"] = preferences["filters"]
