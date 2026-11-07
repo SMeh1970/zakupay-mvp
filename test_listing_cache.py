@@ -48,3 +48,18 @@ def test_list_shows_last_three_days_unless_searching_or_all_dates():
     assert [i["id"] for i in page["items"]] == [1, 2, 3] and page["recent_from"] is None
     page = sd.select_page(None, {"order_id": "103"}, items=[dict(i) for i in items], recent_days=3, today=date(2026, 11, 7))
     assert [i["id"] for i in page["items"]] == [3]
+
+
+def item(categories_and_quantities):
+    rows = [dict(position=i, name="", search="", quantity=q, unit="шт", category=c)
+            for i, (c, q) in enumerate(categories_and_quantities, 1)]
+    return dict(quantity_rows=rows, categories={c: c for c, _ in categories_and_quantities})
+
+
+def test_half_of_positions_or_one_large_position_in_my_rubrics():
+    filters, _ = sd.filters_from_query({"category_id": "mine", "rubric_mode": "half"})
+    assert sd.rubric_share_ok(item([("mine", 1), ("pipe", 1)]), filters, {"mine"})
+    assert not sd.rubric_share_ok(item([("mine", 1), ("pipe", 1), ("pipe", 1)]), filters, {"mine"})
+    filters, _ = sd.filters_from_query({"category_id": "mine", "rubric_mode": "half", "rubric_big_qty": "100"})
+    assert sd.rubric_share_ok(item([("mine", 500), ("pipe", 1), ("pipe", 1)]), filters, {"mine"})
+    assert not sd.rubric_share_ok(item([("mine", 50), ("pipe", 1000), ("pipe", 1)]), filters, {"mine"})
