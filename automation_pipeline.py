@@ -3342,7 +3342,7 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
                 + "</main></body></html>"
             ),
             media_type="text/html",
-            headers={"Cache-Control": "no-store, max-age=0", "Pragma": "no-cache", "Content-Security-Policy": f"default-src 'none'; connect-src 'self'; script-src 'nonce-{review_script_nonce}'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"},
+            headers={"Cache-Control": "no-store, max-age=0", "Pragma": "no-cache", "Content-Security-Policy": f"default-src 'none'; connect-src 'self'; script-src 'nonce-{review_script_nonce}'; style-src 'unsafe-inline'; img-src 'self' https:; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"},
         )
 
     @app.post("/dashboard/automation/jobs/{job_id}/customer")
