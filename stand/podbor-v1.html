@@ -1,0 +1,587 @@
+<title>Стенд подбора В1</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: working bench — position tabs on top, words (decisions) left, resulting products right; stacks on phones. */
+:root{
+  --bg:#f3f4f1; --panel:#ffffff; --fg:#1d221f; --muted:#5f6a63; --line:#d7dcd6;
+  --ok:#2f6b3f; --ok-bg:#e2f1e5; --no:#9a3a2a; --no-bg:#f6e3dd; --accent:#3d5a80; --accent-bg:#e4ebf4; --warn-bg:#fbf1d6; --warn:#7a5a12;
+  --sans:"IBM Plex Sans",system-ui,-apple-system,"Segoe UI",sans-serif; --mono:"IBM Plex Sans",system-ui,-apple-system,"Segoe UI",sans-serif; /* plain zeros: the monospace face drew 0 with a dot */
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
+  --bg:#151916; --panel:#1d221f; --fg:#e7ebe6; --muted:#9aa59d; --line:#323a35;
+  --ok:#8fd19f; --ok-bg:#1f3a27; --no:#f0a493; --no-bg:#43231c; --accent:#9db8dc; --accent-bg:#22303f; --warn-bg:#3b3118; --warn:#e8c76a; color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#151916; --panel:#1d221f; --fg:#e7ebe6; --muted:#9aa59d; --line:#323a35;
+  --ok:#8fd19f; --ok-bg:#1f3a27; --no:#f0a493; --no-bg:#43231c; --accent:#9db8dc; --accent-bg:#22303f; --warn-bg:#3b3118; --warn:#e8c76a; color-scheme:dark}
+body{background:var(--bg);color:var(--fg);font:15px/1.5 var(--sans);font-variant-numeric:tabular-nums}
+.wrap{max-width:1280px;margin:0 auto;padding-block:16px 40px;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));display:grid;gap:14px}
+h1{font-size:20px;font-weight:600;margin:0;text-wrap:balance}
+.sub{color:var(--muted);margin:2px 0 0;font-size:13px}
+.tabs{display:flex;flex-wrap:wrap;gap:6px}
+.tab{border:1px solid var(--line);background:var(--panel);color:var(--fg);border-radius:6px;padding:6px 10px;cursor:pointer;font:inherit;font-size:14px}
+.tab[aria-selected="true"]{border-color:var(--accent);background:var(--accent-bg)}
+.tab.add{color:var(--accent)}
+.req{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:12px 14px;display:flex;flex-wrap:wrap;gap:6px 18px;align-items:baseline}
+.req b{font-size:17px}
+.req .meta{color:var(--muted);font-family:var(--mono);font-size:13px}
+.grid{display:grid;grid-template-columns:fit-content(250px) minmax(0,1fr);gap:14px;align-items:start}
+@media (max-width:900px){.grid{grid-template-columns:minmax(0,1fr)}}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:12px 14px;min-width:0}
+.panel h2{font-size:15px;margin:0 0 6px;font-weight:600}
+.hint{color:var(--muted);font-size:13px;margin:0 0 8px}
+.chosen{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:0 0 10px;font-size:14px}
+.tag{display:inline-flex;align-items:center;gap:4px;border-radius:5px;padding:2px 4px 2px 8px;font-family:var(--mono);font-size:13px}
+.tag.acc{background:var(--ok-bg);color:var(--ok)} .tag.rej{background:var(--no-bg);color:var(--no)}
+.tag button{border:0;background:transparent;color:inherit;cursor:pointer;font-size:15px;padding:0 4px;line-height:1}
+.btn{border:1px solid var(--line);background:var(--panel);color:var(--fg);border-radius:6px;padding:4px 10px;font:inherit;font-size:13px;cursor:pointer}
+.btn:hover{border-color:var(--accent)}
+.words{display:flex;flex-wrap:wrap;gap:5px}
+/* Filter list like a shop sidebar: one value per line, marks on the right. */
+.rubric .words{flex-direction:column;flex-wrap:nowrap;gap:3px}
+.rubric .words .w{display:flex;width:100%;box-sizing:border-box;overflow-wrap:anywhere;padding-left:6px}
+.rubric .words .w button{width:20px}
+.rubric .words .w .n{margin-right:auto}
+.more{border:0;background:transparent;color:var(--accent);cursor:pointer;font:inherit;font-size:13px;padding:2px 0;text-align:left}
+.w{display:inline-flex;align-items:center;gap:2px;border:1px solid var(--line);border-radius:6px;padding:2px 2px 2px 7px;font-family:var(--mono);font-size:13px;background:var(--panel)}
+.w .n{color:var(--muted);margin-left:3px}
+.w button{border:0;background:transparent;color:var(--muted);cursor:pointer;font-size:14px;width:24px;height:24px;border-radius:4px}
+.w button:hover{background:var(--accent-bg)}
+.w.req{border-color:var(--ok)}
+.w.fill{background:var(--ok-bg);color:var(--ok)}
+.w.user{border-width:2px;border-color:var(--ok);font-weight:600}
+.w.user.rej{border-color:var(--no);background:var(--no-bg);color:var(--no)}
+.w button[aria-pressed="true"]{color:var(--ok);font-weight:700;background:var(--ok-bg)}
+.w button.bx[aria-pressed="true"]{color:var(--no);background:var(--no-bg)}
+.w.auto-rej{opacity:.5;text-decoration:line-through} .w.dim{opacity:.55}
+.tag.auto{background:transparent;border:1px solid var(--ok);color:var(--ok)}
+.summary{font-size:14px;margin:0 0 8px}
+.rubric{border-top:1px solid var(--line);padding-top:10px;margin-top:10px;display:grid;gap:6px}
+.assign{display:flex;flex-wrap:wrap;gap:6px;align-items:center;font-size:14px;padding:6px 8px;background:var(--accent-bg);border-radius:6px}
+.assign select,.assign input{font:inherit;font-size:14px;padding:3px 6px;border:1px solid var(--line);border-radius:5px;background:var(--panel);color:var(--fg)}
+.panel-head{display:flex;align-items:flex-start;justify-content:space-between;gap:8px}
+.help{flex:1 1 auto;display:flex;flex-direction:column;align-items:flex-end}
+.help summary{list-style:none;cursor:pointer;width:24px;height:24px;border-radius:50%;border:1px solid var(--line);display:grid;place-items:center;font-weight:600;color:var(--muted);font-size:14px}
+.help summary::-webkit-details-marker{display:none}
+.help[open]{align-items:stretch}
+.help[open] summary{align-self:flex-end;border-color:var(--accent);color:var(--accent)}
+.w.head{padding:0;background:transparent;border:0;box-shadow:none}
+.rubric-head{display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px}
+.summary b{font-family:var(--mono)}
+.tablewrap{overflow-x:auto}
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{text-align:left;padding:7px 8px;border-bottom:1px solid var(--line);vertical-align:top}
+th{font-weight:700;color:var(--muted);font-size:11px;line-height:1.25}
+.offers tr.group th{text-align:center;color:var(--fg);border-bottom:1px solid var(--line)}
+/* Groups are framed by rules, not by fills. */
+.offers .g-start{border-left:2px solid var(--muted)} .offers .g-end{border-right:2px solid var(--muted)}
+.offers tr.group th{border-top:2px solid var(--muted);border-bottom:2px solid var(--muted)}
+.offers tbody tr:last-child td{border-bottom:2px solid var(--muted)}
+td.num{font-family:var(--mono);font-variant-numeric:tabular-nums;white-space:nowrap;text-align:right}
+tr.best td{background:var(--ok-bg)}
+.conv{display:block;font-size:12px;color:var(--warn);background:var(--warn-bg);border-radius:4px;padding:1px 6px;margin-top:3px;width:fit-content}
+.why{font-size:12px;color:var(--no)}
+details.out{margin-top:12px}
+details.out summary{cursor:pointer;color:var(--muted);font-size:14px}
+tr.out td{color:var(--muted)}
+form.add{display:grid;gap:8px}
+form.add label{display:grid;gap:3px;font-size:13px;color:var(--muted)}
+form.add input,form.add textarea{font:inherit;font-size:14px;padding:6px 8px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--fg)}
+form.add textarea{min-height:180px;font-family:var(--mono);font-size:13px}
+.row{display:flex;flex-wrap:wrap;gap:8px}
+.row>label{flex:1 1 140px}
+.note{font-size:12px;color:var(--muted)}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+@media (prefers-reduced-motion: reduce){*{transition:none!important}}
+</style>
+
+<div class="wrap">
+  <header>
+    <h1>Стенд подбора товаров</h1>
+    <p class="sub">Логика отбора по словам из «Закупай MVP», работает прямо в браузере. Отметки применяются сразу, без «Применить».</p>
+  </header>
+  <nav class="tabs" id="tabs" role="tablist" aria-label="Позиции"></nav>
+  <section id="main"></section>
+</div>
+
+<script>
+(() => {
+/* ---------- Example data ----------
+   Позиция 1: результаты поиска ВсеИнструменты по заявке 1223 (наименования и цены — как на странице приложения).
+   Позиция 2: товары позиции 5 заявки 1287; хвосты артикулов в наименованиях обрезаны. */
+const EXAMPLES = [
+  {id:'ex1', name:'Шпилька М8 L=1м', qty:300, unit:'шт', example:'Пример: поиск по заявке 1223, ВсеИнструменты', products:[
+    ['Штанга ОПМ DIN 975 (1 m) М8 8.8 zn, 5 шт. УТ000003764',1113,'шт'],
+    ['Сантехнический хомут РемоКолор шпилька + дюбель, 3/8, диаметр 16-19 мм 47-5-015',30,'шт'],
+    ['Рабочий стержень MESSER М8 для TP6303F 05-27-008',899,'шт'],
+    ['Штанга ОПМ DIN 975 (1 m) М10 8.8 zn, 5 шт. 13736',1781,'шт'],
+    ['Штанга ОПМ DIN 975 (1 m) М14 8.8 zn, 3 шт. 12885',1685,'шт'],
+    ['Штанга ОПМ DIN 975 (1 m) М24 8.8 zn 1 шт УТ000003768',1896,'шт'],
+    ['Набор для восстановления резьбы на колёсных шпильках DAF / IVECO / MAN / RENAULT / VOLVO / MERCEDES, кейс, 5шт МАСТАК 352-00001C',6624,'шт'],
+    ['Набор для крепления сантехнических труб STARFIX 1 1/4, 39-46 мм SMP-57098-1',80,'шт'],
+    ['Набор для крепления сантехнических труб STARFIX 1 1/2, 48-52 мм SMP-57096-1',80,'шт'],
+    ['Набор для демонтажа клемм электропроводки 23 предмета МАСТАК 106-20001C',13758,'шт'],
+    ['Держатель для прутка D6-10 мм вкручиваемый со шпилькой М8 Система КМ L80 мм AURAFORT TD MA0716 DPV-SM8-80-D6-10 TD',83,'шт'],
+    ['Держатель для прутка D6-10 мм вкручиваемый со шпилькой М8 Система КМ L180 мм AURAFORT ZN MA0727 DPV-SM8-180-D6-10 ZN',105,'шт'],
+    ['Держатель для прутка D6-10 мм вкручиваемый со шпилькой М8 Система КМ L180 мм AURAFORT TD MA0728 DPV-SM8-180-D6-10 TD',107,'шт'],
+    ['Держатель для прутка D6-10 мм вкручиваемый со шпилькой М8 Система КМ L160 мм AURAFORT ZN MA0724 DPV-SM8-160-D6-10 ZN',102,'шт'],
+    ['Держатель для прутка D6-10 мм вкручиваемый со шпилькой М8 Система КМ L80 мм AURAFORT HD MA0717 DPV-SM8-80-D6-10 HD',88,'шт'],
+    ['Держатель для прутка D6-10 мм вкручиваемый со шпилькой М8 Система КМ L100 мм AURAFORT HD MA0720 DPV-SM8-100-D6-10 HD',91,'шт'],
+    ['Держатель для прутка D6-10 мм вкручиваемый со шпилькой М8 Система КМ L80 мм AURAFORT ZN MA0715 DPV-SM8-80-D6-10 ZN',82,'шт'],
+    ['Держатель для прутка D6-10 мм вкручиваемый со шпилькой М8 Система КМ L200 мм AURAFORT ZN MA0730 DPV-SM8-200-D6-10 ZN',107,'шт'],
+    ['Металлический хомут RTP со шпилькой шурупом и дюбелем, 3/4", 25/29 29192',32,'шт'],
+    ['Металлический хомут RTP со шпилькой шурупом и дюбелем, 1 1/4", 40/45 29194',36,'шт'],
+    ['Металлический хомут RTP со шпилькой, шурупом и дюбелем, 1 1/2", 47/52 29195',39,'шт'],
+    ['Металлический хомут RTP со шпилькой шурупом и дюбелем, 1", 32/37 29193',34,'шт'],
+    ['Шпилька резьбовая КРЕП-КОМП цинк DIN975 угол резьбы 60 градусов м36х1000 пр. 4,8 (2шт) шрс36',3132,'шт'],
+    ['Шпилька резьбовая КРЕП-КОМП цинк DIN975 угол резьбы 60 градусов м20х1000 пр. 4,8 (5шт) шрс20',2592,'шт'],
+    ['Резьбовая шпилька КРЕП-КОМП цинк, DIN 975, угол резьбы 60 гр., м12x1000, пр. 8.8, 20 шт. шрп12',3106,'шт'],
+    ['Резьбовая шпилька КРЕП-КОМП цинк, DIN 975, угол резьбы 60 гр., м20x1000, пр. 8.8, 5 шт. шрп20',2292,'шт'],
+    ['Траверса для шпильки Система КМ 200 мм INOX304 LO18026 TSM200 INOX304',800,'шт'],
+    ['Траверса для шпильки Система КМ 400 мм INOX304 LO18619 TSM400 INOX304',1408,'шт'],
+    ['Шарнирный подвес для шпильки Система КМ м12 5 мм INOX304 LO18641 SHS12 INOX304',1186,'шт'],
+    ['Шуруп-шпилька STARFIX М8x90 мм, 4 шт. SMM1-15944-4',80,'шт'],
+    ['Шуруп-шпилька STARFIX М8x220 мм SM-16074-1',80,'шт'],
+  ]},
+  {id:'ex2', name:'Двуслойный гофрокартон «С', qty:1000, unit:'м.п.', example:'Пример: позиция 5 заявки 1287, ВсеИнструменты', products:[
+    ['Гофрокартон в рулоне MW 1,05x10 м Д21 двухслойный бурый',763,'Штука'],
+    ['Рулонный гофрокартон MW 1,4x20 м двухслойный Д21 бурый',1992,'Штука'],
+    ['Гофрокартон в рулоне MW 1,25x25 м Д21 двухслойный бурый',2165,'Штука'],
+    ['Гофрокартон в рулоне MW 0,84x50 м Д21 двухслойный бурый',2406,'Штука'],
+    ['Гофрокартон в рулоне MW 1,4x25 м Д21 двухслойный бурый',2435,'Штука'],
+  ]},
+];
+
+/* ---------- Storage (per viewer convenience) ---------- */
+const KEY='podbor-bench-v1';
+const load=()=>{try{return JSON.parse(localStorage.getItem(KEY)||'null')}catch(e){return null}};
+const save=()=>{try{localStorage.setItem(KEY,JSON.stringify(state))}catch(e){}};
+let state=load()||{positions:EXAMPLES,active:'ex1',marks:{}};
+if(state.version!==4){state.marks={};state.version=4;}
+if(!state.positions?.length){state.positions=EXAMPLES;state.active='ex1'}
+
+/* ---------- Logic (ported from characteristic_comparison.py / supplier_comparison.py) ---------- */
+const WORD=/[0-9a-zа-яё]+(?:[.,/×xх-][0-9a-zа-яё]+)*/gi;
+const CYR='асеорхкмтвн', LAT='aceopxkmtbh';
+// Words of a name, each once; in words with digits Cyrillic look-alikes become Latin («М8х1000» = «M8x1000»).
+function nameWords(name){
+  const out=new Set();
+  for(const raw of String(name||'').match(WORD)||[]){
+    let w=raw.toLowerCase().replaceAll('ё','е');
+    if(/\d/.test(w))w=[...w].map(c=>{const i=CYR.indexOf(c);return i<0?c:LAT[i]}).join('');
+    out.add(w);
+    // Parts of compound designations are words too: «m12x1000» -> m12, 1000; «креп-комп» -> креп, комп.
+    const size=w.match(/^([a-zа-я]*\d+(?:[.,]\d+)?)[xх×*](\d+(?:[.,]\d+)?)$/);
+    if(size){out.add(size[1]);out.add(size[2]);}
+    if(w.includes('-'))for(const part of w.split('-'))if(part.length>1)out.add(part);
+  }
+  return out;
+}
+// Russian word forms are one word: «шпилька», «шпильки», «шпилькой» -> шпильк.
+const ENDINGS=['ыми','ими','ого','его','ому','ему','ами','ями','ой','ей','ий','ый','ая','яя','ое','ее','ые','ие','ых','их','ым','им','ую','юю','ом','ем','ах','ях','ов','ев','а','я','ы','и','у','ю','е','о','ь','й'];
+function stem(w){
+  if(!/^[а-яе]+$/.test(w)||w.length<5)return w;
+  for(const e of ENDINGS)if(w.endsWith(e)&&w.length-e.length>=4)return w.slice(0,-e.length);
+  return w;
+}
+function close(a,b){ // one letter added, dropped or changed: «двуслойн» / «двухслойн»
+  if(Math.abs(a.length-b.length)>1||Math.min(a.length,b.length)<7)return false;
+  let i=0,j=0,diff=0;
+  while(i<a.length&&j<b.length){
+    if(a[i]===b[j]){i++;j++;continue}
+    if(++diff>1)return false;
+    if(a.length>b.length)i++; else if(b.length>a.length)j++; else {i++;j++}
+  }
+  return diff+(a.length-i)+(b.length-j)<=1;
+}
+function unit(u){
+  const s=String(u||'').toLowerCase().replace(/[.\s]/g,'');
+  if(['м','мп','погм','метр','метров'].includes(s))return 'м';
+  if(['шт','штука','штуки','штук'].includes(s))return 'шт';
+  if(s.startsWith('упак'))return 'упак';
+  if(s.startsWith('рулон'))return 'рулон';
+  return s;
+}
+// Pieces in one supplier unit: «(50 шт.)», «, 5 шт.», «(2шт)».
+function packPieces(name){
+  const m=String(name).match(/[(,]\s*(\d{1,5})\s*(?:шт\.?|штук[а-яё]*)(?=[\s).,]|$)/i);
+  return m&&+m[1]>1?+m[1]:0;
+}
+// Metres in a roll sold per piece: «в рулоне 1,05x10 м» -> 10.
+function rollLength(name){
+  if(!/рулон/i.test(name))return 0;
+  const m=String(name).match(/(\d+(?:[.,]\d+)?)\s*[xх×*]\s*(\d+(?:[.,]\d+)?)\s*м(?![a-zа-яё0-9²])/i);
+  return m?parseFloat(m[2].replace(',','.')):0;
+}
+function conversion(pos,p){
+  const req=unit(pos.unit), sup=unit(p.unit);
+  if(req==='шт'&&(sup==='шт'||sup==='упак')){const k=packPieces(p.name);if(k)return [k,`${k} шт`]}
+  if(req===sup)return [1,''];
+  if(req==='м'&&(sup==='шт'||sup==='рулон')){const l=rollLength(p.name);if(l)return [l,`${String(l).replace('.',',')} м`]}
+  return [null,`Нет пересчёта: заявка в «${pos.unit}», поставщик в «${p.unit}»`];
+}
+
+/* ---------- Characteristics from a name ---------- */
+function tokens(name){
+  return (String(name||'').match(WORD)||[]).map(raw=>{
+    let w=raw.toLowerCase().replaceAll('ё','е');
+    if(/\d/.test(w))w=[...w].map(c=>{const i=CYR.indexOf(c);return i<0?c:LAT[i]}).join('');
+    return w;
+  });
+}
+const FIELDS=['Тип товара','Резьба','Условный проход','Давление','Длина','Ширина','Толщина','Диаметр','Размеры','Размер','Сечение','Напряжение','Мощность','Ток','Объём','Масса','Температура','Защита IP','Обороты','Момент','Площадь','Зернистость','Угол','Угол резьбы','Класс прочности','Марка стали','Стандарт','Материал','Покрытие','Цвет','Фасовка','Бренд','Код / артикул'];
+const BRANDS=new Set(['starfix','aurafort','креп-комп','опм','messer','мастак','rtp','ремоколор','mw','zitar','fischer','sormat','mungo','hilti','зубр','makita','bosch','gp','askaynak','alfamag','valtti','руссиз','tikkurila','knauf','ceresit','tytan','penosil','dewalt','metabo','интерскол']);
+const CLASSES=new Set(['4.6','4.8','5.6','5.8','6.8','8.8','10.9','12.9']);
+const NUM=/^\d+(?:[.,]\d+)?$/, numv=s=>parseFloat(String(s).replace(',','.'));
+const fmt=n=>String(+(+n).toFixed(3)).replace('.',',');
+const len=v=>v>=1000?fmt(v/1000)+' м':fmt(v)+' мм'; // one label for one value
+// Words that name a characteristic by themselves (matched by stem, so «стальная» = «стальной»).
+const WORD_DICT={
+  'Цвет':['белый','черный','чёрный','серый','зеленый','синий','красный','желтый','бурый','коричневый','прозрачный','бежевый','оранжевый','голубой','фиолетовый','графитовый','хромированный'],
+  'Материал':['стальной','сталь','нержавеющий','латунный','латунь','медный','медь','алюминиевый','алюминий','чугунный','чугун','пвх','пнд','полипропилен','полипропиленовый','полиэтилен','полиэтиленовый','резиновый','резина','деревянный','пластиковый','пластик','поликарбонат','поликарбонатный','стекло','стеклянный','картон','бумажный','текстильный','силиконовый','полиуретановый','керамический','бетонный','фанерный','монолитный'],
+  'Покрытие':['оцинкованный','оцинк','цинк','zn','никелированный','окрашенный','порошковый','омедненный','омеднённый','фосфатированный','черненый','анодированный'],
+};
+const NN='(\\d+(?:[.,]\\d+)?)', NA='(?![a-zа-яё0-9])', NB='(?<![a-zа-яё0-9.,])';
+const R=(src)=>new RegExp(src,'gi');
+// Rules over the whole name; each takes its text out of the words heap.
+const TEXT_RULES=[
+  ['Угол резьбы',R('угол\\s+резьбы\\s+'+NN+'\\s*(?:°|градус[а-яё]*|гр\\.?)?'),m=>[m[1]+'°',numv(m[1])]],
+  ['Условный проход',R('(?:\\bDN|Д[уy])\\s*'+NN+NA),m=>['DN '+m[1],numv(m[1])]],
+  ['Давление',R('(?:\\bPN|Р[уy])\\s*'+NN+NA),m=>['PN '+m[1],numv(m[1])]],
+  ['Давление',R(NB+NN+'\\s*(бар|bar|мпа|mpa|атм)'+NA),m=>[m[1]+' '+m[2].toLowerCase(),numv(m[1])]],
+  ['Сечение',R(NB+NN+'\\s*[xх×*]\\s*'+NN+'\\s*(?:мм²|мм2|кв\\.?\\s*мм)'),m=>[m[1]+'×'+m[2]+' мм²',numv(m[1])*numv(m[2])]],
+  ['Сечение',R(NB+NN+'\\s*(?:мм²|мм2|кв\\.?\\s*мм)'),m=>[m[1]+' мм²',numv(m[1])]],
+  ['Площадь',R(NB+NN+'\\s*(?:м²|м2|кв\\.?\\s*м)'+NA),m=>[m[1]+' м²',numv(m[1])]],
+  ['Мощность',R(NB+NN+'\\s*(квт|kw|вт|w)'+NA),m=>{const v=numv(m[1])*(/^к|^k/i.test(m[2])?1000:1);return [v>=1000?fmt(v/1000)+' кВт':fmt(v)+' Вт',v]}],
+  ['Напряжение',R(NB+NN+'\\s*(?:в|v|вольт)'+NA),m=>[m[1]+' В',numv(m[1])]],
+  ['Ток',R(NB+NN+'\\s*(?:а|a)'+NA),m=>[m[1]+' А',numv(m[1])]],
+  ['Объём',R(NB+NN+'\\s*(мл|ml|л|l)'+NA),m=>{const v=numv(m[1])/(/^м|^m/i.test(m[2])?1000:1);return [fmt(v)+' л',v]}],
+  ['Масса',R(NB+NN+'\\s*(кг|kg|г|гр|g)\\.?'+NA),m=>{const v=numv(m[1])/(/^к|^k/i.test(m[2])?1:1000);return [fmt(v)+' кг',v]}],
+  ['Температура',R(NB+NN+'\\s*°\\s*[cс]'+NA),m=>[m[1]+' °C',numv(m[1])]],
+  ['Защита IP',R('\\bIP\\s*(\\d{2})'+NA),m=>['IP'+m[1],+m[1]]],
+  ['Обороты',R(NB+NN+'\\s*(?:об/мин|rpm)'),m=>[m[1]+' об/мин',numv(m[1])]],
+  ['Момент',R(NB+NN+'\\s*(?:н[·*]?м|nm)'+NA),m=>[m[1]+' Н·м',numv(m[1])]],
+  ['Угол',R(NB+NN+'\\s*(?:°|градус[а-яё]*)'),m=>[m[1]+'°',numv(m[1])]],
+  ['Цвет',R('\\bRAL\\s*(\\d{4})'),m=>['RAL '+m[1],null]],
+  ['Марка стали',R('\\bAISI\\s*(\\d{3}L?)'),m=>['AISI '+m[1].toUpperCase(),null]],
+  ['Марка стали',new RegExp('(?<![\\d.,×xхA-Za-zА-Яа-я])(\\d{2}[ХГ]\\d{0,2}[А-Я][А-Я\\d]*)(?![A-Za-zА-Яа-я0-9])','g'),m=>[m[1],null]],
+  ['Стандарт',R('(ГОСТ(?:\\s+Р)?|ТУ)\\s*(\\d[\\d./-]*)'),m=>[m[1].toUpperCase()+' '+m[2],null]],
+  ['Длина',R('длин[аойе]*\\s*'+NN+'\\s*(мм|см|м)?'+NA),m=>{const v=numv(m[1])*({см:10,м:1000}[(m[2]||'').toLowerCase()]||1);return [len(v),v]}],
+  ['Ширина',R('ширин[аойе]*\\s*'+NN+'\\s*(мм|см|м)?'+NA),m=>{const v=numv(m[1])*({см:10,м:1000}[(m[2]||'').toLowerCase()]||1);return [len(v),v]}],
+  ['Толщина',R('(?:толщин[аойе]*|стенка)\\s*'+NN+'\\s*(мм)?'),m=>[fmt(numv(m[1]))+' мм',numv(m[1])]],
+  ['Диаметр',R('(?:диаметр(?:ом)?|диам\\.?|[ØФ⌀])\\s*'+NN+'(?:\\s*-\\s*'+NN+')?\\s*(мм)?'),m=>[m[1]+(m[2]?'-'+m[2]:'')+' мм',numv(m[1])]],
+  ['Размеры',R(NB+NN+'\\s*[xх×*]\\s*'+NN+'\\s*[xх×*]\\s*'+NN+'(?:\\s*(мм|см))?'),m=>[[m[1],m[2],m[3]].join('×')+(m[4]?' '+m[4]:''),numv(m[1])]],
+  ['Размеры',R(NB+NN+'\\s*[xх×*]\\s*'+NN+'(?:\\s*(мм|см))?(?!\\s*[xх×*\\d])(?!\\s*м(?![мa-zа-яё]))'+NA),m=>[m[1]+'×'+m[2]+(m[3]?' '+m[3]:''),numv(m[1])]],
+];
+function extract(name){
+  const text=String(name||''), toks=[], found=[], covered=[];
+  for(const m of text.matchAll(WORD)){
+    let w=m[0].toLowerCase().replaceAll('ё','е');
+    if(/\d/.test(w))w=[...w].map(c=>{const i=CYR.indexOf(c);return i<0?c:LAT[i]}).join('');
+    toks.push({w,o:m[0],s:m.index,e:m.index+m[0].length});
+  }
+  const used=new Set();
+  const add=(field,value,n,...idx)=>{found.push({field,value:String(value),n});idx.forEach(i=>used.add(i))};
+  for(const [field,re,fn] of TEXT_RULES){
+    for(const m of text.matchAll(re)){
+      const s=m.index, e=m.index+m[0].length;
+      if(covered.some(([a,b])=>s<b&&e>a))continue;
+      covered.push([s,e]);
+      const [value,n]=fn(m); add(field,value,n);
+      toks.forEach((t,i)=>{if(t.s<e&&t.e>s)used.add(i)});
+    }
+  }
+  const t=toks.map(x=>x.w);
+  for(let i=0;i<t.length;i++){ // product type: the first noun of the name
+    const w=t[i]; if(!/^[а-я-]+$/.test(w))break;
+    if(used.has(i)||/(ая|яя|ый|ий|ой|ое|ее|ые|ие)$/.test(w)&&!w.includes('-'))continue;
+    add('Тип товара',w,null,i);break;
+  }
+  const mmOf=(v,u)=>u==='м'||u==='m'?v*1000:v;
+  for(let i=0;i<t.length;i++){
+    if(used.has(i))continue;
+    const w=t[i], nx=used.has(i+1)?'':(t[i+1]||''), n2=t[i+2]||'';
+    let m;
+    const dict=lookup(w);
+    if(dict){add(dict.field,dict.value,null,i);continue}
+    if((m=w.match(/^m(\d{1,2}(?:[.,]\d)?)(?:x(\d+(?:[.,]\d+)?))?$/))){
+      add('Резьба','M'+m[1],numv(m[1]),i);
+      if(m[2]){const u=['м','m','мм','mm'].includes(nx)?nx:'мм';const v=mmOf(numv(m[2]),u);add('Длина',len(v),v);if(u===nx)used.add(i+1);}
+      continue;
+    }
+    if(w==='l'&&(m=nx.match(/^(\d+(?:[.,]\d+)?)(мм|mm|м|m)?$/))){const u=m[2]||(['мм','mm','м','m'].includes(n2)?n2:'мм');const v=mmOf(numv(m[1]),u);add('Длина',len(v),v,i,i+1);if(!m[2]&&u===n2)used.add(i+2);continue}
+    if((m=w.match(/^l(\d+(?:[.,]\d+)?)$/))){const v=numv(m[1]);add('Длина',len(v),v,i);if(nx==='мм')used.add(i+1);continue}
+    if((m=w.match(/^(\d+(?:[.,]\d+)?)x(\d+(?:[.,]\d+)?)$/))&&['м','m'].includes(nx)){add('Ширина',len(numv(m[1])*1000),numv(m[1])*1000,i,i+1);add('Длина',len(numv(m[2])*1000),numv(m[2])*1000);continue}
+    if(NUM.test(w)&&['м','m'].includes(nx)&&numv(w)<=12){const v=numv(w)*1000;add('Длина',len(v),v,i,i+1);continue}
+    if((m=w.match(/^d(\d+(?:[.,]\d+)?(?:-\d+(?:[.,]\d+)?)?)$/))&&nx==='мм'){add('Диаметр',m[1]+' мм',numv(m[1]),i,i+1);continue}
+    if(NUM.test(w)&&nx==='мм'){add('Размер',fmt(numv(w))+' мм',numv(w),i,i+1);continue}
+    if((m=w.match(/^(\d+(?:[.,]\d+)?)(?:mm|мм)$/))){add('Размер',fmt(numv(m[1]))+' мм',numv(m[1]),i);continue}
+    if(w==='din'&&/^\d+$/.test(nx)){add('Стандарт','DIN '+nx,null,i,i+1);continue}
+    if((m=w.match(/^din(\d+)$/))){add('Стандарт','DIN '+m[1],null,i);continue}
+    if(w==='iso'&&/^\d/.test(nx)){add('Стандарт','ISO '+nx,null,i,i+1);continue}
+    if(w==='пр'&&CLASSES.has(nx.replace(',','.'))){add('Класс прочности',nx.replace(',','.'),null,i,i+1);continue}
+    if(CLASSES.has(w)&&w.includes('.')){add('Класс прочности',w,null,i);continue}
+    if((m=w.match(/^p(\d{2,4})$/))){add('Зернистость','P'+m[1],+m[1],i);continue}
+    if((m=w.match(/^(\d{1,5})ш[тt]$/))){add('Фасовка',m[1]+' шт',+m[1],i);continue}
+    if(/^\d{1,5}$/.test(w)&&nx==='шт'){add('Фасовка',w+' шт',+w,i,i+1);continue}
+    if(BRANDS.has(w)){add('Бренд',toks[i].o.toUpperCase(),null,i);continue}
+    if((/[a-zа-я]/.test(w)&&/\d/.test(w)&&w.length>=5)||/^\d{5,}$/.test(w)){add('Код / артикул',toks[i].o,null,i);continue}
+  }
+  const rest=new Set();
+  t.forEach((w,i)=>{if(!used.has(i))rest.add(w)});
+  return {found,rest};
+}
+// Built-in dictionary plus the words you assigned to a rubric on this page.
+function lookup(w){
+  const s=stem(w);
+  const mine=(state.dict||{})[s]; if(mine)return mine;
+  const CANON={zn:'цинк','оцинкованный':'цинк','оцинк':'цинк','чёрный':'черный','сталь':'стальной','латунь':'латунный','медь':'медный','алюминий':'алюминиевый','чугун':'чугунный','пластик':'пластиковый','резина':'резиновый','полипропилен':'полипропиленовый','полиэтилен':'полиэтиленовый','поликарбонат':'поликарбонатный'};
+  for(const[field,list]of Object.entries(WORD_DICT)){const x=list.find(x=>x===w||stem(x)===s);if(x)return {field,value:CANON[x]||x}}
+  return null;
+}
+
+/* ---------- Model of one position ---------- */
+function model(pos){
+  const products=pos.products.map((p,i)=>{const x=extract(p[0]);return {i,name:p[0],price:+p[1]||0,unit:p[2]||'шт',found:x.found,raw:x.rest}});
+  const reqX=extract(pos.name), reqRaw=[...reqX.rest];
+  // Heap words: one key per word with its forms (same stem, or stems one letter apart).
+  const freq=new Map();
+  for(const p of products)for(const w of p.raw)freq.set(w,(freq.get(w)||0)+1);
+  for(const w of reqRaw)if(!freq.has(w))freq.set(w,0);
+  const keyOf=new Map(), stems=[];
+  for(const w of [...freq.keys()].sort((a,b)=>freq.get(b)-freq.get(a))){
+    const s=stem(w); const hit=stems.find(x=>x===s||(/^[а-я]+$/.test(s)&&close(x,s)));
+    if(!hit)stems.push(s); keyOf.set(w,'w|'+(hit||s));
+  }
+  const forms=new Map(), labels=new Map(), fieldOf=new Map(), numOf=new Map();
+  for(const[w,k]of keyOf){if(!forms.has(k))forms.set(k,[]);forms.get(k).push(w)}
+  for(const[k,fs]of forms)labels.set(k,fs.find(w=>reqRaw.includes(w))||[...fs].sort((a,b)=>freq.get(b)-freq.get(a))[0]);
+  // Field values: the type is matched by stem too («шпилька» = «шпильки»).
+  const fkey=f=>'f|'+f.field+'|'+(f.field==='Тип товара'?stem(f.value):f.value);
+  const keysOf=(x,raw)=>{
+    const keys=new Set();
+    for(const f of x.found){const k=fkey(f);keys.add(k);keys.add('r|'+f.field);
+      if(!labels.has(k)||f.field==='Тип товара'&&f.value===reqX.found.find(r=>r.field==='Тип товара')?.value)labels.set(k,f.value);
+      fieldOf.set(k,f.field);numOf.set(k,f.n);fieldOf.set('r|'+f.field,f.field);labels.set('r|'+f.field,'указано: '+f.field.toLowerCase())}
+    for(const w of raw)keys.add(keyOf.get(w));
+    return keys;
+  };
+  for(const p of products)p.words=keysOf(p,p.raw);
+  const reqKeys=[...keysOf(reqX,reqRaw)].filter(k=>!k.startsWith('r|'));
+  const reqWords=new Set(reqKeys);
+  const label=k=>labels.get(k)||k;
+  const counts=new Map();
+  for(const p of products)for(const w of p.words)counts.set(w,(counts.get(w)||0)+1);
+  const saved=state.marks[pos.id]||{};
+  const marks=new Map(), skipped=new Set();
+  for(const w of counts.keys()){
+    const u=saved[w];
+    if(u==='only'||u==='also'||u==='rejected')marks.set(w,{s:u,by:'user'});
+  }
+  const pick=s=>[...marks].filter(([,m])=>m.s===s).map(([w])=>w);
+  // «только»: all of these; «также»: any of these is added to that set; ✕: never.
+  const passesWith=(only,also,rej)=>p=>!rej.some(w=>p.words.has(w)) && (
+    only.length ? (only.every(w=>p.words.has(w))||also.some(w=>p.words.has(w))) : also.length ? also.some(w=>p.words.has(w)) : true);
+  // Request values and words are applied by the program in request order, never one that leaves no product.
+  for(const w of reqKeys){
+    if(marks.has(w)||saved[w]==='none'||!counts.has(w))continue;
+    const only=[...pick('only'),w];
+    if(products.some(passesWith(only,pick('also'),pick('rejected'))))marks.set(w,{s:'only',by:'auto'});
+    else skipped.add(w);
+  }
+  const only=pick('only'), also=pick('also'), rej=pick('rejected');
+  const alive=products.filter(passesWith(only,also,rej));
+  const left=new Map();
+  for(const p of alive)for(const w of p.words)left.set(w,(left.get(w)||0)+1);
+  const named=k=>(fieldOf.has(k)&&!k.startsWith('r|')?fieldOf.get(k)+' ':'')+label(k);
+  for(const p of products){
+    const bad=rej.filter(w=>p.words.has(w));
+    p.reasons=bad.length?bad.map(w=>'Исключено: '+named(w)):[...only.filter(w=>!p.words.has(w)).map(w=>'Нет: '+named(w)),...(also.length?['Нет ни одного из «также»: '+also.map(named).join(', ')]:[])];
+    const [k,note]=conversion(pos,p); p.factor=k; p.note=note;
+    p.unitPrice=k?p.price/k:null;
+    p.buy=k?Math.ceil(pos.qty/k):null; p.total=k?p.buy*p.price:null;
+  }
+  return {products,reqWords,counts,marks,alive,left,only,also,rej,skipped,label,forms,fieldOf,numOf,named};
+}
+
+/* ---------- Rendering ---------- */
+const el=(tag,attrs={},...kids)=>{const n=document.createElement(tag);for(const[k,v]of Object.entries(attrs)){if(k==='class')n.className=v;else if(k.startsWith('on'))n[k]=v;else if(v!==false&&v!=null)n.setAttribute(k,v===true?'':v)}for(const c of kids.flat())if(c!=null&&c!==false)n.append(c.nodeType?c:String(c));return n};
+const money=v=>v==null?'—':v.toLocaleString('ru-RU',{maximumFractionDigits:2})+' ₽';
+const num=v=>v==null?'—':v.toLocaleString('ru-RU',{maximumFractionDigits:3});
+
+let assigning=null; const expanded=new Set();
+function setMark(pos,word,next){
+  const m=state.marks[pos.id]||(state.marks[pos.id]={});
+  m[word]=next; // 'accepted' | 'rejected' | 'none' (a request word with its default ✓ taken off)
+  save();render();
+}
+function toggle(pos,word,decision,mark,isReq){
+  if(mark&&mark.by==='user'&&mark.s===decision)setMark(pos,word,isReq?'none':null);
+  else setMark(pos,word,decision);
+}
+
+function renderTabs(){
+  const tabs=document.getElementById('tabs');tabs.replaceChildren();
+  for(const p of state.positions){
+    tabs.append(el('button',{class:'tab',role:'tab','aria-selected':String(p.id===state.active),onclick:()=>{state.active=p.id;save();render()}},p.name.length>38?p.name.slice(0,36)+'…':p.name));
+  }
+  tabs.append(el('button',{class:'tab add',role:'tab','aria-selected':String(state.active==='new'),onclick:()=>{state.active='new';render()}},'+ Своя позиция'));
+}
+
+function renderPosition(pos){
+  const M=model(pos);
+  const main=document.getElementById('main');main.replaceChildren();
+  main.append(el('div',{class:'req'},
+    el('b',{},pos.name), el('span',{class:'meta'},`${num(pos.qty)} ${pos.unit}`),
+    pos.example?el('span',{class:'note'},pos.example):null,
+    !pos.example?el('button',{class:'btn',onclick:()=>{state.positions=state.positions.filter(p=>p.id!==pos.id);delete state.marks[pos.id];state.active=state.positions[0]?.id||'new';save();render()}},'Удалить позицию'):null));
+
+  // Characteristics panel: rubrics with values, then the heap of words that fit no rubric.
+  const wp=el('section',{class:'panel','aria-label':'Характеристики и слова найденных товаров'});
+  // The explanation is folded behind «?» so the rubrics come first.
+  const help=el('details',{class:'help'},el('summary',{'aria-label':'Как пользоваться','title':'Как пользоваться'},'?'));
+  wp.append(el('div',{class:'panel-head'},el('h2',{},'Характеристики найденных товаров'),help));
+  help.append(el('p',{class:'hint'},'✓ — только товары с этим значением. + — также товары с этим значением (добавляются к отобранным). ✕ — убрать товары с этим значением. У названия рубрики ✓ — только товары, где эта характеристика указана, ✕ — убрать их. Число в скобках — сколько оставшихся товаров содержат значение.'));
+  help.append(el('p',{class:'hint'},el('span',{class:'w fill'},'заливка'),' выбрала программа · ',el('span',{class:'w req'},'тонкая рамка'),' есть в заявке · ',el('span',{class:'w user'},'толстая рамка'),' выбрали вы'));
+  const chosen=el('div',{class:'chosen'});
+  const sym={only:'✓ ',also:'+ ',rejected:'✕ '};
+  const reset=el('button',{class:'btn',onclick:()=>{state.marks[pos.id]={};save();render()}},'Вернуть значения заявки');
+  if(M.marks.size){
+    chosen.append(el('span',{},'Отбор:'));
+    for(const[w,m]of M.marks)chosen.append(el('span',{class:'tag '+(m.s==='rejected'?'rej':'acc')+(m.by==='auto'?' auto':''),title:m.by==='auto'?'Из заявки, выбрано программой':'Выбрано вами'},sym[m.s]+M.named(w),
+      el('button',{type:'button','aria-label':'Отменить выбор: '+M.named(w),title:'Отменить',onclick:()=>setMark(pos,w,M.reqWords.has(w)?'none':null)},'×')));
+    chosen.append(el('button',{class:'btn',onclick:()=>{const m=state.marks[pos.id]={};for(const w of M.marks.keys())if(M.reqWords.has(w))m[w]='none';save();render()}},'Сбросить всё'),reset);
+  } else chosen.append(el('span',{class:'note'},'Ничего не выбрано — показаны все товары.'),reset);
+  wp.append(chosen);
+  if(M.skipped.size)wp.append(el('p',{class:'note'},'Из заявки не применено — с этим не остаётся ни одного товара: '+[...M.skipped].map(M.named).join(', ')+'.'));
+  const narrowing=M.only.length>0||M.also.length>0;
+  const chip=(w,text,what)=>{
+    const m=M.marks.get(w), n=M.left.get(w)||0, isReq=M.reqWords.has(w);
+    let cls='w'+(isReq?' req':'');
+    if(m&&m.by==='user')cls+=' user'+(m.s==='rejected'?' rej':'');
+    const auto=(m&&m.by==='auto')||(!m&&M.marks.size>0&&n>0&&n===M.alive.length);
+    if(auto||(m&&m.by==='user'&&m.s!=='rejected'&&n===M.alive.length&&n>0))cls+=' fill';
+    // Values no remaining product has are only greyed out, never crossed out: crossing is your ✕.
+    if(!m&&!n)cls+=' dim';
+    const s=m&&m.by==='user'?m.s:null;
+    const fs=w.startsWith('w|')?(M.forms.get(w)||[]):[];
+    const tip=[isReq?(M.skipped.has(w)?'Есть в заявке — не применено: с этим не остаётся ни одного товара':'Есть в заявке'):'',fs.length>1?'Формы: '+fs.join(', '):''].filter(Boolean).join(' · ');
+    const node=el('span',{class:cls,title:tip},text+(fs.length>1?'*':''),el('span',{class:'n'},`(${n})`),
+      el('button',{class:'bk',type:'button','aria-label':'Только товары, где '+what,title:'Только','aria-pressed':String(s==='only'||(m?.by==='auto')),onclick:()=>toggle(pos,w,'only',m,isReq)},'✓'));
+    if(!w.startsWith('r|'))node.append(el('button',{class:'ba',type:'button','aria-label':'Также товары, где '+what,title:'Также','aria-pressed':String(s==='also'),onclick:()=>toggle(pos,w,'also',m,isReq)},'+'));
+    node.append(el('button',{class:'bx',type:'button','aria-label':'Убрать товары, где '+what,title:'Убрать','aria-pressed':String(s==='rejected'),onclick:()=>toggle(pos,w,'rejected',m,isReq)},'✕'));
+    return node;
+  };
+  // Only ✓ and ✕ beside a rubric name: products where it is stated / not stated.
+  const rubricMarks=f=>{const c=chip('r|'+f,'',`указана рубрика ${f}`);c.querySelector('.n').remove();c.firstChild.remove?.();c.classList.add('head');
+    c.title='✓ — только товары, где указана рубрика «'+f+'»; ✕ — убрать такие товары';return c};
+  const byField=new Map();
+  for(const k of M.counts.keys())if(k.startsWith('f|')){const f=M.fieldOf.get(k);if(!byField.has(f))byField.set(f,[]);byField.get(f).push(k)}
+  // Rubrics with chosen values first, then those with values among the remaining products, then the rest.
+  // In a rubric: chosen values, then values the remaining products have, then the others; a few are shown.
+  // A value from the request is recommended: it stays at the top even when its mark is taken off.
+  const rankKey=k=>M.marks.has(k)?0:M.reqWords.has(k)?1:(M.left.get(k)||0)>0?2:3;
+  const fields=[...FIELDS,...[...byField.keys()].filter(f=>!FIELDS.includes(f))].filter(f=>byField.has(f));
+  const rankField=f=>Math.min(M.marks.has('r|'+f)?0:9,...byField.get(f).map(rankKey));
+  fields.sort((a,b)=>rankField(a)-rankField(b));
+  const limited=(keys,f,limit,make)=>{
+    const box=el('div',{class:'words',role:'group','aria-label':f});
+    const open=expanded.has(pos.id+'|'+f), keep=Math.max(limit,keys.filter(k=>M.marks.has(k)).length);
+    for(const k of open?keys:keys.slice(0,keep))box.append(make(k));
+    if(keys.length>keep)box.append(el('button',{class:'more',type:'button',onclick:()=>{open?expanded.delete(pos.id+'|'+f):expanded.add(pos.id+'|'+f);render()}},open?'Свернуть':`Ещё ${keys.length-keep}`));
+    return box;
+  };
+  for(const f of fields){
+    const keys=byField.get(f);
+    keys.sort((a,b)=>rankKey(a)-rankKey(b)||(M.numOf.get(a)??Infinity)-(M.numOf.get(b)??Infinity)||M.label(a).localeCompare(M.label(b),'ru'));
+    wp.append(el('div',{class:'rubric'},
+      el('div',{class:'rubric-head'},el('b',{},f),rubricMarks(f)),
+      limited(keys,f,5,k=>chip(k,M.label(k),`${f} ${M.label(k)}`))));
+  }
+  const heap=[...M.counts.keys()].filter(k=>k.startsWith('w|')).sort((a,b)=>(M.left.get(b)||0)-(M.left.get(a)||0)||M.counts.get(b)-M.counts.get(a)||M.label(a).localeCompare(M.label(b),'ru'));
+  if(heap.length){
+    const sec=el('div',{class:'rubric'},el('div',{class:'rubric-head'},el('b',{},`Прочие слова (${heap.length})`),el('span',{class:'note',title:'Не попали ни в одну рубрику; формы одного слова объединены (*). Кнопка ⤴ относит слово к рубрике — дальше это работает во всех позициях.'},'ⓘ')));
+    if(assigning&&heap.includes(assigning)){
+      const word=M.label(assigning);
+      const sel=el('select',{id:'assign-field'},[...new Set([...FIELDS.filter(f=>!['Тип товара','Код / артикул'].includes(f)),...Object.values(state.dict||{}).map(d=>d.field)])].map(f=>el('option',{value:f},f)),el('option',{value:'__new'},'Новая рубрика…'));
+      const custom=el('input',{id:'assign-new',placeholder:'Название новой рубрики',hidden:true});
+      sel.onchange=()=>{custom.hidden=sel.value!=='__new'};
+      sec.append(el('div',{class:'assign'},el('span',{},`Отнести «${word}» к рубрике`),sel,custom,
+        el('button',{class:'btn',onclick:()=>{const field=sel.value==='__new'?custom.value.trim():sel.value;if(!field)return;
+          state.dict=state.dict||{};for(const f of (M.forms.get(assigning)||[word]))state.dict[stem(f)]={field,value:word};assigning=null;save();render()}},'Отнести'),
+        el('button',{class:'btn',onclick:()=>{assigning=null;render()}},'Отмена')));
+    }
+    heap.sort((a,b)=>rankKey(a)-rankKey(b));
+    sec.append(limited(heap,'Прочие слова',8,k=>{const c=chip(k,M.label(k),`есть слово ${M.label(k)}`);
+      c.append(el('button',{type:'button',title:'Отнести к рубрике','aria-label':'Отнести к рубрике: '+M.label(k),onclick:()=>{assigning=k;render()}},'⤴'));return c}));
+    wp.append(sec);
+  }
+  const mine=Object.entries(state.dict||{});
+  if(mine.length)wp.append(el('details',{class:'rubric'},el('summary',{},`Мой справочник (${mine.length})`),
+    el('div',{class:'words'},mine.map(([s,d])=>el('span',{class:'tag acc'},`${d.value} → ${d.field}`,el('button',{type:'button','aria-label':'Убрать из справочника: '+d.value,onclick:()=>{delete state.dict[s];save();render()}},'×'))))));
+
+  // Products panel
+  const pp=el('section',{class:'panel','aria-label':'Подходящие товары'});
+  const alive=[...M.alive].sort((a,b)=>(a.unitPrice??Infinity)-(b.unitPrice??Infinity));
+  const priced=alive.filter(p=>p.unitPrice!=null);
+  const best=priced[0];
+  pp.append(el('h2',{},`Подходящие товары (${alive.length})`));
+  pp.append(el('p',{class:'hint'},best?`Лучшая цена за ${unit(pos.unit)}: ${money(best.unitPrice)} — на ${num(pos.qty)} ${pos.unit} нужно купить ${num(best.buy)} ${best.unit}, сумма ${money(best.total)}.`:'Нет товаров с ценой, пересчитанной в единицы заявки.'));
+  // Two header rows: request data and supplier data are grouped under their own names.
+  // Request data (unit, quantity) | supplier data (its product, unit, quantity, prices), split by rules.
+  const head=[el('tr',{class:'group'},el('th',{colspan:2,class:'g-start'},'Данные заявки'),el('th',{colspan:6,class:'g-start g-end'},'Данные поставщика')),
+    el('tr',{},el('th',{class:'g-start'},'Ед. изм.'),el('th',{},'Кол-во'),el('th',{class:'g-start'},'Товар'),el('th',{},'Ед. изм.'),el('th',{},'Кол-во'),el('th',{},'Цена'),el('th',{},'Цена за ед. заявки'),el('th',{class:'g-end'},'Сумма'))];
+  const tb=el('tbody');
+  for(const p of alive)tb.append(el('tr',{class:p===best?'best':''},
+    // What one supplier unit holds is shown beside its price: «2 406 ₽ / Штука (50 м)».
+    el('td',{class:'g-start'},pos.unit),el('td',{class:'num'},num(pos.qty)),
+    el('td',{class:'g-start'},p.name),
+    el('td',{title:p.factor&&p.factor!==1?'Сколько в единице поставщика — из наименования':''},p.unit+(p.factor&&p.factor!==1?` (${p.note})`:'')),
+    el('td',{class:'num'},p.buy==null?'—':num(p.buy)),el('td',{class:'num'},money(p.price)),
+    // The column name is the same for every position; the request unit has its own column.
+    el('td',{class:'num',title:p.factor?'':p.note},money(p.unitPrice)),
+    el('td',{class:'num g-end'},money(p.total))));
+  pp.append(el('div',{class:'tablewrap'},el('table',{class:'offers'},el('thead',{},head),tb)));
+  const out=M.products.filter(p=>!M.alive.includes(p));
+  if(out.length){
+    const tb2=el('tbody');
+    for(const p of out)tb2.append(el('tr',{class:'out'},el('td',{},p.name,el('div',{class:'why'},p.reasons.join('; '))),el('td',{},p.unit),el('td',{class:'num'},money(p.price))));
+    pp.append(el('details',{class:'out'},el('summary',{},`Отсеяно словами: ${out.length}`),el('div',{class:'tablewrap'},el('table',{},tb2))));
+  }
+  pp.append(el('p',{class:'note'},'Наличие и дата цены здесь не проверяются — это стенд для логики отбора.'));
+  main.append(el('div',{class:'grid'},wp,pp));
+}
+
+function renderNew(){
+  const main=document.getElementById('main');main.replaceChildren();
+  const form=el('form',{class:'add panel'});
+  form.append(el('h2',{},'Своя позиция'),
+    el('div',{class:'row'},
+      el('label',{for:'f-name'},'Наименование из заявки',el('input',{id:'f-name',required:true,placeholder:'Фланец стальной приварной диам.300мм РУ16'})),
+      el('label',{for:'f-qty'},'Количество',el('input',{id:'f-qty',required:true,inputmode:'decimal',placeholder:'10'})),
+      el('label',{for:'f-unit'},'Единица',el('input',{id:'f-unit',value:'шт'}))),
+    el('label',{for:'f-products'},'Найденные товары — по одному на строку: наименование ; цена ; единица (цена и единица необязательны)',
+      el('textarea',{id:'f-products',required:true,placeholder:'Фланец плоский стальной Ду300 Ру16 ГОСТ 33259 ; 4850 ; шт\nФланец воротниковый Ду300 Ру16 ; 7120 ; шт'})),
+    el('p',{class:'note'},'Скопируйте товары из карточки поставщика или из «Других результатов» в приложении. Всё хранится только в этом браузере.'),
+    el('div',{},el('button',{class:'btn',type:'submit'},'Добавить позицию')));
+  form.onsubmit=e=>{
+    e.preventDefault();
+    const name=form.querySelector('#f-name').value.trim(), qty=parseFloat(form.querySelector('#f-qty').value.replace(',','.'))||0;
+    const products=form.querySelector('#f-products').value.split('\n').map(l=>l.split(/\s*[;\t]\s*/)).filter(a=>a[0]&&a[0].trim()).map(([n,p,u])=>[n.trim(),parseFloat(String(p||'').replace(/\s/g,'').replace(',','.'))||0,(u||'шт').trim()]);
+    if(!name||!products.length)return;
+    const id='p'+Date.now();
+    state.positions.push({id,name,qty,unit:form.querySelector('#f-unit').value.trim()||'шт',products});
+    state.active=id;save();render();
+  };
+  main.append(form);
+}
+
+function render(){
+  renderTabs();
+  const pos=state.positions.find(p=>p.id===state.active);
+  if(pos)renderPosition(pos); else renderNew();
+}
+render();
+})();
+</script>
