@@ -116,6 +116,24 @@
   // Product-kind checks: a product failing one of them is another product, never a choice.
   const IDENTITY_FIELDS=['Тип товара','Слово в наименовании','Нет слова из заявки','Проверка категории','Проверка прайса','Проверка соответствия'];
   const otherKind=offer=>!offer.comparable && (offer.comparison_reasons||[]).some(reason=>IDENTITY_FIELDS.some(field=>reason.includes(field)));
+  // The product photo is loaded only when the operator presses «Фото», straight from the supplier's
+  // site; nothing is fetched while scrolling. A second press hides it.
+  function photoButton(src, name) {
+    const box=node('span','','offer-photo');
+    const button=node('button','Фото');button.type='button';button.setAttribute('aria-expanded','false');
+    button.title='Показать фото товара (загружается с сайта поставщика)';
+    button.style.cssText='margin:0 8px 0 0;padding:1px 8px;font-size:13px';
+    button.onclick=()=>{
+      const shown=box.querySelector('img');
+      if(shown){shown.remove();box.querySelector('.offer-photo-error')?.remove();button.setAttribute('aria-expanded','false');return;}
+      const img=document.createElement('img');img.alt='Фото: '+name;img.src=src;img.referrerPolicy='no-referrer';
+      img.style.cssText='display:block;max-width:240px;max-height:240px;margin:6px 0;border:1px solid #d8ddd6;border-radius:6px;background:#fff';
+      img.onerror=()=>{img.remove();box.append(node('span','Фото не загрузилось','offer-photo-error'));};
+      box.append(img);button.setAttribute('aria-expanded','true');
+    };
+    box.prepend(button);
+    return box;
+  }
   const node = (tag, text, cls) => { const n = document.createElement(tag); n.textContent = text ?? ''; if(cls)n.className=cls; return n; };
   const money = value => Number(value).toLocaleString('ru-RU', {maximumFractionDigits:6});
   let activeDialog=null, dialog=null, choiceError='';
@@ -152,6 +170,7 @@
         for(const rejected of other) {
           const article=node('article','','supplier-choice-detail');
           article.append(node('p',rejected.name),node('p',rejected.price==null?'Цена не получена':money(rejected.price)+' ₽'),node('p',rejected.reasons.join('; ')));
+          if(rejected.image_url)article.append(photoButton(rejected.image_url,rejected.name));
           if(rejected.url){const link=node('a','Карточка товара');link.href=rejected.url;link.target='_blank';link.rel='noopener noreferrer';article.append(link);}
           details.append(article);
         }
@@ -175,6 +194,7 @@
       description.append(offerStatus(row,offer),offerCharacteristics(row,offer));
       description.append(node('p',offer.availability,'supplier-choice-detail'));
       const href=offer.product_url||offer.url;
+      if(offer.image_url)description.append(photoButton(offer.image_url,offer.name));
       if(href){const link=node('a','Карточка товара'+(offer.sku?' · '+offer.sku:''));link.href=href;link.target='_blank';link.rel='noopener noreferrer';description.append(link);}
       if(offer.shortage>0)description.append(node('p',`Не хватает ${money(offer.shortage)} ${row.unit}`));
       const choose=node('button',row.invoice?.key===offer.key&&row.invoice?.included?'Выбрано в счёт':'Выбрать в счёт');choose.type='button';

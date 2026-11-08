@@ -357,7 +357,7 @@ def offer_view(item, candidate):
                 enabled=state.get("cells", {}).get(key) is not False,
                 selected=quote_key(item.get("selected") or {}) == key and item.get("decision") in {"approved", "auto_ready"},
                 stock=stock, availability=("Количество предложения подтверждено оператором" if candidate.get("catalog_prepared") and candidate.get("quantity_confirmed") else "Наличие требует подтверждения" if historical or stock is None else "Остаток поставщика"),
-                source_date=candidate.get("price_date") or candidate.get("price_observed_at"), url=safe_url(candidate.get("url") or candidate.get("source_url")),
+                source_date=candidate.get("price_date") or candidate.get("price_observed_at"), url=safe_url(candidate.get("url") or candidate.get("source_url")), image_url=safe_url(candidate.get("image_url")),
                 catalog_prepared=bool(candidate.get("catalog_prepared")), pricing_ready=candidate.get("pricing_ready", True),
                 currency=candidate.get("currency") if candidate.get("catalog_prepared") else "RUB",
                 raw_price=candidate.get("confirmed_raw_price", candidate.get("original_price")), vat_mode=candidate.get("vat_mode"), vat_rate=candidate.get("vat_rate"),
