@@ -48,7 +48,7 @@ h1{font-size:20px;font-weight:600;margin:0;text-wrap:balance}
 /* A frame only on your own marks, in the colour of the mark. */
 /* Fill — the value matches the request (and is applied); frame — your own mark: ✓ green, + yellow, ✕ red. */
 /* The frame is drawn inside the value, so marking never changes its width (no jump to the next line). */
-.mk.mk-only{box-shadow:inset 0 0 0 2px var(--ok)!important} .mk.mk-also{box-shadow:inset 0 0 0 2px var(--warn)!important} .mk.mk-rejected{box-shadow:inset 0 0 0 2px var(--no)!important}
+.mk.mk-only{box-shadow:inset 0 0 0 1px var(--ok)!important} .mk.mk-also{box-shadow:inset 0 0 0 1px var(--warn)!important} .mk.mk-rejected{box-shadow:inset 0 0 0 1px var(--no)!important}
 .framed{border-width:2px!important;border-style:solid!important}
 .framed.s-only{border-color:var(--ok)!important} .framed.s-also{border-color:var(--warn)!important} .framed.s-rejected{border-color:var(--no)!important}
 .cmp{border:1px solid transparent;background:var(--bg)}
@@ -73,7 +73,7 @@ h1{font-size:20px;font-weight:600;margin:0;text-wrap:balance}
 .w button.bx[aria-pressed="true"]{color:var(--no);background:var(--no-bg)}
 .w.auto-rej{opacity:.5;text-decoration:line-through} .w.dim{opacity:.55}
 .tag.also{background:var(--warn-bg);color:var(--warn)}
-.tag.framed.acc{box-shadow:inset 0 0 0 2px var(--ok)} .tag.framed.also{box-shadow:inset 0 0 0 2px var(--warn)} .tag.framed.rej{box-shadow:inset 0 0 0 2px var(--no)}
+.tag.framed.acc{box-shadow:none;border-width:1px!important;border-color:var(--ok)!important} .tag.framed.also{box-shadow:inset 0 0 0 2px var(--warn)} .tag.framed.rej{box-shadow:inset 0 0 0 2px var(--no)}
 .summary{font-size:14px;margin:0 0 8px}
 .totals{margin:0;font-size:15px}
 .summary-table{background:var(--panel);border:1px solid var(--line);border-radius:8px}
@@ -144,10 +144,13 @@ td.num{font-family:var(--mono);font-variant-numeric:tabular-nums;white-space:now
 .offers tr.main td{background:color-mix(in srgb,var(--ok-bg) 60%,transparent)}
 .offers tr.alt td{background:color-mix(in srgb,var(--warn-bg) 70%,transparent)}
 /* The name as filters: parts are plain text with a dotted underline until marked. */
-.pname .w.cyc.inl{display:inline;font:inherit;font-size:inherit;padding:0 1px;border:0;border-bottom:1px dotted var(--muted);border-radius:3px;background:transparent;color:inherit;line-height:inherit}
+/* Every clickable part of the name is blue, like a link; your mark adds a thin coloured frame. */
+/* The same blue for values in the filter column and under the name: what is blue can be clicked. */
+.rubric .words .w,.rowvals .w.cyc{color:#2b5fb4}
+.pname .w.cyc.inl{display:inline;font:inherit;font-size:inherit;padding:0 2px;border:0;border-radius:3px;background:transparent;color:#2b5fb4;line-height:inherit}
 .pname .w.cyc.inl:hover{background:var(--accent-bg)}
 .pname .pgroup{display:inline;white-space:nowrap} /* one designation stays on one line; no box around it */
-.pname .w.cyc.inl.s-only,.pname .w.cyc.inl.s-also,.pname .w.cyc.inl.s-rejected{border-bottom-color:transparent}
+
 /* Comparing products side by side: what differs among the ticked products is outlined in orange
    (an outline, so the status fill of the value stays as it is). */
 :root{--cmp:#d9730d}
@@ -877,7 +880,7 @@ function renderPosition(pos){
     el('tr',{},el('th',{class:'g-start'},'Ед. изм.'),el('th',{},'Кол-во'),el('th',{class:'g-start'},'Товар'),el('th',{},'Ед. изм.'),el('th',{},'Кол-во'),el('th',{},'Цена'),el('th',{},'Цена за ед. заявки'),el('th',{class:'g-end'},'Сумма'),el('th',{},''))];
   // Table values: quick presses — 1 ✓ green, 2 + yellow, 3 ✕ red, 4 no mark; applied 0.35 s after the last.
   const BY_COUNT=['only','also','rejected','none'], SYM={only:'✓ ',also:'+ ',rejected:'✕ ',none:''};
-  const STATE={only:'обязательно',also:'аналог / замена',rejected:'исключено',none:'без отметки'};
+  const STATE={only:'выбрано мной',also:'аналог / замена',rejected:'исключено',none:'не выбрано'};
   // In the product name only the fill shows the mark — no ✓/+/✕ signs inside the text.
   const valueButton=(k,raw)=>{const lab=raw??M.label(k), sym=st=>raw!=null?'':SYM[st];
     const s=M.marks.get(k)?.s||'none', isReq=M.reqWords.has(k);
@@ -885,7 +888,7 @@ function renderPosition(pos){
     const cls=st=>'w cyc'+(isReq&&st!=='none'&&st!=='rejected'?' s-only':'')+(framed&&st!=='none'?' mk mk-'+st:'');
     let presses=0, timer=null;
     const button=el('button',{type:'button',class:cls(s),
-      title:`${M.fieldOf.get(k)?M.fieldOf.get(k)+': '+M.label(k):'Слово «'+M.label(k)+'»'} — ${STATE[s]}. Быстрые нажатия: 1 — обязательно, 2 — аналог, 3 — исключить, 4 — снять`,
+      title:`${M.fieldOf.get(k)?M.fieldOf.get(k)+': '+M.label(k):'Слово «'+M.label(k)+'»'} — ${STATE[s]}.\nНажмите: 1 раз — выбрано мной (✓), 2 — аналог / замена (+), 3 — исключить (✕), 4 — снять выбор`,
       'aria-label':`${M.named(k)}: ${STATE[s]}`,
       onclick:()=>{presses=Math.min(presses+1,4);const st=BY_COUNT[presses-1];framed=true;
         button.className=cls(st)+['inl','cmp-diff'].filter(c=>button.classList.contains(c)).map(c=>' '+c).join(''); // keep the look of a part of the namebutton.textContent=sym(st)+lab;
