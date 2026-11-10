@@ -699,6 +699,8 @@ const money=v=>v==null?'—':v.toLocaleString('ru-RU',{maximumFractionDigits:2})
 const num=v=>v==null?'—':v.toLocaleString('ru-RU',{maximumFractionDigits:3});
 
 let assigning=null; const expanded=new Set();
+// One vocabulary for all hints: выбрано мной / аналог / замена / исключено / из заявки / не выбрано.
+const stateWord=m=>!m?'не выбрано':m.by==='auto'?'из заявки':{only:'выбрано мной',also:'аналог / замена',rejected:'исключено'}[m.s];
 function setMark(pos,word,next){
   const m=state.marks[pos.id]||(state.marks[pos.id]={});
   m[word]=next; // 'accepted' | 'rejected' | 'none' (a request word with its default ✓ taken off)
@@ -758,8 +760,8 @@ function renderPosition(pos){
   const reset=el('button',{class:'btn',onclick:()=>{state.marks[pos.id]={};save();render()}},'Вернуть значения заявки');
   if(M.marks.size){
     chosen.append(el('span',{},'Отбор:'));
-    for(const[w,m]of M.marks)chosen.append(el('span',{class:'tag '+(m.s==='rejected'?'rej':m.s==='also'?'also':'acc')+(m.by==='user'?' framed':''),title:m.by==='auto'?'Из заявки, выбрано программой':'Выбрано вами'},sym[m.s]+M.named(w),
-      el('button',{type:'button','aria-label':'Отменить выбор: '+M.named(w),title:'Отменить',onclick:()=>setMark(pos,w,M.reqWords.has(w)?'none':null)},'×')));
+    for(const[w,m]of M.marks)chosen.append(el('span',{class:'tag '+(m.s==='rejected'?'rej':m.s==='also'?'also':'acc')+(m.by==='user'?' framed':''),title:M.named(w)+' — '+stateWord(m)},sym[m.s]+M.named(w),
+      el('button',{type:'button','aria-label':'Снять выбор: '+M.named(w),title:'Снять выбор',onclick:()=>setMark(pos,w,M.reqWords.has(w)?'none':null)},'×')));
     chosen.append(el('button',{class:'btn',onclick:()=>{const m=state.marks[pos.id]={};for(const w of M.marks.keys())if(M.reqWords.has(w))m[w]='none';save();render()}},'Сбросить всё'),reset);
   } else chosen.append(el('span',{class:'note'},'Ничего не выбрано — показаны все товары.'),reset);
   wp.append(chosen);
@@ -772,16 +774,17 @@ function renderPosition(pos){
     if(!m&&!n)cls+=' dim';
     const s=m&&m.by==='user'?m.s:null;
     const fs=w.startsWith('w|')?(M.forms.get(w)||[]):[];
-    const tip=[isReq?(M.skipped.has(w)?'Есть в заявке — не применено: с этим не остаётся ни одного товара':'Есть в заявке'):'',fs.length>1?'Формы: '+fs.join(', '):''].filter(Boolean).join(' · ');
+    const tip=[`${what} — ${stateWord(m)}`,isReq&&M.skipped.has(w)?'Есть в заявке, но не применено: с этим не остаётся ни одного товара':'',fs.length>1?'Формы: '+fs.join(', '):''].filter(Boolean).join('\n');
     const node=el('span',{class:cls,title:tip},text+(fs.length>1?'*':''),el('span',{class:'n'},`(${n})`),
-      el('button',{class:'bk',type:'button','aria-label':'Только товары, где '+what,title:'Только','aria-pressed':String(s==='only'||(m?.by==='auto')),onclick:()=>toggle(pos,w,'only',m,isReq)},'✓'));
-    if(!w.startsWith('r|'))node.append(el('button',{class:'ba',type:'button','aria-label':'Также, как аналог: '+what,title:'Также — аналог / замена','aria-pressed':String(s==='also'),onclick:()=>toggle(pos,w,'also',m,isReq)},'+'));
-    node.append(el('button',{class:'bx',type:'button','aria-label':'Убрать товары, где '+what,title:'Убрать','aria-pressed':String(s==='rejected'),onclick:()=>toggle(pos,w,'rejected',m,isReq)},'✕'));
+      el('button',{class:'bk',type:'button','aria-label':'Только товары, где '+what,title:s==='only'?'Снять выбор: '+what:'Выбрано мной: показывать товары, где '+what,'aria-pressed':String(s==='only'||(m?.by==='auto')),onclick:()=>toggle(pos,w,'only',m,isReq)},'✓'));
+    if(!w.startsWith('r|'))node.append(el('button',{class:'ba',type:'button','aria-label':'Также, как аналог: '+what,title:s==='also'?'Снять выбор: '+what:'Аналог / замена: показывать как замену товары, где '+what,'aria-pressed':String(s==='also'),onclick:()=>toggle(pos,w,'also',m,isReq)},'+'));
+    node.append(el('button',{class:'bx',type:'button','aria-label':'Убрать товары, где '+what,title:s==='rejected'?'Снять выбор: '+what:'Исключить: убрать товары, где '+what,'aria-pressed':String(s==='rejected'),onclick:()=>toggle(pos,w,'rejected',m,isReq)},'✕'));
     return node;
   };
   // Only ✓ and ✕ beside a rubric name: products where it is stated / not stated.
   const rubricMarks=f=>{const c=chip('r|'+f,'',`указана рубрика ${f}`);c.querySelector('.n').remove();c.firstChild.remove?.();c.classList.add('head');
-    c.title='✓ — только товары, где указана рубрика «'+f+'»; ✕ — убрать такие товары';return c};
+    c.title='';const bk=c.querySelector('.bk'),bx=c.querySelector('.bx');
+    if(bk)bk.title='Только товары, где указана рубрика «'+f+'»';if(bx)bx.title='Убрать товары, где указана рубрика «'+f+'»';return c};
   const byField=new Map();
   for(const k of M.counts.keys())if(k.startsWith('f|')){const f=M.fieldOf.get(k);if(!byField.has(f))byField.set(f,[]);byField.get(f).push(k)}
   // Rubrics with chosen values first, then those with values among the remaining products, then the rest.
@@ -815,7 +818,7 @@ function renderPosition(pos){
     keys.sort((a,b)=>rankKey(a)-rankKey(b)||(M.numOf.get(a)??Infinity)-(M.numOf.get(b)??Infinity)||M.label(a).localeCompare(M.label(b),'ru'));
     return el('div',{class:'rubric'},
       el('div',{class:'rubric-head'},el('b',{},f),rubricMarks(f)),
-      limited(keys,f,5,k=>chip(k,M.label(k),`${f} ${M.label(k)}`)));
+      limited(keys,f,5,k=>chip(k,M.label(k),`${f}: ${M.label(k)}`)));
   };
   for(const f of fields){
     if(!M.marks.has('r|'+f)&&!byField.get(f).some(live)){emptyRubrics.push(f);continue}
@@ -888,7 +891,7 @@ function renderPosition(pos){
     const cls=st=>'w cyc'+(isReq&&st!=='none'&&st!=='rejected'?' s-only':'')+(framed&&st!=='none'?' mk mk-'+st:'');
     let presses=0, timer=null;
     const button=el('button',{type:'button',class:cls(s),
-      title:`${M.fieldOf.get(k)?M.fieldOf.get(k)+': '+M.label(k):'Слово «'+M.label(k)+'»'} — ${STATE[s]}.\nНажмите: 1 раз — выбрано мной (✓), 2 — аналог / замена (+), 3 — исключить (✕), 4 — снять выбор`,
+      title:`${M.fieldOf.get(k)?M.fieldOf.get(k)+': '+M.label(k):'Слово «'+M.label(k)+'»'} — ${stateWord(M.marks.get(k))}\nНажмите: 1 раз — выбрано мной, 2 — аналог / замена, 3 — исключить, 4 — снять выбор`,
       'aria-label':`${M.named(k)}: ${STATE[s]}`,
       onclick:()=>{presses=Math.min(presses+1,4);const st=BY_COUNT[presses-1];framed=true;
         button.className=cls(st)+['inl','cmp-diff'].filter(c=>button.classList.contains(c)).map(c=>' '+c).join(''); // keep the look of a part of the namebutton.textContent=sym(st)+lab;
