@@ -462,6 +462,10 @@ function extract(name){
     if(BRANDS.has(w)){add('Бренд',toks[i].o.toUpperCase(),null,i);continue}
     if((/[a-zа-я]/.test(w)&&/\d/.test(w)&&w.length>=5)||/^\d{5,}$/.test(w)){add('Код / артикул',toks[i].o,null,i);continue}
   }
+  // One rubric for thickness: next to a section («50×40 мм») a single small size in mm
+  // («0,5 мм», «(0,4мм)») is the wall / sheet thickness, as in «50x40x0,65 мм».
+  const sec=found.filter(f=>f.field==='Размеры').flatMap(f=>(f.value.match(/\d+(?:,\d+)?/g)||[]).map(x=>numv(x)));
+  if(sec.length)for(const f of found)if(f.field==='Размер'&&f.n!=null&&f.n*10<=Math.min(...sec))f.field='Толщина';
   const rest=new Set();
   t.forEach((w,i)=>{if(!used.has(i))rest.add(w)});
   return {found,rest};
