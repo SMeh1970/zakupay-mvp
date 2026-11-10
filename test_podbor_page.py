@@ -118,6 +118,19 @@ class PodborPageTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(self.data()[0]["chosen"], {"p1": "Труба 89х4 мм"})
 
+    def test_request_page_and_stages(self):
+        import request_steps
+        request_steps.install(self.app)
+        response = self.client.get(f"/dashboard/automation/jobs/{self.job}/request")
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertIn("Труба 89х4 мм", response.text)
+        self.assertIn(f"/dashboard/automation/jobs/{self.job}/podbor#p1", response.text)
+        for title in ("Заявка", "Мониторинг", "Счёт", "Оплата", "Отгрузка"):
+            self.assertIn(f"<b>{title}</b>", response.text)
+        _, page = self.data()
+        self.assertIn("aria-label='Этапы заявки'", page.text)
+        self.assertIn("Повторить поиск у поставщиков", page.text)
+
     def test_ai_needs_key_and_returns_json(self):
         self.assertEqual(self.client.post(self.url + "/ai", json={"mode": "json", "prompt": "x"}, headers=H).status_code, 503)
         reply = Mock(ok=True, status_code=200)

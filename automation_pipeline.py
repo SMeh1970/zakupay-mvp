@@ -1027,6 +1027,19 @@ def _review_candidates(item: dict) -> list[dict]:
     return result
 
 
+def _invoice_choice_summary(item, job_id, pos):
+    """The product that goes into the invoice for a position; it is chosen on «Мониторинг»."""
+    selected = item.get("selected") or {}
+    link = f"<a href='/dashboard/automation/jobs/{int(job_id)}/podbor#p{html.escape(str(pos), quote=True)}'>"
+    if not selected or item.get("decision") not in {"approved", "auto_ready"}:
+        return f"<span style='color:#8a5a00'>Товар не выбран.</span> {link}Подобрать →</a>"
+    price = selected.get("price")
+    return (f"<b>{html.escape(str(selected.get('name') or ''))}</b><br>"
+            f"<small>{html.escape(str(selected.get('supplier') or 'ВсеИнструменты.ру'))}"
+            + (f" · {html.escape(str(price))} ₽ за {html.escape(str(selected.get('unit') or 'ед.'))}" if price is not None else "")
+            + f"</small><br>{link}Изменить в мониторинге →</a>")
+
+
 def _review_candidate_details(item: dict, candidate: dict) -> str:
     reasons = list(dict.fromkeys([
         *(candidate.get("hard_conflicts") or []),
@@ -2962,8 +2975,7 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
                 f"<div class='meta'><b>Поставщики:</b> {html.escape(suppliers_label)}</div>"
                 f"<div class='meta'>Статус: {'счёт выставлен в Закупай' if offer_created else 'поиск цен не запускался' if pending else html.escape(STATUSES.get(row['status'], 'Требуется проверка'))} · счёт: {row['invoice_number'] or '—'}</div></div>"
                 f"<div class='actions'>"
-                + (f"<a class='button secondary' target='_blank' rel='noopener' href='/dashboard/automation/jobs/{row['id']}/review#review-table'>Сравнить поставщиков</a>" if has_comparison_offers else "")
-                + (f"<a class='button secondary' href='/dashboard/automation/jobs/{row['id']}/podbor'>Подбор товаров</a>" if has_comparison_offers else "")
+                + (f"<a class='button secondary' href='/dashboard/automation/jobs/{row['id']}/podbor'>Мониторинг и подбор</a>" if has_comparison_offers else "")
                 + f"{invoice}{send}</div></section>"
             )
         sync_report = ""
@@ -3173,7 +3185,7 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
         table_rows = []
         review_script_nonce = base64.b64encode(os.urandom(18)).decode("ascii")
         from review_values import assets as review_value_assets, CSS as review_value_css
-        value_assets = review_value_assets(result, row['result_json'], request, job_id, review_script_nonce)
+        from request_steps import steps_html
         from supplier_comparison import selected_allowed
         for item in result.get("items") or []:
             selected = item.get("selected") or {}
@@ -3209,7 +3221,7 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
                 "<tr>"
                 f"<td><label><input form='review-form' type='checkbox' name='include_{pos}' value='1' aria-label='Выбрать позицию {pos}' data-bulk-allowed='{'1' if selected_allowed(item) else '0'}' {checked} {disabled}> {pos}</label></td>"
                 f"<td>{html.escape(str(item.get('requested_name') or ''))}</td>"
-                f"<td><div class='inline-values' data-value-position='{pos}'></div>"
+                f"<td>{_invoice_choice_summary(item, job_id, pos)}"
                 f"<details class='invoice-candidate' hidden><summary>Наименование для счёта</summary><select form='review-form' class='candidate-select' data-position='{pos}' name='candidate_{pos}' title='{html.escape(str(selected.get('name') or ''), quote=True)}' {disabled}>{''.join(candidate_options)}</select>"
                 f"{clarification_html}<a class='candidate-source' href='{html.escape(source_url, quote=True)}' target='_blank' rel='noopener noreferrer' {'' if source_url else 'hidden'}>{html.escape(str(selected.get('supplier') or 'ВсеИнструменты.ру'))} ↗</a>"
                 "</details>"
@@ -3289,7 +3301,7 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
                 "<p>Отправка предложения заблокирована до сохранения реквизитов плательщика.</p>" if customer_error else
                 "<p><button form='review-form' type='submit' name='review_action' value='offer'>Перейти к подтверждению предложения в Закупай</button></p>"
             )
-            top_controls = f"<form method='post' action='/dashboard/automation/jobs/{job_id}/refresh'><p><button class='button' type='submit'>Повторить поиск у поставщиков</button></p></form>"
+            top_controls = ""  # the search is repeated from «Мониторинг»
             save_control = "<p><button form='review-form' type='submit'>Сохранить и пересчитать счёт</button></p>"
         if sent_variant or previous_offer:
             prior_id = result.get("live_offer_id") if sent_variant else previous_offer.get("offer_id")
@@ -3324,21 +3336,20 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
         return Response(
             content=(
                 "<!doctype html><html lang='ru'><meta charset='utf-8'>"
-                "<title>Проверка заявки</title><style>body{font-family:Arial;margin:24px;background:#f4f6f8}main{background:#fff;padding:20px;border-radius:12px;overflow:auto}"
+                "<title>Счёт</title><style>body{font-family:Arial;margin:24px;background:#f4f6f8}main{background:#fff;padding:20px;border-radius:12px;overflow:auto}"
                 "table{border-collapse:collapse;width:100%}td,th{border:1px solid #ccc;padding:8px}"
                 "th{background:#eee}.review-table{table-layout:fixed;min-width:1400px;max-width:1700px;font-size:14px;line-height:1.35}.review-table td,.review-table th{padding:6px;vertical-align:top;overflow-wrap:anywhere}.review-table th:first-child,.review-table td:first-child{text-align:center}.candidate-select{width:100%;min-width:0;font-size:13px}.candidate-details{overflow-wrap:anywhere;font-size:12px;margin-top:4px}.candidate-source:not([hidden]){display:inline-block;font-size:12px;margin-top:3px}.price-note:not([hidden]){display:block;color:#9a6700;font-size:12px;margin-top:4px}.include-priced{font-size:13px}.qty,.price{width:100%;box-sizing:border-box;min-width:0;max-width:100px}button,.button{display:inline-block;padding:11px 16px;background:#1a73e8;color:white;border:0;border-radius:7px;text-decoration:none;font-weight:bold}.row-search{margin-top:6px;padding:5px 7px;background:#5f6368;font-size:12px}.sent-notice{padding:14px;background:#e6f4ea;color:#137333;border-radius:8px;margin:14px 0}</style><body><main>"
-                f"<p><a href='/dashboard/automation'>← Все заявки</a> · <a class='podbor-link' href='/dashboard/automation/jobs/{job_id}/podbor'><b>Подбор товаров (В2)</b></a></p>"
+                + steps_html(job_id, "invoice", row, result) +
                 f"<h1>{request_heading}</h1>"
                 f"<p>Счёт № {row['invoice_number']} · статус: {'предложение выставлено' if offer_created else html.escape(str(row['status']))}</p>"
                 f"{actuality_banner}{navigation_notice}{sent_notice}{seller_controls}{customer_form}{top_controls}{search_report}"
                 f"<style>{review_value_css}</style><p id='message' role='status'></p>"
                 f"<form id='review-form' method='post' action='/dashboard/automation/jobs/{job_id}/review'></form>"
                 "<table class='review-table' id='review-table'><colgroup><col style='width:76px'><col style='width:260px'><col style='width:420px'><col style='width:80px'><col style='width:100px'></colgroup>"
-                "<tr><th>№</th><th>Заявка</th><th>Подбор поставщика<br><small>(закупочная цена)</small></th><th>Кол-во</th><th>Наша цена<br><small>за единицу заявки (+5%)</small></th>"
+                "<tr><th>№</th><th>Заявка</th><th>Товар в счёте<br><small>выбирается на этапе «Мониторинг»</small></th><th>Кол-во</th><th>Наша цена<br><small>за единицу заявки (+5%)</small></th>"
                 "</tr>"
                 + "".join(table_rows) + "</table>" + save_control + invoice_link + offer_link
                 + f"<p><a href='/dashboard/prices/match-order/{job_id}'>Подобрать по характеристикам из прайсов</a> · <a href='/dashboard/automation/jobs/{job_id}/catalog-sale'>Сохранить успешную продажу в наш каталог</a> · <a href='/dashboard/prices'>Прайсы</a> · <a href='/dashboard/catalog'>Наш каталог</a> · <a href='/dashboard/automation/jobs/{job_id}/tiles'>Подобрать керамогранит с доставкой</a> · <a href='/dashboard/sniper?job_id={job_id}'>Найти поставщиков через Sniper</a></p>"
-                + value_assets
                 + f"<script nonce='{review_script_nonce}'>{_REVIEW_SELECTION_SCRIPT}{_INVOICE_DEFAULT_SCRIPT}</script>"
                 + "</main></body></html>"
             ),

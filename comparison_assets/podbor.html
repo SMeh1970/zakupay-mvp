@@ -997,7 +997,7 @@ function renderPosition(pos){
     for(const c of rest)tb2.append(el('tr',{class:'out'},el('td',{},c.p.name,el('div',{class:'why'},c.diff.length?c.diff.map(x=>x.has.length?`${x.f}: ${x.has.map(M.label).join('/')} вместо ${x.want.map(M.label).join('/')}`:`нет ${x.f}`).join('; '):`совпадает только ${c.same.length}`)),el('td',{},c.p.unit),el('td',{class:'num'},money(c.p.price))));
     pp.append(el('details',{class:'out'},el('summary',{},`Остальные — отличаются больше: ${rest.length}`),el('div',{class:'tablewrap'},el('table',{},tb2))));
   }
-  pp.append(el('p',{class:'note'},'Наличие и дату цены проверьте на странице проверки заявки перед выставлением счёта.'));
+  pp.append(el('p',{class:'note'},'Наличие и дату цены проверьте на этапе «Счёт» перед выставлением.'));
   main.append(aiPickPanel(pos,M));
   main.append(el('div',{class:'grid'},wp,pp));
   return main;
@@ -1278,6 +1278,8 @@ function render(){
     el('thead',{},el('tr',{},...['№','Наименование заявки','Кол-во','Ед.','Статус','Предложение','Цена за ед. заявки','Сумма'].map(h=>el('th',{},h)))),tb)));
 }
 /* APP: заголовок и ссылки приложения */
+// «…/podbor#p5» opens position 5 (links from the request and the invoice pages).
+{const h=location.hash.match(/^#(p\d+)$/);if(h&&state.positions.some(p=>p.id===h[1])){state.active=h[1];setTimeout(()=>document.getElementById('row-'+h[1])?.scrollIntoView({block:'start'}),0)}}
 document.getElementById('app-title').textContent=APP.title;document.title=APP.title;
 if(APP.local){const sub=document.querySelector('header .sub');if(sub)sub.textContent='Стенд: та же страница «Подбор товаров», что в приложении, на примерах. Решения хранятся только в этом браузере, в счёт ничего не уходит.'}
 for(const[href,text]of APP.links){const a=document.createElement('a');a.href=href;a.textContent=text;document.getElementById('app-nav').append(a)}

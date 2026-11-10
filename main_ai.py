@@ -238,6 +238,8 @@ install_supplier_panel(app, esc=esc)
 install_supplier_comparison(app)
 from podbor_page import install as install_podbor
 install_podbor(app)
+from request_steps import install as install_request_page
+install_request_page(app)
 install_price_lists(app)
 install_own_catalog(app)
 install_sniper(app)
