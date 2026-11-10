@@ -326,10 +326,13 @@ function unit(u){
   return s;
 }
 // Pieces in one supplier unit: «(50 шт.)», «, 5 шт.», «(2шт)».
+// Pieces in one supplier unit: «(50 шт.)», «, 5 шт.», «(2шт)», «(уп/250шт.)», «уп. 100 шт».
 function packPieces(name){
-  const m=String(name).match(/[(,]\s*(\d{1,5})\s*(?:шт\.?|штук[а-яё]*)(?=[\s).,]|$)/i);
+  const m=String(name).match(/(?:[(,/]|уп[а-яё]*\.?)\s*(\d{1,5})\s*(?:шт\.?|штук[а-яё]*)(?=[\s).,]|$)/i);
   return m&&+m[1]>1?+m[1]:0;
 }
+// The supplier's unit may carry the count itself: «Упаковка 2600 шт».
+function unitPieces(u){const m=String(u||'').match(/(\d{1,6})\s*шт/i);return m&&+m[1]>1?+m[1]:0}
 // Metres in a roll sold per piece: «в рулоне 1,05x10 м» -> 10.
 function rollLength(name){
   if(!/рулон/i.test(name))return 0;
@@ -338,7 +341,7 @@ function rollLength(name){
 }
 function conversion(pos,p){
   const req=unit(pos.unit), sup=unit(p.unit);
-  if(req==='шт'&&(sup==='шт'||sup==='упак')){const k=packPieces(p.name);if(k)return [k,`${k} шт`]}
+  if(req==='шт'&&(sup==='шт'||sup==='упак')){const k=unitPieces(p.unit)||packPieces(p.name);if(k)return [k,`${k} шт`]}
   if(req===sup)return [1,''];
   if(req==='м'&&(sup==='шт'||sup==='рулон')){const l=rollLength(p.name);if(l)return [l,`${String(l).replace('.',',')} м`]}
   return [null,`Нет пересчёта: заявка в «${pos.unit}», поставщик в «${p.unit}»`];
@@ -385,7 +388,8 @@ const SCHEMES=[
   {re:/^(лист|плит|панел)/, slots:[['Толщина',0.3,100]]},
   {re:/^фанер/, slots:[['Толщина',3,40]]},
   {re:/^поликарбонат/, slots:[['Толщина',2,32]]},
-  {re:/^(болт|винт|шпильк|штанг|анкер|шуруп|саморез|заклепк|дюбел)/, slots:[['Длина',4,3000],['Диаметр',2,36]]},
+  {re:/^дюбел/, slots:[['Диаметр',4,20],['Длина',20,300]], dims:['Диаметр','Длина']},
+  {re:/^(болт|винт|шпильк|штанг|анкер|шуруп|саморез|заклепк)/, slots:[['Длина',4,3000],['Диаметр',2,36]]},
   {re:/^(гайк|шайб)/, slots:[]},
   {re:/^электрод/, slots:[['Диаметр',1.5,6.5],['Длина',200,500]], dims:['Диаметр','Длина']},
   {re:/^проволок/, slots:[['Диаметр',0.3,6]]},
@@ -460,7 +464,8 @@ function extract(name){
   }
   const t=toks.map(x=>x.w);
   for(let i=0;i<t.length;i++){ // product type: the first noun of the name
-    const w=t[i]; if(!/^[а-я-]+$/.test(w))break;
+    // «Дюбель-R», «Анкер-LS»: a Latin tail after the hyphen is a model, the type is the Russian word.
+    const w=(t[i].match(/^([а-я]+)-[a-z0-9]+$/)||[])[1]||t[i]; if(!/^[а-я-]+$/.test(w))break;
     if(used.has(i)||/(ая|яя|ый|ий|ой|ое|ее|ые|ие)$/.test(w)&&!w.includes('-'))continue;
     add('Тип товара',w,null,i);break;
   }
@@ -490,7 +495,7 @@ function extract(name){
     if(w==='пр'&&CLASSES.has(nx.replace(',','.'))){add('Класс прочности',nx.replace(',','.'),null,i,i+1);continue}
     if(CLASSES.has(w)&&w.includes('.')){add('Класс прочности',w,null,i);continue}
     if((m=w.match(/^p(\d{2,4})$/))){add('Зернистость','P'+m[1],+m[1],i);continue}
-    if((m=w.match(/^(\d{1,5})ш[тt]$/))){add('Фасовка',m[1]+' шт',+m[1],i);continue}
+    if((m=w.match(/^(?:уп[./]?)?(\d{1,5})ш[тt]$/))){add('Фасовка',m[1]+' шт',+m[1],i);continue}
     if(/^\d{1,5}$/.test(w)&&nx==='шт'){add('Фасовка',w+' шт',+w,i,i+1);continue}
     if(BRANDS.has(w)){add('Бренд',toks[i].o.toUpperCase(),null,i);continue}
     if((/[a-zа-я]/.test(w)&&/\d/.test(w)&&w.length>=5)||/^\d{5,}$/.test(w)){add('Код / артикул',toks[i].o,null,i);continue}
@@ -885,7 +890,7 @@ function renderPosition(pos){
     for(const c of rest)tb2.append(el('tr',{class:'out'},el('td',{},c.p.name,el('div',{class:'why'},c.diff.length?c.diff.map(x=>x.has.length?`${x.f}: ${x.has.map(M.label).join('/')} вместо ${x.want.map(M.label).join('/')}`:`нет ${x.f}`).join('; '):`совпадает только ${c.same.length}`)),el('td',{},c.p.unit),el('td',{class:'num'},money(c.p.price))));
     pp.append(el('details',{class:'out'},el('summary',{},`Остальные — отличаются больше: ${rest.length}`),el('div',{class:'tablewrap'},el('table',{},tb2))));
   }
-  pp.append(el('p',{class:'note'},'Наличие и дата цены здесь не проверяются — это стенд для логики отбора.'));
+  pp.append(el('p',{class:'note'},'Наличие и дату цены проверьте на странице проверки заявки перед выставлением счёта.'));
   main.append(aiPickPanel(pos,M));
   main.append(el('div',{class:'grid'},wp,pp));
   return main;
