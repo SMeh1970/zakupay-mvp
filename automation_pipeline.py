@@ -2963,6 +2963,7 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
                 f"<div class='meta'>Статус: {'счёт выставлен в Закупай' if offer_created else 'поиск цен не запускался' if pending else html.escape(STATUSES.get(row['status'], 'Требуется проверка'))} · счёт: {row['invoice_number'] or '—'}</div></div>"
                 f"<div class='actions'>"
                 + (f"<a class='button secondary' target='_blank' rel='noopener' href='/dashboard/automation/jobs/{row['id']}/review#review-table'>Сравнить поставщиков</a>" if has_comparison_offers else "")
+                + (f"<a class='button secondary' href='/dashboard/automation/jobs/{row['id']}/podbor'>Подбор товаров</a>" if has_comparison_offers else "")
                 + f"{invoice}{send}</div></section>"
             )
         sync_report = ""
@@ -3326,7 +3327,7 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
                 "<title>Проверка заявки</title><style>body{font-family:Arial;margin:24px;background:#f4f6f8}main{background:#fff;padding:20px;border-radius:12px;overflow:auto}"
                 "table{border-collapse:collapse;width:100%}td,th{border:1px solid #ccc;padding:8px}"
                 "th{background:#eee}.review-table{table-layout:fixed;min-width:1400px;max-width:1700px;font-size:14px;line-height:1.35}.review-table td,.review-table th{padding:6px;vertical-align:top;overflow-wrap:anywhere}.review-table th:first-child,.review-table td:first-child{text-align:center}.candidate-select{width:100%;min-width:0;font-size:13px}.candidate-details{overflow-wrap:anywhere;font-size:12px;margin-top:4px}.candidate-source:not([hidden]){display:inline-block;font-size:12px;margin-top:3px}.price-note:not([hidden]){display:block;color:#9a6700;font-size:12px;margin-top:4px}.include-priced{font-size:13px}.qty,.price{width:100%;box-sizing:border-box;min-width:0;max-width:100px}button,.button{display:inline-block;padding:11px 16px;background:#1a73e8;color:white;border:0;border-radius:7px;text-decoration:none;font-weight:bold}.row-search{margin-top:6px;padding:5px 7px;background:#5f6368;font-size:12px}.sent-notice{padding:14px;background:#e6f4ea;color:#137333;border-radius:8px;margin:14px 0}</style><body><main>"
-                "<p><a href='/dashboard/automation'>← Все заявки</a></p>"
+                f"<p><a href='/dashboard/automation'>← Все заявки</a> · <a class='podbor-link' href='/dashboard/automation/jobs/{job_id}/podbor'><b>Подбор товаров (В2)</b></a></p>"
                 f"<h1>{request_heading}</h1>"
                 f"<p>Счёт № {row['invoice_number']} · статус: {'предложение выставлено' if offer_created else html.escape(str(row['status']))}</p>"
                 f"{actuality_banner}{navigation_notice}{sent_notice}{seller_controls}{customer_form}{top_controls}{search_report}"

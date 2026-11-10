@@ -1,0 +1,1034 @@
+<title>Стенд подбора В2</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: working bench — position tabs on top, words (decisions) left, resulting products right; stacks on phones. */
+:root{
+  --bg:#f3f4f1; --panel:#ffffff; --fg:#1d221f; --muted:#5f6a63; --line:#d7dcd6;
+  --ok:#2f6b3f; --ok-bg:#e2f1e5; --no:#9a3a2a; --no-bg:#f6e3dd; --accent:#3d5a80; --accent-bg:#e4ebf4; --warn-bg:#fbf1d6; --warn:#7a5a12;
+  --sans:"IBM Plex Sans",system-ui,-apple-system,"Segoe UI",sans-serif; --mono:"IBM Plex Sans",system-ui,-apple-system,"Segoe UI",sans-serif; /* plain zeros: the monospace face drew 0 with a dot */
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
+  --bg:#151916; --panel:#1d221f; --fg:#e7ebe6; --muted:#9aa59d; --line:#323a35;
+  --ok:#8fd19f; --ok-bg:#1f3a27; --no:#f0a493; --no-bg:#43231c; --accent:#9db8dc; --accent-bg:#22303f; --warn-bg:#3b3118; --warn:#e8c76a; color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#151916; --panel:#1d221f; --fg:#e7ebe6; --muted:#9aa59d; --line:#323a35;
+  --ok:#8fd19f; --ok-bg:#1f3a27; --no:#f0a493; --no-bg:#43231c; --accent:#9db8dc; --accent-bg:#22303f; --warn-bg:#3b3118; --warn:#e8c76a; color-scheme:dark}
+body{background:var(--bg);color:var(--fg);font:15px/1.5 var(--sans);font-variant-numeric:tabular-nums}
+.wrap{max-width:1280px;margin:0 auto;padding-block:16px 40px;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));display:grid;gap:14px}
+h1{font-size:20px;font-weight:600;margin:0;text-wrap:balance}
+.sub{color:var(--muted);margin:2px 0 0;font-size:13px}
+.tabs{display:flex;flex-wrap:wrap;gap:6px}
+.tab{border:1px solid var(--line);background:var(--panel);color:var(--fg);border-radius:6px;padding:6px 10px;cursor:pointer;font:inherit;font-size:14px}
+.tab[aria-selected="true"]{border-color:var(--accent);background:var(--accent-bg)}
+.tab.add{color:var(--accent)}
+.req{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:12px 14px;display:flex;flex-wrap:wrap;gap:6px 18px;align-items:baseline}
+.req b{font-size:17px}
+.req .meta{color:var(--muted);font-family:var(--mono);font-size:13px}
+.grid{display:grid;grid-template-columns:fit-content(250px) minmax(0,1fr);gap:14px;align-items:start}
+@media (max-width:900px){.grid{grid-template-columns:minmax(0,1fr)}}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:12px 14px;min-width:0}
+.panel h2{font-size:15px;margin:0 0 6px;font-weight:600}
+.hint{color:var(--muted);font-size:13px;margin:0 0 8px}
+.chosen{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:0 0 10px;font-size:14px}
+.tag{display:inline-flex;align-items:center;gap:4px;border-radius:5px;padding:2px 4px 2px 8px;font-family:var(--mono);font-size:13px}
+.tag.acc{background:var(--ok-bg);color:var(--ok)} .tag.rej{background:var(--no-bg);color:var(--no)}
+.tag button{border:0;background:transparent;color:inherit;cursor:pointer;font-size:15px;padding:0 4px;line-height:1}
+.btn{border:1px solid var(--line);background:var(--panel);color:var(--fg);border-radius:6px;padding:4px 10px;font:inherit;font-size:13px;cursor:pointer}
+.btn:hover{border-color:var(--accent)}
+.words{display:flex;flex-wrap:wrap;gap:5px}
+/* Filter list like a shop sidebar: one value per line, marks on the right. */
+.w{border-color:transparent;background:var(--bg)}
+/* Status fills, the same everywhere: filters, table values, close products, «Отбор». */
+.s-only{background:var(--ok-bg)!important;color:var(--ok)!important}
+.s-also{background:var(--warn-bg)!important;color:var(--warn)!important}
+.s-rejected{background:var(--no-bg)!important;color:var(--no)!important}
+/* A frame only on your own marks, in the colour of the mark. */
+.framed{border-width:2px!important;border-style:solid!important}
+.framed.s-only{border-color:var(--ok)!important} .framed.s-also{border-color:var(--warn)!important} .framed.s-rejected{border-color:var(--no)!important}
+.cmp{border:1px solid transparent;background:var(--bg)}
+.cmp.same{color:var(--fg)}
+.rubric .words{flex-direction:column;flex-wrap:nowrap;gap:3px}
+.rubric .words .w{display:flex;width:100%;box-sizing:border-box;overflow-wrap:anywhere;padding-left:6px}
+.rubric .words .w button{width:20px}
+.rubric .words .w .n{margin-right:auto}
+.more{border:0;background:transparent;color:var(--accent);cursor:pointer;font:inherit;font-size:13px;padding:2px 0;text-align:left}
+.w{display:inline-flex;align-items:center;gap:2px;border:1px solid var(--line);border-radius:6px;padding:2px 2px 2px 7px;font-family:var(--mono);font-size:13px;background:var(--panel)}
+.w .n{color:var(--muted);margin-left:3px}
+.w button{border:0;background:transparent;color:var(--muted);cursor:pointer;font-size:14px;width:24px;height:24px;border-radius:4px}
+.w button:hover{background:var(--accent-bg)}
+.w.req{border-color:var(--ok)}
+.w.fill{background:var(--ok-bg);color:var(--ok)}
+.w.user{border-width:2px;border-color:var(--ok);font-weight:600}
+.w.user.rej{border-color:var(--no);background:var(--no-bg);color:var(--no)}
+.w button.bk{color:var(--ok)} .w button.ba{color:var(--warn);font-weight:700} .w button.bx{color:var(--no)}
+.w button[aria-pressed="true"]{font-weight:700}
+.w button.bk[aria-pressed="true"]{background:var(--ok-bg)} .w button.ba[aria-pressed="true"]{background:var(--warn-bg)}
+.w.user.also{border-color:var(--warn);background:var(--warn-bg);color:var(--warn)}
+.w button.bx[aria-pressed="true"]{color:var(--no);background:var(--no-bg)}
+.w.auto-rej{opacity:.5;text-decoration:line-through} .w.dim{opacity:.55}
+.tag.also{background:var(--warn-bg);color:var(--warn)}
+.tag.framed.acc{box-shadow:inset 0 0 0 2px var(--ok)} .tag.framed.also{box-shadow:inset 0 0 0 2px var(--warn)} .tag.framed.rej{box-shadow:inset 0 0 0 2px var(--no)}
+.summary{font-size:14px;margin:0 0 8px}
+.totals{margin:0;font-size:15px}
+.summary-table{background:var(--panel);border:1px solid var(--line);border-radius:8px}
+.summary-table .sumrow{cursor:pointer}
+.summary-table .sumrow:hover td,.summary-table .sumrow.open td{background:var(--accent-bg)}
+.summary-table .workrow>td{padding:12px;background:var(--bg)}
+.caret{color:var(--muted)}
+.pill{display:inline-block;padding:1px 8px;border-radius:10px;font-size:12px;white-space:nowrap;border:1px solid currentColor}
+.pill.done{color:var(--ok)} .pill.todo{color:var(--warn)} .pill.miss{color:var(--no)} .pill.none{color:var(--muted)}
+.aipanel{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:10px 14px}
+.aipanel summary{cursor:pointer;font-weight:600}
+.aipick{margin-bottom:14px}
+.ask{display:grid;gap:6px;margin:8px 0}
+.ask-msg{white-space:pre-wrap;padding:6px 10px;border-radius:8px;font-size:14px;max-width:90ch}
+.ask-msg.q{background:var(--accent-bg);justify-self:end}
+.ask-msg.a{background:var(--bg);border:1px solid var(--line)}
+.ask-row{display:flex;gap:6px;align-items:flex-start;flex-wrap:wrap}
+.ask-row textarea{flex:1 1 300px;font:inherit;font-size:14px;padding:6px 8px;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--fg)}
+.posnav{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:0 0 10px}
+.analog{display:inline-block;margin-top:2px;font-size:12px;color:var(--warn);border:1px solid currentColor;border-radius:4px;padding:0 5px}
+.offers tr.sep td{background:var(--bg);font-weight:600;color:var(--warn);border-top:2px solid var(--muted)}
+.neardiff{font-size:12px;color:var(--warn);margin-top:2px}
+details.near summary{color:var(--warn);font-weight:600}
+.cmprow{display:flex;flex-wrap:wrap;gap:3px;margin-top:3px}
+.cmp{font-size:12px;border-radius:4px;padding:0 5px;border:1px solid transparent}
+.cmp.diff{color:var(--no);display:inline-flex;align-items:center;gap:4px}
+/* The difference itself is a light red label; the two crosses stand out from it. */
+.cmp.diff{background:var(--no-bg);border-color:transparent;padding:1px 2px 1px 6px}
+/* «✕ этот» — red, «✕ у всех» — black. */
+.xbtn{border:0;background:transparent;color:var(--no);font:inherit;font-size:15px;font-weight:700;line-height:1;padding:0 3px;cursor:pointer}
+.xbtn.all{color:var(--fg)}
+.xbtn:hover{filter:brightness(.92)}
+.anchormark{font-size:12px;font-weight:600;color:var(--accent)}
+.offers td .anchorbtn{display:block;margin-top:4px;font-size:12px}
+.btn.anchorbtn.on{border-color:var(--accent);color:var(--accent);font-weight:600}
+.btn.chosen{border-color:var(--ok);color:var(--ok);font-weight:600}
+.btn:disabled{opacity:.4;cursor:default}
+.rubric{border-top:1px solid var(--line);padding-top:10px;margin-top:10px;display:grid;gap:6px}
+.assign{display:flex;flex-wrap:wrap;gap:6px;align-items:center;font-size:14px;padding:6px 8px;background:var(--accent-bg);border-radius:6px}
+.assign select,.assign input{font:inherit;font-size:14px;padding:3px 6px;border:1px solid var(--line);border-radius:5px;background:var(--panel);color:var(--fg)}
+.legend{display:grid;gap:6px;margin:6px 0 10px}
+.legend{grid-template-columns:max-content minmax(0,1fr);column-gap:10px}
+.legend-row{display:contents;font-size:13px;color:var(--muted)}
+.legend-row>span:last-child{font-size:13px;color:var(--muted);align-self:center}
+.legend-row .w{pointer-events:none;white-space:nowrap;justify-self:start}
+.panel-head{display:flex;align-items:flex-start;justify-content:space-between;gap:8px}
+.help{flex:0 0 auto}
+.help summary{list-style:none;cursor:pointer;width:24px;height:24px;border-radius:50%;border:1px solid var(--line);display:grid;place-items:center;font-weight:600;color:var(--muted);font-size:14px}
+.help summary::-webkit-details-marker{display:none}
+.help[open] summary{border-color:var(--accent);color:var(--accent)}
+.help-body{position:absolute;z-index:20;left:0;top:44px;width:min(480px,calc(100vw - 48px));background:var(--panel);border:1px solid var(--line);border-radius:8px;box-shadow:0 8px 24px rgb(0 0 0 / .18);padding:12px 14px}
+.help-close{position:absolute;top:6px;right:8px;border:0;background:transparent;color:var(--muted);font-size:18px;cursor:pointer}
+.panel{position:relative}
+.w.head{padding:0;background:transparent;border:0;box-shadow:none}
+.rubric-head{display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px}
+.summary b{font-family:var(--mono)}
+.tablewrap{overflow-x:auto}
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{text-align:left;padding:7px 8px;border-bottom:1px solid var(--line);vertical-align:top}
+th{font-weight:700;color:var(--muted);font-size:11px;line-height:1.25}
+.offers tr.group th{text-align:center;color:var(--fg);border-bottom:1px solid var(--line)}
+/* Groups are framed by rules, not by fills. */
+.offers .g-start{border-left:2px solid var(--muted)} .offers .g-end{border-right:2px solid var(--muted)}
+.offers tr.group th{border-top:2px solid var(--muted);border-bottom:2px solid var(--muted)}
+.offers tbody tr:last-child td{border-bottom:2px solid var(--muted)}
+td.num{font-family:var(--mono);font-variant-numeric:tabular-nums;white-space:nowrap;text-align:right}
+/* Rows: green — has the ✓ values, yellow — shown thanks to + (analog). */
+.offers tr.main td{background:color-mix(in srgb,var(--ok-bg) 60%,transparent)}
+.offers tr.alt td{background:color-mix(in srgb,var(--warn-bg) 70%,transparent)}
+.bestmark{display:inline-block;margin-left:4px;font-size:12px;color:var(--ok);font-weight:600}
+.rowvals{display:flex;flex-wrap:wrap;gap:3px;margin-top:4px}
+.rowvals .w{font-size:12px;padding:0 0 0 5px}
+.rowvals .w.cyc{padding:1px 7px;cursor:pointer;font:inherit;font-size:12px;color:var(--fg)}
+.rowvals .w.cyc:hover{border-color:var(--accent)}
+.rowvals .w.m-only{background:var(--ok-bg);border-color:var(--ok);color:var(--ok)}
+.rowvals .w.m-also{background:var(--warn-bg);border-color:var(--warn);color:var(--warn)}
+.rowvals .w.m-rej{background:var(--no-bg);border-color:var(--no);color:var(--no)}
+.conv{display:block;font-size:12px;color:var(--warn);background:var(--warn-bg);border-radius:4px;padding:1px 6px;margin-top:3px;width:fit-content}
+.why{font-size:12px;color:var(--no)}
+details.out{margin-top:12px}
+details.out summary{cursor:pointer;color:var(--muted);font-size:14px}
+tr.out td{color:var(--muted)}
+form.add{display:grid;gap:8px}
+form.add label{display:grid;gap:3px;font-size:13px;color:var(--muted)}
+form.add input,form.add textarea{font:inherit;font-size:14px;padding:6px 8px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--fg)}
+form.add textarea{min-height:180px;font-family:var(--mono);font-size:13px}
+.row{display:flex;flex-wrap:wrap;gap:8px}
+.row>label{flex:1 1 140px}
+.note{font-size:12px;color:var(--muted)}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+@media (prefers-reduced-motion: reduce){*{transition:none!important}}
+/* APP: строка ссылок и сообщения о сохранении */
+.appnav{display:flex;gap:14px;flex-wrap:wrap;font-size:14px;margin:0 0 6px}.appnav a{color:var(--accent)}
+.app-status{font-size:13px;color:var(--muted);min-height:1em;margin:4px 0 0}.app-status.error{color:var(--no)}
+</style>
+
+<div class="wrap">
+  <header>
+    <p class="appnav" id="app-nav"></p>
+    <h1 id="app-title">Подбор товаров</h1>
+    <p class="sub">Сводка по позициям заявки, нажатие на строку открывает отбор. Отметки применяются сразу; «Выбрать» переносит товар в счёт.</p>
+    <p class="app-status" id="app-status" role="status"></p>
+  </header>
+  <nav class="tabs" id="tabs" role="tablist" aria-label="Позиции"></nav>
+  <section id="main"></section>
+</div>
+
+<script>
+(() => {
+/* APP: позиции заявки и сохранённые решения приходят из приложения (вместо примеров стенда). */
+const APP=JSON.parse(document.getElementById('podbor-data').textContent);
+const EXAMPLES=APP.positions;
+
+/* ---------- Storage (per viewer convenience) ---------- */
+/* APP: решения хранятся в приложении, а не в браузере. Позиции заявки берутся свежими из приложения,
+   свои позиции и отметки — из сохранённого состояния; «Выбрано» по позициям заявки — то, что сейчас в счёте. */
+const load=()=>{
+  const s=APP.state&&typeof APP.state==='object'?APP.state:{};
+  const appIds=new Set(APP.positions.map(p=>p.id));
+  const own=(s.positions||[]).filter(p=>p&&!appIds.has(p.id)&&!p.app);
+  const chosen={};
+  for(const[k,v]of Object.entries(s.chosen||{}))if(!appIds.has(k))chosen[k]=v;
+  Object.assign(chosen,APP.chosen||{});
+  const positions=[...APP.positions,...own];
+  const active=positions.some(p=>p.id===s.active)?s.active:null;
+  return {...s,version:5,positions,chosen,active,marks:s.marks||{}};
+};
+let saveTimer=null, synced={...(APP.chosen||{})}, revision=APP.revision, syncing=Promise.resolve();
+const appStatus=(text,error)=>{const n=document.getElementById('app-status');if(n){n.textContent=text||'';n.className=error?'app-status error':'app-status'}};
+const post=async(url,body)=>{
+  const r=await fetch(url,{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json','X-Requested-With':'podbor'},body:JSON.stringify(body)});
+  const d=await r.json().catch(()=>({}));
+  if(!r.ok)throw new Error(d.detail||('Ошибка '+r.status));
+  return d;
+};
+// «Выбрать» по позиции заявки идёт в счёт приложения: то же действие, что выбор товара в сравнении.
+function syncChosen(){
+  for(const pos of APP.positions){
+    const cur=state.chosen?.[pos.id]??null, prev=synced[pos.id]??null;
+    if(cur===prev)continue;
+    synced[pos.id]=cur;
+    syncing=syncing.then(async()=>{
+      const product=cur==null?null:pos.products.find(p=>p[0]===cur);
+      try{
+        appStatus(cur==null?'Убираю товар из счёта…':'Переношу выбор в счёт…');
+        const d=await post(APP.action_url,cur==null
+          ?{action:'value_unselect',position:pos.position,csrf:APP.csrf,revision}
+          :{action:'value_accept_select',position:pos.position,key:product?.[3]?.key,csrf:APP.csrf,revision});
+        revision=d.revision;
+        appStatus(cur==null?'Товар убран из счёта.':'Выбор сохранён в счёте.');
+      }catch(e){
+        synced[pos.id]=prev;
+        if(prev==null)delete state.chosen[pos.id];else state.chosen[pos.id]=prev;
+        appStatus('Позиция «'+pos.name+'»: '+e.message,true);
+        storeState();render();
+      }
+    });
+  }
+}
+function storeState(){
+  clearTimeout(saveTimer);
+  saveTimer=setTimeout(async()=>{
+    const appIds=new Set(APP.positions.map(p=>p.id));
+    const body={...state,positions:state.positions.filter(p=>!appIds.has(p.id))};
+    try{await post(APP.state_url,{state:body})}catch(e){appStatus('Решения не сохранены: '+e.message,true)}
+  },600);
+}
+const save=()=>{storeState();syncChosen()};
+let state=load()||{positions:EXAMPLES,active:'ex1',marks:{}};
+state.positions=(state.positions||[]).filter(Boolean);
+if(state.version!==5){state.marks={};state.chosen={};state.positions=EXAMPLES;state.active=null;state.version=5;}
+if(!state.positions?.length){state.positions=EXAMPLES;state.active='ex1'}
+
+/* ---------- Logic (ported from characteristic_comparison.py / supplier_comparison.py) ---------- */
+const WORD=/[0-9a-zа-яё]+(?:[.,/×xх-][0-9a-zа-яё]+)*/gi;
+const CYR='асеорхкмтвн', LAT='aceopxkmtbh';
+// Words of a name, each once; in words with digits Cyrillic look-alikes become Latin («М8х1000» = «M8x1000»).
+function nameWords(name){
+  const out=new Set();
+  for(const raw of String(name||'').match(WORD)||[]){
+    let w=raw.toLowerCase().replaceAll('ё','е');
+    if(/\d/.test(w))w=[...w].map(c=>{const i=CYR.indexOf(c);return i<0?c:LAT[i]}).join('');
+    out.add(w);
+    // Parts of compound designations are words too: «m12x1000» -> m12, 1000; «креп-комп» -> креп, комп.
+    const size=w.match(/^([a-zа-я]*\d+(?:[.,]\d+)?)[xх×*](\d+(?:[.,]\d+)?)$/);
+    if(size){out.add(size[1]);out.add(size[2]);}
+    if(w.includes('-'))for(const part of w.split('-'))if(part.length>1)out.add(part);
+  }
+  return out;
+}
+// Russian word forms are one word: «шпилька», «шпильки», «шпилькой» -> шпильк.
+const ENDINGS=['ыми','ими','ого','его','ому','ему','ами','ями','ой','ей','ий','ый','ая','яя','ое','ее','ые','ие','ых','их','ым','им','ую','юю','ом','ем','ах','ях','ов','ев','а','я','ы','и','у','ю','е','о','ь','й'];
+function stem(w){
+  if(!/^[а-яе]+$/.test(w)||w.length<5)return w;
+  for(const e of ENDINGS)if(w.endsWith(e)&&w.length-e.length>=4)return w.slice(0,-e.length);
+  return w;
+}
+function close(a,b){ // one letter added, dropped or changed: «двуслойн» / «двухслойн»
+  if(Math.abs(a.length-b.length)>1||Math.min(a.length,b.length)<7)return false;
+  let i=0,j=0,diff=0;
+  while(i<a.length&&j<b.length){
+    if(a[i]===b[j]){i++;j++;continue}
+    if(++diff>1)return false;
+    if(a.length>b.length)i++; else if(b.length>a.length)j++; else {i++;j++}
+  }
+  return diff+(a.length-i)+(b.length-j)<=1;
+}
+function unit(u){
+  const s=String(u||'').toLowerCase().replace(/[.\s]/g,'');
+  if(['м','мп','погм','метр','метров'].includes(s))return 'м';
+  if(['шт','штука','штуки','штук'].includes(s))return 'шт';
+  if(s.startsWith('упак'))return 'упак';
+  if(s.startsWith('рулон'))return 'рулон';
+  return s;
+}
+// Pieces in one supplier unit: «(50 шт.)», «, 5 шт.», «(2шт)».
+function packPieces(name){
+  const m=String(name).match(/[(,]\s*(\d{1,5})\s*(?:шт\.?|штук[а-яё]*)(?=[\s).,]|$)/i);
+  return m&&+m[1]>1?+m[1]:0;
+}
+// Metres in a roll sold per piece: «в рулоне 1,05x10 м» -> 10.
+function rollLength(name){
+  if(!/рулон/i.test(name))return 0;
+  const m=String(name).match(/(\d+(?:[.,]\d+)?)\s*[xх×*]\s*(\d+(?:[.,]\d+)?)\s*м(?![a-zа-яё0-9²])/i);
+  return m?parseFloat(m[2].replace(',','.')):0;
+}
+function conversion(pos,p){
+  const req=unit(pos.unit), sup=unit(p.unit);
+  if(req==='шт'&&(sup==='шт'||sup==='упак')){const k=packPieces(p.name);if(k)return [k,`${k} шт`]}
+  if(req===sup)return [1,''];
+  if(req==='м'&&(sup==='шт'||sup==='рулон')){const l=rollLength(p.name);if(l)return [l,`${String(l).replace('.',',')} м`]}
+  return [null,`Нет пересчёта: заявка в «${pos.unit}», поставщик в «${p.unit}»`];
+}
+
+/* ---------- Characteristics from a name ---------- */
+function tokens(name){
+  return (String(name||'').match(WORD)||[]).map(raw=>{
+    let w=raw.toLowerCase().replaceAll('ё','е');
+    if(/\d/.test(w))w=[...w].map(c=>{const i=CYR.indexOf(c);return i<0?c:LAT[i]}).join('');
+    return w;
+  });
+}
+const FIELDS=['Тип товара','Резьба','Условный проход','Давление','Длина','Ширина','Толщина','Диаметр','Размеры','Размер','Сечение','Напряжение','Мощность','Ток','Объём','Масса','Температура','Защита IP','Обороты','Момент','Площадь','Зернистость','Угол','Угол резьбы','Класс прочности','Марка стали','Стандарт','Материал','Покрытие','Цвет','Фасовка','Бренд','Код / артикул'];
+const BRANDS=new Set(['starfix','aurafort','креп-комп','опм','messer','мастак','rtp','ремоколор','mw','zitar','fischer','sormat','mungo','hilti','зубр','makita','bosch','gp','askaynak','alfamag','valtti','руссиз','tikkurila','knauf','ceresit','tytan','penosil','dewalt','metabo','интерскол']);
+const CLASSES=new Set(['4.6','4.8','5.6','5.8','6.8','8.8','10.9','12.9']);
+const NUM=/^\d+(?:[.,]\d+)?$/, numv=s=>parseFloat(String(s).replace(',','.'));
+const fmt=n=>String(+(+n).toFixed(3)).replace('.',',');
+const len=v=>v>=1000?fmt(v/1000)+' м':fmt(v)+' мм'; // one label for one value
+// Words that name a characteristic by themselves (matched by stem, so «стальная» = «стальной»).
+const WORD_DICT={
+  'Цвет':['белый','черный','чёрный','серый','зеленый','синий','красный','желтый','бурый','коричневый','прозрачный','бежевый','оранжевый','голубой','фиолетовый','графитовый','хромированный'],
+  'Материал':['стальной','сталь','нержавеющий','латунный','латунь','медный','медь','алюминиевый','алюминий','чугунный','чугун','пвх','пнд','полипропилен','полипропиленовый','полиэтилен','полиэтиленовый','резиновый','резина','деревянный','пластиковый','пластик','поликарбонат','поликарбонатный','стекло','стеклянный','картон','бумажный','текстильный','силиконовый','полиуретановый','керамический','бетонный','фанерный','монолитный','a2','a4'],
+  'Покрытие':['оцинкованный','оцинк','цинк','zn','никелированный','окрашенный','порошковый','омедненный','омеднённый','фосфатированный','черненый','анодированный'],
+};
+const NN='(\\d+(?:[.,]\\d+)?)', NA='(?![a-zа-яё0-9])', NB='(?<![a-zа-яё0-9.,])';
+const R=(src)=>new RegExp(src,'gi');
+// Rules over the whole name; each takes its text out of the words heap.
+const TEXT_RULES=[
+  ['Марка стали',R('\\bAISI\\s*(\\d{3}L?)'),m=>['AISI '+m[1].toUpperCase(),null]],
+  ['Угол резьбы',R('угол\\s+резьбы\\s+'+NN+'\\s*(?:°|градус[а-яё]*|гр\\.?)?'),m=>[m[1]+'°',numv(m[1])]],
+  ['Условный проход',R('(?:\\bDN|Д[уy])\\s*'+NN+NA),m=>['DN '+m[1],numv(m[1])]],
+  ['Давление',R('(?:\\bPN|Р[уy])\\s*'+NN+NA),m=>['PN '+m[1],numv(m[1])]],
+  ['Давление',R(NB+NN+'\\s*(бар|bar|мпа|mpa|атм)'+NA),m=>[m[1]+' '+m[2].toLowerCase(),numv(m[1])]],
+  ['Сечение',R(NB+NN+'\\s*[xх×*]\\s*'+NN+'\\s*(?:мм²|мм2|кв\\.?\\s*мм)'),m=>[m[1]+'×'+m[2]+' мм²',numv(m[1])*numv(m[2])]],
+  ['Сечение',R(NB+NN+'\\s*(?:мм²|мм2|кв\\.?\\s*мм)'),m=>[m[1]+' мм²',numv(m[1])]],
+  ['Площадь',R(NB+NN+'\\s*(?:м²|м2|кв\\.?\\s*м)'+NA),m=>[m[1]+' м²',numv(m[1])]],
+  ['Мощность',R(NB+NN+'\\s*(квт|kw|вт|w)'+NA),m=>{const v=numv(m[1])*(/^к|^k/i.test(m[2])?1000:1);return [v>=1000?fmt(v/1000)+' кВт':fmt(v)+' Вт',v]}],
+  ['Напряжение',R(NB+NN+'\\s*(?:в|v|вольт)'+NA),m=>[m[1]+' В',numv(m[1])]],
+  ['Ток',R(NB+NN+'\\s*(?:а|a)'+NA),m=>[m[1]+' А',numv(m[1])]],
+  ['Объём',R(NB+NN+'\\s*(мл|ml|л|l)'+NA),m=>{const v=numv(m[1])/(/^м|^m/i.test(m[2])?1000:1);return [fmt(v)+' л',v]}],
+  ['Масса',R(NB+NN+'\\s*(кг|kg|г|гр|g)\\.?'+NA),m=>{const v=numv(m[1])/(/^к|^k/i.test(m[2])?1:1000);return [fmt(v)+' кг',v]}],
+  ['Температура',R(NB+NN+'\\s*°\\s*[cс]'+NA),m=>[m[1]+' °C',numv(m[1])]],
+  ['Защита IP',R('\\bIP\\s*(\\d{2})'+NA),m=>['IP'+m[1],+m[1]]],
+  ['Обороты',R(NB+NN+'\\s*(?:об/мин|rpm)'),m=>[m[1]+' об/мин',numv(m[1])]],
+  ['Момент',R(NB+NN+'\\s*(?:н[·*]?м|nm)'+NA),m=>[m[1]+' Н·м',numv(m[1])]],
+  ['Угол',R(NB+NN+'\\s*(?:°|градус[а-яё]*)'),m=>[m[1]+'°',numv(m[1])]],
+  ['Цвет',R('\\bRAL\\s*(\\d{4})'),m=>['RAL '+m[1],null]],
+  ['Марка стали',new RegExp('(?<![\\d.,×xхA-Za-zА-Яа-я])(\\d{2}[ХГ]\\d{0,2}[А-Я][А-Я\\d]*)(?![A-Za-zА-Яа-я0-9])','g'),m=>[m[1],null]],
+  ['Стандарт',R('(ГОСТ(?:\\s+Р)?|ТУ)\\s*(\\d[\\d./-]*)'),m=>[m[1].toUpperCase()+' '+m[2],null]],
+  ['Длина',R('длин[аойе]*\\s*'+NN+'\\s*(мм|см|м)?'+NA),m=>{const v=numv(m[1])*({см:10,м:1000}[(m[2]||'').toLowerCase()]||1);return [len(v),v]}],
+  ['Ширина',R('ширин[аойе]*\\s*'+NN+'\\s*(мм|см|м)?'+NA),m=>{const v=numv(m[1])*({см:10,м:1000}[(m[2]||'').toLowerCase()]||1);return [len(v),v]}],
+  ['Толщина',R('(?:толщин[аойе]*|стенка)\\s*'+NN+'\\s*(мм)?'),m=>[fmt(numv(m[1]))+' мм',numv(m[1])]],
+  ['Диаметр',R('(?:диаметр(?:ом)?|диам\\.?|[ØФ⌀])\\s*'+NN+'(?:\\s*-\\s*'+NN+')?\\s*(мм)?'),m=>[m[1]+(m[2]?'-'+m[2]:'')+' мм',numv(m[1])]],
+  ['Размеры',R(NB+NN+'\\s*[xх×*]\\s*'+NN+'\\s*[xх×*]\\s*'+NN+'(?:\\s*(мм|см))?'),m=>[[m[1],m[2],m[3]].join('×')+(m[4]?' '+m[4]:''),numv(m[1])]],
+  ['Размеры',R(NB+NN+'\\s*[xх×*]\\s*'+NN+'(?:\\s*(мм|см))?(?!\\s*[xх×*\\d])(?!\\s*м(?![мa-zа-яё]))'+NA),m=>[m[1]+'×'+m[2]+(m[3]?' '+m[3]:''),numv(m[1])]],
+];
+function extract(name){
+  const text=String(name||''), toks=[], found=[], covered=[];
+  for(const m of text.matchAll(WORD)){
+    let w=m[0].toLowerCase().replaceAll('ё','е');
+    if(/\d/.test(w))w=[...w].map(c=>{const i=CYR.indexOf(c);return i<0?c:LAT[i]}).join('');
+    toks.push({w,o:m[0],s:m.index,e:m.index+m[0].length});
+  }
+  const used=new Set();
+  const add=(field,value,n,...idx)=>{found.push({field,value:String(value),n});idx.forEach(i=>used.add(i))};
+  for(const [field,re,fn] of TEXT_RULES){
+    for(const m of text.matchAll(re)){
+      const s=m.index, e=m.index+m[0].length;
+      if(covered.some(([a,b])=>s<b&&e>a))continue;
+      covered.push([s,e]);
+      const [value,n]=fn(m); add(field,value,n);
+      toks.forEach((t,i)=>{if(t.s<e&&t.e>s)used.add(i)});
+    }
+  }
+  const t=toks.map(x=>x.w);
+  for(let i=0;i<t.length;i++){ // product type: the first noun of the name
+    const w=t[i]; if(!/^[а-я-]+$/.test(w))break;
+    if(used.has(i)||/(ая|яя|ый|ий|ой|ое|ее|ые|ие)$/.test(w)&&!w.includes('-'))continue;
+    add('Тип товара',w,null,i);break;
+  }
+  const mmOf=(v,u)=>u==='м'||u==='m'?v*1000:v;
+  for(let i=0;i<t.length;i++){
+    if(used.has(i))continue;
+    const w=t[i], nx=used.has(i+1)?'':(t[i+1]||''), n2=t[i+2]||'';
+    let m;
+    const dict=lookup(w);
+    if(dict){add(dict.field,dict.value,null,i);continue}
+    if((m=w.match(/^m(\d{1,2}(?:[.,]\d)?)(?:[x×*](\d+(?:[.,]\d+)?)(?:\/\d+)?)?$/))){
+      add('Резьба','M'+m[1],numv(m[1]),i);
+      if(m[2]){const u=['м','m','мм','mm'].includes(nx)?nx:'мм';const v=mmOf(numv(m[2]),u);add('Длина',len(v),v);if(u===nx)used.add(i+1);}
+      continue;
+    }
+    if(w==='l'&&(m=nx.match(/^(\d+(?:[.,]\d+)?)(мм|mm|м|m)?$/))){const u=m[2]||(['мм','mm','м','m'].includes(n2)?n2:'мм');const v=mmOf(numv(m[1]),u);add('Длина',len(v),v,i,i+1);if(!m[2]&&u===n2)used.add(i+2);continue}
+    if((m=w.match(/^l(\d+(?:[.,]\d+)?)$/))){const v=numv(m[1]);add('Длина',len(v),v,i);if(nx==='мм')used.add(i+1);continue}
+    if((m=w.match(/^(\d+(?:[.,]\d+)?)x(\d+(?:[.,]\d+)?)$/))&&['м','m'].includes(nx)){add('Ширина',len(numv(m[1])*1000),numv(m[1])*1000,i,i+1);add('Длина',len(numv(m[2])*1000),numv(m[2])*1000);continue}
+    if(NUM.test(w)&&['м','m'].includes(nx)&&numv(w)<=12){const v=numv(w)*1000;add('Длина',len(v),v,i,i+1);continue}
+    if((m=w.match(/^d(\d+(?:[.,]\d+)?(?:-\d+(?:[.,]\d+)?)?)$/))&&nx==='мм'){add('Диаметр',m[1]+' мм',numv(m[1]),i,i+1);continue}
+    if(NUM.test(w)&&nx==='мм'){add('Размер',fmt(numv(w))+' мм',numv(w),i,i+1);continue}
+    if((m=w.match(/^(\d+(?:[.,]\d+)?)(?:mm|мм)$/))){add('Размер',fmt(numv(m[1]))+' мм',numv(m[1]),i);continue}
+    if(w==='din'&&/^\d+$/.test(nx)){add('Стандарт','DIN '+nx,null,i,i+1);continue}
+    if((m=w.match(/^din(\d+)$/))){add('Стандарт','DIN '+m[1],null,i);continue}
+    if(w==='iso'&&/^\d/.test(nx)){add('Стандарт','ISO '+nx,null,i,i+1);continue}
+    if(w==='пр'&&CLASSES.has(nx.replace(',','.'))){add('Класс прочности',nx.replace(',','.'),null,i,i+1);continue}
+    if(CLASSES.has(w)&&w.includes('.')){add('Класс прочности',w,null,i);continue}
+    if((m=w.match(/^p(\d{2,4})$/))){add('Зернистость','P'+m[1],+m[1],i);continue}
+    if((m=w.match(/^(\d{1,5})ш[тt]$/))){add('Фасовка',m[1]+' шт',+m[1],i);continue}
+    if(/^\d{1,5}$/.test(w)&&nx==='шт'){add('Фасовка',w+' шт',+w,i,i+1);continue}
+    if(BRANDS.has(w)){add('Бренд',toks[i].o.toUpperCase(),null,i);continue}
+    if((/[a-zа-я]/.test(w)&&/\d/.test(w)&&w.length>=5)||/^\d{5,}$/.test(w)){add('Код / артикул',toks[i].o,null,i);continue}
+  }
+  const rest=new Set();
+  t.forEach((w,i)=>{if(!used.has(i))rest.add(w)});
+  return {found,rest};
+}
+// Built-in dictionary plus the words you assigned to a rubric on this page.
+function lookup(w){
+  const s=stem(w);
+  const mine=(state.dict||{})[s]; if(mine)return mine;
+  const CANON={a2:'нерж. A2',a4:'нерж. A4',zn:'цинк','оцинкованный':'цинк','оцинк':'цинк','чёрный':'черный','сталь':'стальной','латунь':'латунный','медь':'медный','алюминий':'алюминиевый','чугун':'чугунный','пластик':'пластиковый','резина':'резиновый','полипропилен':'полипропиленовый','полиэтилен':'полиэтиленовый','поликарбонат':'поликарбонатный'};
+  for(const[field,list]of Object.entries(WORD_DICT)){const x=list.find(x=>x===w||stem(x)===s);if(x)return {field,value:CANON[x]||x}}
+  return null;
+}
+
+/* ---------- Model of one position ---------- */
+function model(pos){
+  const products=pos.products.map((p,i)=>{const x=extract(p[0]);return {i,name:p[0],price:+p[1]||0,unit:p[2]||'шт',found:x.found,raw:x.rest}});
+  const reqX=extract(pos.name), reqRaw=[...reqX.rest];
+  // Heap words: one key per word with its forms (same stem, or stems one letter apart).
+  const freq=new Map();
+  for(const p of products)for(const w of p.raw)freq.set(w,(freq.get(w)||0)+1);
+  for(const w of reqRaw)if(!freq.has(w))freq.set(w,0);
+  const keyOf=new Map(), stems=[];
+  for(const w of [...freq.keys()].sort((a,b)=>freq.get(b)-freq.get(a))){
+    const s=stem(w); const hit=stems.find(x=>x===s||(/^[а-я]+$/.test(s)&&close(x,s)));
+    if(!hit)stems.push(s); keyOf.set(w,'w|'+(hit||s));
+  }
+  const forms=new Map(), labels=new Map(), fieldOf=new Map(), numOf=new Map();
+  for(const[w,k]of keyOf){if(!forms.has(k))forms.set(k,[]);forms.get(k).push(w)}
+  for(const[k,fs]of forms)labels.set(k,fs.find(w=>reqRaw.includes(w))||[...fs].sort((a,b)=>freq.get(b)-freq.get(a))[0]);
+  // Field values: the type is matched by stem too («шпилька» = «шпильки»).
+  const fkey=f=>'f|'+f.field+'|'+(f.field==='Тип товара'?stem(f.value):f.value);
+  const keysOf=(x,raw)=>{
+    const keys=new Set();
+    for(const f of x.found){const k=fkey(f);keys.add(k);keys.add('r|'+f.field);
+      if(!labels.has(k)||f.field==='Тип товара'&&f.value===reqX.found.find(r=>r.field==='Тип товара')?.value)labels.set(k,f.value);
+      fieldOf.set(k,f.field);numOf.set(k,f.n);fieldOf.set('r|'+f.field,f.field);labels.set('r|'+f.field,'указано: '+f.field.toLowerCase())}
+    for(const w of raw)keys.add(keyOf.get(w));
+    return keys;
+  };
+  for(const p of products)p.words=keysOf(p,p.raw);
+  const reqKeys=[...keysOf(reqX,reqRaw)].filter(k=>!k.startsWith('r|'));
+  const reqWords=new Set(reqKeys);
+  const label=k=>labels.get(k)||k;
+  const counts=new Map();
+  for(const p of products)for(const w of p.words)counts.set(w,(counts.get(w)||0)+1);
+  const saved=state.marks[pos.id]||{};
+  const marks=new Map(), skipped=new Set();
+  for(const w of counts.keys()){
+    const u=saved[w];
+    if(u==='only'||u==='also'||u==='rejected')marks.set(w,{s:u,by:'user'});
+  }
+  const pick=s=>[...marks].filter(([,m])=>m.s===s).map(([w])=>w);
+  // ✓ — the value must be there; + — products with this value are shown too, as an analog / replacement.
+  // In a rubric all ✓ and + values are alternatives («M8 или аналог M10»); rubrics combine with «и».
+  // Loose words: all ✓ words, or any + word. ✕ never passes. Products matching nothing ticked are not shown.
+  const facets=list=>{const g=new Map();for(const[w,s]of list){if(s==='rejected'||w.startsWith('w|'))continue;
+    const f=w.startsWith('f|')?'f|'+fieldOf.get(w):w;if(!g.has(f))g.set(f,{main:[],alt:[]});g.get(f)[s==='also'?'alt':'main'].push(w)}return g};
+  // 0 — fails, 1 — passes on ✓ values, 2 — passes only thanks to + (an analog).
+  const grade=(list,p)=>{
+    if(list.some(([w,s])=>s==='rejected'&&p.words.has(w)))return 0;
+    let analog=false;
+    for(const {main,alt} of facets(list).values()){
+      if(main.some(w=>p.words.has(w)))continue;
+      if(alt.some(w=>p.words.has(w))){analog=true;continue}
+      return 0;
+    }
+    const wm=list.filter(([w,s])=>w.startsWith('w|')&&s==='only').map(([w])=>w), wa=list.filter(([w,s])=>w.startsWith('w|')&&s==='also').map(([w])=>w);
+    if(wm.length||wa.length){
+      if(wm.length&&wm.every(w=>p.words.has(w))){}
+      else if(wa.some(w=>p.words.has(w)))analog=true;
+      else return 0;
+    }
+    return analog?2:1;
+  };
+  const passesWith=list=>p=>grade(list,p)>0;
+  const current=()=>[...marks].map(([w,m])=>[w,m.s]);
+  // Request values and words are applied by the program in request order, never one that leaves no product.
+  for(const w of reqKeys){
+    if(marks.has(w)||saved[w]==='none'||!counts.has(w))continue;
+    if(products.some(passesWith([...current(),[w,'only']])))marks.set(w,{s:'only',by:'auto'});
+    else skipped.add(w);
+  }
+  const only=pick('only'), also=pick('also'), rej=pick('rejected');
+  const groups=facets(current());
+  const alive=products.filter(passesWith(current()));
+  const left=new Map();
+  for(const p of alive)for(const w of p.words)left.set(w,(left.get(w)||0)+1);
+  const named=k=>(fieldOf.has(k)&&!k.startsWith('r|')?fieldOf.get(k)+' ':'')+label(k);
+  for(const p of products){
+    const bad=rej.filter(w=>p.words.has(w));
+    p.reasons=bad.length?bad.map(w=>'Исключено: '+named(w)):[...groups.values()].filter(g=>![...g.main,...g.alt].some(w=>p.words.has(w))).map(g=>'Нет: '+[...g.main,...g.alt].map(named).join(' или '));
+    p.analog=grade(current(),p)===2;
+    const [k,note]=conversion(pos,p); p.factor=k; p.note=note;
+    p.unitPrice=k?p.price/k:null;
+    p.buy=k?Math.ceil(pos.qty/k):null; p.total=k?p.buy*p.price:null;
+  }
+  // Order: products with the ✓ values first, analogs after them; each by the price per request unit.
+  alive.sort((a,b)=>a.analog-b.analog||(a.unitPrice??Infinity)-(b.unitPrice??Infinity));
+  // Close products: compared by every characteristic with a target — the request's own values, then the
+  // chosen (or best) product's values for the other rubrics. Codes, brand and pack size are not compared.
+  const SKIP=new Set(['Код / артикул','Бренд','Фасовка']);
+  const valuesOf=p=>{const m=new Map();for(const k of p.words)if(k.startsWith('f|')&&!SKIP.has(fieldOf.get(k))){const f=fieldOf.get(k);if(!m.has(f))m.set(f,new Set());m.get(f).add(k)}return m};
+  const target=new Map();
+  for(const k of reqKeys)if(k.startsWith('f|')&&saved[k]!=='none'&&!SKIP.has(fieldOf.get(k))){const f=fieldOf.get(k);if(!target.has(f))target.set(f,new Set());target.get(f).add(k)}
+  for(const[k,m]of marks)if(k.startsWith('f|')&&m.s!=='rejected'&&!SKIP.has(fieldOf.get(k))){const f=fieldOf.get(k);if(!target.has(f))target.set(f,new Set());target.get(f).add(k)}
+  for(const[k,m]of marks)if(k.startsWith('w|')&&m.s==='only')target.set('слово «'+label(k)+'»',new Set([k]));
+  // One order for all products: how many characteristics of the request (and of your marks) they share.
+  // ✕ still removes; everything else is ranked, not filtered.
+  const rankAll=(ref)=>{
+    // The request (and your marks) decide; the anchor product only adds the rubrics the request does not name.
+    const t2=new Map(target), fromRef=new Set();
+    if(ref)for(const[f,ks]of valuesOf(ref))if(!t2.has(f)){t2.set(f,ks);fromRef.add(f)}
+    const list=[];
+    for(const p of products){
+      if(rej.some(w=>p.words.has(w)))continue;
+      const own=valuesOf(p), same=[], diff=[], unknown=[];
+      for(const[f,ks]of t2){
+        const o=f.startsWith('слово')?new Set([...ks].filter(k=>p.words.has(k))):own.get(f);
+        if(!o||!o.size){if(f.startsWith('слово'))diff.push({f,want:[...ks],has:[]});else unknown.push(f);continue}
+        ([...o].some(k=>ks.has(k))?same:diff).push({f,want:[...ks],has:[...o]});
+      }
+      const analog=same.some(x=>x.has.some(k=>marks.get(k)?.s==='also')&&!x.has.some(k=>marks.get(k)?.s==='only'||reqKeys.includes(k)));
+      const dReq=diff.filter(x=>!fromRef.has(x.f)), dRef=diff.filter(x=>fromRef.has(x.f));
+      list.push({p,same,diff,dReq,dRef,unknown,total:same.length+diff.length,analog,anchor:p===ref});
+    }
+    const weight=c=>c.dReq.reduce((s,x)=>s+(NUMERIC.has(x.f)?2:1),0);
+    return list.sort((a,b)=>b.anchor-a.anchor||a.dReq.length-b.dReq.length||weight(a)-weight(b)||a.dRef.length-b.dRef.length||a.analog-b.analog||b.same.length-a.same.length||a.unknown.length-b.unknown.length||(a.p.unitPrice??Infinity)-(b.p.unitPrice??Infinity));
+  };
+  const refName=state.anchor?.[pos.id];
+  const reference=products.find(p=>p.name===refName)||null;
+  return {products,reqWords,counts,marks,alive,left,only,also,rej,skipped,label,forms,fieldOf,numOf,named,
+    rankAll,targetSize:target.size,closeTo:(ref)=>{
+      const t2=new Map(target);
+      if(ref)for(const[f,ks]of valuesOf(ref))if(!t2.has(f))t2.set(f,ks);
+      const list=[];
+      for(const p of products){
+        if(alive.includes(p)||rej.some(w=>p.words.has(w))||p===ref)continue;
+        const own=valuesOf(p), same=[], diff=[], unknown=[];
+        for(const[f,ks]of t2){const o=own.get(f);if(!o){unknown.push(f);continue}([...o].some(k=>ks.has(k))?same:diff).push({f,want:[...ks],has:[...o]})}
+        if(same.length>=3&&diff.length<=2)list.push({p,same,diff,unknown,total:same.length+diff.length});
+      }
+      return list.sort((a,b)=>b.same.length-a.same.length||a.diff.length-b.diff.length||(a.p.unitPrice??Infinity)-(b.p.unitPrice??Infinity));
+    },reference};
+}
+
+/* ---------- Rendering ---------- */
+const el=(tag,attrs={},...kids)=>{const n=document.createElement(tag);for(const[k,v]of Object.entries(attrs)){if(k==='class')n.className=v;else if(k.startsWith('on'))n[k]=v;else if(v!==false&&v!=null)n.setAttribute(k,v===true?'':v)}for(const c of kids.flat())if(c!=null&&c!==false)n.append(c.nodeType?c:String(c));return n};
+const money=v=>v==null?'—':v.toLocaleString('ru-RU',{maximumFractionDigits:2})+' ₽';
+const num=v=>v==null?'—':v.toLocaleString('ru-RU',{maximumFractionDigits:3});
+
+let assigning=null; const expanded=new Set();
+function setMark(pos,word,next){
+  const m=state.marks[pos.id]||(state.marks[pos.id]={});
+  m[word]=next; // 'accepted' | 'rejected' | 'none' (a request word with its default ✓ taken off)
+  save();render();
+}
+function toggle(pos,word,decision,mark,isReq){
+  if(mark&&mark.by==='user'&&mark.s===decision)setMark(pos,word,isReq?'none':null);
+  else setMark(pos,word,decision);
+}
+
+function renderTabs(){
+  const tabs=document.getElementById('tabs');tabs.replaceChildren();
+  for(const p of state.positions){
+    tabs.append(el('button',{class:'tab',role:'tab','aria-selected':String(p.id===state.active),onclick:()=>{state.active=p.id;save();render()}},p.name.length>38?p.name.slice(0,36)+'…':p.name));
+  }
+  tabs.append(el('button',{class:'tab add',role:'tab','aria-selected':String(state.active==='new'),onclick:()=>{state.active='new';render()}},'+ Своя позиция'));
+}
+
+function renderPosition(pos){
+  const M=model(pos);
+  const main=el('div',{class:'pos-work'});
+  main.append(el('div',{class:'req'},
+    el('b',{},pos.name), el('span',{class:'meta'},`${num(pos.qty)} ${pos.unit}`),
+    pos.example?el('span',{class:'note'},pos.example):null,
+    !pos.example?el('button',{class:'btn',onclick:()=>{state.positions=state.positions.filter(p=>p.id!==pos.id);delete state.marks[pos.id];state.active=state.positions[0]?.id||'new';save();render()}},'Удалить позицию'):null));
+
+  // Characteristics panel: rubrics with values, then the heap of words that fit no rubric.
+  const wp=el('section',{class:'panel','aria-label':'Характеристики и слова найденных товаров'});
+  // The explanation is folded behind «?» so the rubrics come first.
+  const help=el('details',{class:'help'},el('summary',{'aria-label':'Как пользоваться','title':'Как пользоваться'},'?'));
+  // The help opens as a floating card over the page, not squeezed into the narrow filter column.
+  const helpBody=el('div',{class:'help-body'},el('button',{type:'button',class:'help-close','aria-label':'Закрыть пояснение',onclick:()=>{help.open=false}},'×'));
+  help.append(helpBody);
+  wp.append(el('div',{class:'panel-head'},el('h2',{},'Характеристики найденных товаров'),help));
+  helpBody.append(el('p',{class:'hint'},'✓ — показать товары с этим значением. + — показать также товары с этим значением как аналог / замену (идут после основных, с пометкой). В одной рубрике отмеченные значения — «или», разные рубрики — «и». ✕ — убрать товары с этим значением. Чтобы вернуть остальные товары, снимите отметки. У названия рубрики ✓ — только товары, где эта характеристика указана, ✕ — убрать их. Число в скобках — сколько оставшихся товаров содержат значение.'));
+  // Legend: each state drawn exactly as the value looks in the list, with one line of meaning.
+  const sample=(cls,text,n,pressed)=>{const b=(sym,on,extra='')=>el('button',{type:'button',tabindex:-1,'aria-hidden':'true',class:extra,'aria-pressed':String(on)},sym);
+    return el('span',{class:'w '+cls},text,el('span',{class:'n'},`(${n})`),b('✓',pressed==='only','bk'),b('+',pressed==='also','ba'),b('✕',pressed==='rejected','bx'))};
+  const legend=[
+    [sample('s-only framed','M8',4,'only'),'Вы отметили ✓ — показаны товары с этим значением'],
+    [sample('s-also framed','M10',1,'also'),'Вы отметили + — такие товары показаны как аналог / замена'],
+    [sample('s-rejected framed','держатель',0,'rejected'),'Вы отметили ✕ — товары с этим значением убраны'],
+    [sample('s-only','шпилька',4,'only'),'Значение из заявки — программа отметила ✓ сама (заливка без рамки)'],
+    [sample('','M12',1,null),'Без отметки — можно отметить'],
+    [sample('dim','M24',0,null),'Нет у показанных товаров — есть только у отсеянных'],
+  ];
+  helpBody.append(el('div',{class:'legend'},legend.map(([chipNode,text])=>el('div',{class:'legend-row'},chipNode,el('span',{},text)))));
+  const chosen=el('div',{class:'chosen'});
+  const sym={only:'✓ ',also:'+ ',rejected:'✕ '}; // + is «также, аналог»
+  const reset=el('button',{class:'btn',onclick:()=>{state.marks[pos.id]={};save();render()}},'Вернуть значения заявки');
+  if(M.marks.size){
+    chosen.append(el('span',{},'Отбор:'));
+    for(const[w,m]of M.marks)chosen.append(el('span',{class:'tag '+(m.s==='rejected'?'rej':m.s==='also'?'also':'acc')+(m.by==='user'?' framed':''),title:m.by==='auto'?'Из заявки, выбрано программой':'Выбрано вами'},sym[m.s]+M.named(w),
+      el('button',{type:'button','aria-label':'Отменить выбор: '+M.named(w),title:'Отменить',onclick:()=>setMark(pos,w,M.reqWords.has(w)?'none':null)},'×')));
+    chosen.append(el('button',{class:'btn',onclick:()=>{const m=state.marks[pos.id]={};for(const w of M.marks.keys())if(M.reqWords.has(w))m[w]='none';save();render()}},'Сбросить всё'),reset);
+  } else chosen.append(el('span',{class:'note'},'Ничего не выбрано — показаны все товары.'),reset);
+  wp.append(chosen);
+  if(M.skipped.size)wp.append(el('p',{class:'note'},'Из заявки не применено — с этим не остаётся ни одного товара: '+[...M.skipped].map(M.named).join(', ')+'.'));
+  const narrowing=M.only.length>0||M.also.length>0;
+  const chip=(w,text,what)=>{
+    const m=M.marks.get(w), n=M.left.get(w)||0, isReq=M.reqWords.has(w);
+    // Fill shows the status (✓ green, + yellow, ✕ red), whoever set it; a frame only on your own marks.
+    let cls='w'+(m?' s-'+m.s:'')+(m&&m.by==='user'?' framed':'');
+    if(!m&&!n)cls+=' dim';
+    const s=m&&m.by==='user'?m.s:null;
+    const fs=w.startsWith('w|')?(M.forms.get(w)||[]):[];
+    const tip=[isReq?(M.skipped.has(w)?'Есть в заявке — не применено: с этим не остаётся ни одного товара':'Есть в заявке'):'',fs.length>1?'Формы: '+fs.join(', '):''].filter(Boolean).join(' · ');
+    const node=el('span',{class:cls,title:tip},text+(fs.length>1?'*':''),el('span',{class:'n'},`(${n})`),
+      el('button',{class:'bk',type:'button','aria-label':'Только товары, где '+what,title:'Только','aria-pressed':String(s==='only'||(m?.by==='auto')),onclick:()=>toggle(pos,w,'only',m,isReq)},'✓'));
+    if(!w.startsWith('r|'))node.append(el('button',{class:'ba',type:'button','aria-label':'Также, как аналог: '+what,title:'Также — аналог / замена','aria-pressed':String(s==='also'),onclick:()=>toggle(pos,w,'also',m,isReq)},'+'));
+    node.append(el('button',{class:'bx',type:'button','aria-label':'Убрать товары, где '+what,title:'Убрать','aria-pressed':String(s==='rejected'),onclick:()=>toggle(pos,w,'rejected',m,isReq)},'✕'));
+    return node;
+  };
+  // Only ✓ and ✕ beside a rubric name: products where it is stated / not stated.
+  const rubricMarks=f=>{const c=chip('r|'+f,'',`указана рубрика ${f}`);c.querySelector('.n').remove();c.firstChild.remove?.();c.classList.add('head');
+    c.title='✓ — только товары, где указана рубрика «'+f+'»; ✕ — убрать такие товары';return c};
+  const byField=new Map();
+  for(const k of M.counts.keys())if(k.startsWith('f|')){const f=M.fieldOf.get(k);if(!byField.has(f))byField.set(f,[]);byField.get(f).push(k)}
+  // Rubrics with chosen values first, then those with values among the remaining products, then the rest.
+  // In a rubric: chosen values, then values the remaining products have, then the others; a few are shown.
+  // A value from the request is recommended: it stays at the top even when its mark is taken off.
+  const rankKey=k=>M.marks.has(k)?0:M.reqWords.has(k)?1:(M.left.get(k)||0)>0?2:3;
+  const fields=[...FIELDS,...[...byField.keys()].filter(f=>!FIELDS.includes(f))].filter(f=>byField.has(f));
+  const rankField=f=>Math.min(M.marks.has('r|'+f)?0:9,...byField.get(f).map(rankKey));
+  fields.sort((a,b)=>rankField(a)-rankField(b));
+  const limited=(keys,f,limit,make)=>{
+    const box=el('div',{class:'words',role:'group','aria-label':f});
+    const open=expanded.has(pos.id+'|'+f), keep=Math.max(limit,keys.filter(k=>M.marks.has(k)).length);
+    for(const k of open?keys:keys.slice(0,keep))box.append(make(k));
+    if(keys.length>keep)box.append(el('button',{class:'more',type:'button',onclick:()=>{open?expanded.delete(pos.id+'|'+f):expanded.add(pos.id+'|'+f);render()}},open?'Свернуть':`Ещё ${keys.length-keep}`));
+    return box;
+  };
+  for(const f of fields){
+    const keys=byField.get(f);
+    keys.sort((a,b)=>rankKey(a)-rankKey(b)||(M.numOf.get(a)??Infinity)-(M.numOf.get(b)??Infinity)||M.label(a).localeCompare(M.label(b),'ru'));
+    wp.append(el('div',{class:'rubric'},
+      el('div',{class:'rubric-head'},el('b',{},f),rubricMarks(f)),
+      limited(keys,f,5,k=>chip(k,M.label(k),`${f} ${M.label(k)}`))));
+  }
+  const heap=[...M.counts.keys()].filter(k=>k.startsWith('w|')).sort((a,b)=>(M.left.get(b)||0)-(M.left.get(a)||0)||M.counts.get(b)-M.counts.get(a)||M.label(a).localeCompare(M.label(b),'ru'));
+  if(heap.length){
+    const sec=el('div',{class:'rubric'},el('div',{class:'rubric-head'},el('b',{},`Прочие слова (${heap.length})`),el('span',{class:'note',title:'Не попали ни в одну рубрику; формы одного слова объединены (*). Кнопка ⤴ относит слово к рубрике — дальше это работает во всех позициях.'},'ⓘ')));
+    if(assigning&&heap.includes(assigning)){
+      const word=M.label(assigning);
+      const sel=el('select',{id:'assign-field'},[...new Set([...FIELDS.filter(f=>!['Тип товара','Код / артикул'].includes(f)),...Object.values(state.dict||{}).map(d=>d.field)])].map(f=>el('option',{value:f},f)),el('option',{value:'__new'},'Новая рубрика…'));
+      const custom=el('input',{id:'assign-new',placeholder:'Название новой рубрики',hidden:true});
+      sel.onchange=()=>{custom.hidden=sel.value!=='__new'};
+      sec.append(el('div',{class:'assign'},el('span',{},`Отнести «${word}» к рубрике`),sel,custom,
+        el('button',{class:'btn',onclick:()=>{const field=sel.value==='__new'?custom.value.trim():sel.value;if(!field)return;
+          state.dict=state.dict||{};for(const f of (M.forms.get(assigning)||[word]))state.dict[stem(f)]={field,value:word};assigning=null;save();render()}},'Отнести'),
+        el('button',{class:'btn',onclick:()=>{assigning=null;render()}},'Отмена')));
+    }
+    heap.sort((a,b)=>rankKey(a)-rankKey(b));
+    sec.append(limited(heap,'Прочие слова',8,k=>{const c=chip(k,M.label(k),`есть слово ${M.label(k)}`);
+      c.append(el('button',{type:'button',title:'Отнести к рубрике','aria-label':'Отнести к рубрике: '+M.label(k),onclick:()=>{assigning=k;render()}},'⤴'));return c}));
+    wp.append(sec);
+  }
+  const mine=Object.entries(state.dict||{});
+  if(mine.length)wp.append(el('details',{class:'rubric'},el('summary',{},`Мой справочник (${mine.length})`),
+    el('div',{class:'words'},mine.map(([s,d])=>el('span',{class:'tag acc'},`${d.value} → ${d.field}`,el('button',{type:'button','aria-label':'Убрать из справочника: '+d.value,onclick:()=>{delete state.dict[s];save();render()}},'×'))))));
+
+  // Products panel: one order for all products — those with every characteristic of the request first
+  // (green), then the closest ones with their differences, then the rest folded away.
+  const pp=el('section',{class:'panel','aria-label':'Подходящие товары'});
+  const hidden=new Set((state.hidden||{})[pos.id]||[]);
+  const ranked=M.rankAll(M.reference).filter(r=>!hidden.has(r.p.name));
+  const exact=ranked.filter(r=>r.dReq.length===0&&r.same.length>0);
+  const near=ranked.filter(r=>!exact.includes(r)&&r.dReq.length<=2&&r.same.length>=2);
+  const rest=ranked.filter(r=>!exact.includes(r)&&!near.includes(r));
+  const best=exact.find(r=>r.p.unitPrice!=null)?.p;
+  pp.append(el('h2',{},`Подходящие товары (${exact.length})`));
+  if(M.reference)pp.append(el('p',{class:'hint'},'Эталон: ',el('b',{},M.reference.name),' — его характеристики дополняют заявку при сравнении; характеристики заявки важнее. ',
+    el('button',{class:'btn',onclick:()=>{delete state.anchor[pos.id];save();render()}},'Убрать эталон')));
+  pp.append(el('p',{class:'hint'},best?`Лучшая цена за ${unit(pos.unit)}: ${money(best.unitPrice)} — на ${num(pos.qty)} ${pos.unit} нужно купить ${num(best.buy)} ${best.unit}, сумма ${money(best.total)}.`:'Товаров со всеми характеристиками заявки нет — смотрите близкие ниже.'));
+  const head=[el('tr',{class:'group'},el('th',{colspan:2,class:'g-start'},'Данные заявки'),el('th',{colspan:6,class:'g-start g-end'},'Данные поставщика'),el('th',{})),
+    el('tr',{},el('th',{class:'g-start'},'Ед. изм.'),el('th',{},'Кол-во'),el('th',{class:'g-start'},'Товар'),el('th',{},'Ед. изм.'),el('th',{},'Кол-во'),el('th',{},'Цена'),el('th',{},'Цена за ед. заявки'),el('th',{class:'g-end'},'Сумма'),el('th',{},''))];
+  // Table values: quick presses — 1 ✓ green, 2 + yellow, 3 ✕ red, 4 no mark; applied 0.35 s after the last.
+  const BY_COUNT=['only','also','rejected','none'], SYM={only:'✓ ',also:'+ ',rejected:'✕ ',none:''};
+  const STATE={only:'обязательно',also:'аналог / замена',rejected:'исключено',none:'без отметки'};
+  const valueButton=k=>{
+    const s=M.marks.get(k)?.s||'none', isReq=M.reqWords.has(k);
+    let framed=M.marks.get(k)?.by==='user';
+    const cls=st=>'w cyc'+(st!=='none'?' s-'+st:'')+(framed&&st!=='none'?' framed':'');
+    let presses=0, timer=null;
+    const button=el('button',{type:'button',class:cls(s),
+      title:`${M.fieldOf.get(k)}: ${STATE[s]}. Быстрые нажатия: 1 — обязательно, 2 — аналог, 3 — исключить, 4 — снять`,
+      'aria-label':`${M.named(k)}: ${STATE[s]}`,
+      onclick:()=>{presses=Math.min(presses+1,4);const st=BY_COUNT[presses-1];framed=true;
+        button.className=cls(st);button.textContent=SYM[st]+M.label(k);
+        clearTimeout(timer);timer=setTimeout(()=>setMark(pos,k,st==='none'?(isReq?'none':null):st),350);}},SYM[s]+M.label(k));
+    return button;
+  };
+  const rowVals=p=>{
+    const keys=[...p.words].filter(k=>k.startsWith('f|')&&M.fieldOf.get(k)!=='Код / артикул')
+      .sort((a,b)=>FIELDS.indexOf(M.fieldOf.get(a))-FIELDS.indexOf(M.fieldOf.get(b)));
+    return keys.length?el('div',{class:'rowvals'},keys.map(valueButton)):null;
+  };
+  const hideOne=p=>{state.hidden=state.hidden||{};(state.hidden[pos.id]=state.hidden[pos.id]||[]).push(p.name);save();render()};
+  const diffTag=(c,x)=>el('span',{class:'cmp diff'},x.has.length?`${x.f}: ${x.has.map(M.label).join('/')} вместо ${x.want.map(M.label).join('/')}`:`нет ${x.f}`,
+    el('button',{type:'button',class:'xbtn',title:'Убрать только этот товар','aria-label':'Убрать товар: '+c.p.name,onclick:()=>hideOne(c.p)},'✕'),
+    x.has.length?el('button',{type:'button',class:'xbtn all',title:'Исключить товары с этим значением во всей позиции','aria-label':'Исключить везде: '+x.has.map(M.label).join('/'),onclick:()=>{for(const k of x.has)state.marks[pos.id]=Object.assign(state.marks[pos.id]||{},{[k]:'rejected'});save();render()}},'✕'):null);
+  const tb=el('tbody');
+  const row=(c,cls)=>{const p=c.p;return el('tr',{class:cls},
+    el('td',{class:'g-start'},pos.unit),el('td',{class:'num'},num(pos.qty)),
+    el('td',{class:'g-start'},c.anchor?el('div',{class:'anchormark'},'эталон — остальные сравниваются с ним'):null,p.name,p===best?el('span',{class:'bestmark'},'★ лучшая цена'):null,c.analog?el('div',{class:'analog'},'аналог / замена'):null,
+      cls!=='main'?el('div',{class:'neardiff'},`совпадает ${c.same.length} из ${c.total}`+(c.unknown.length?` · не указано: ${c.unknown.join(', ').toLowerCase()}`:'')):null,
+      c.diff.length?el('div',{class:'cmprow'},...c.diff.map(x=>diffTag(c,x))):null,
+      rowVals(p)),
+    el('td',{title:p.factor&&p.factor!==1?'Сколько в единице поставщика — из наименования':''},p.unit+(p.factor&&p.factor!==1?` (${p.note})`:'')),
+    el('td',{class:'num'},p.buy==null?'—':num(p.buy)),el('td',{class:'num'},money(p.price)),
+    el('td',{class:'num',title:p.factor?'':p.note},money(p.unitPrice)),el('td',{class:'num g-end'},money(p.total)),
+    el('td',{},el('button',{class:'btn'+(state.chosen?.[pos.id]===p.name?' chosen':''),type:'button',onclick:()=>{state.chosen=state.chosen||{};state.chosen[pos.id]=state.chosen[pos.id]===p.name?undefined:p.name;save();render()}},state.chosen?.[pos.id]===p.name?'Выбрано ✓':'Выбрать'),
+      el('button',{class:'btn anchorbtn'+(c.anchor?' on':''),type:'button',title:'Сравнивать остальные товары с этим',onclick:()=>{state.anchor=state.anchor||{};state.anchor[pos.id]=c.anchor?undefined:p.name;save();render()}},c.anchor?'Эталон ✓':'Взять за основу')))};
+  for(const c of exact)tb.append(row(c,c.analog?'alt':'main'));
+  if(near.length){
+    const limit=state.closeAll?.[pos.id]?near.length:8;
+    tb.append(el('tr',{class:'sep'},el('td',{colspan:9},`Близкие по характеристикам: ${near.length} — отличаются 1–2 характеристиками`,
+      hidden.size?el('span',{class:'note'},` · убрано: ${hidden.size} `,el('button',{class:'btn',onclick:()=>{delete state.hidden[pos.id];save();render()}},'Вернуть')):null)));
+    for(const c of near.slice(0,limit))tb.append(row(c,'close'));
+    if(near.length>8)tb.append(el('tr',{class:'sep'},el('td',{colspan:9},el('button',{class:'more',type:'button',onclick:()=>{state.closeAll=state.closeAll||{};state.closeAll[pos.id]=!state.closeAll[pos.id];save();render()}},state.closeAll?.[pos.id]?'Свернуть':`Ещё ${near.length-8}`))));
+  }
+  pp.append(el('div',{class:'tablewrap'},el('table',{class:'offers'},el('thead',{},head),tb)));
+  if(rest.length){
+    const tb2=el('tbody');
+    for(const c of rest)tb2.append(el('tr',{class:'out'},el('td',{},c.p.name,el('div',{class:'why'},c.diff.length?c.diff.map(x=>x.has.length?`${x.f}: ${x.has.map(M.label).join('/')} вместо ${x.want.map(M.label).join('/')}`:`нет ${x.f}`).join('; '):`совпадает только ${c.same.length}`)),el('td',{},c.p.unit),el('td',{class:'num'},money(c.p.price))));
+    pp.append(el('details',{class:'out'},el('summary',{},`Остальные — отличаются больше: ${rest.length}`),el('div',{class:'tablewrap'},el('table',{},tb2))));
+  }
+  pp.append(el('p',{class:'note'},'Наличие и дата цены здесь не проверяются — это стенд для логики отбора.'));
+  main.append(aiPickPanel(pos,M));
+  main.append(el('div',{class:'grid'},wp,pp));
+  return main;
+}
+
+function renderNew(){
+  const main=document.getElementById('main');main.replaceChildren();
+  const form=el('form',{class:'add panel'});
+  form.append(el('h2',{},'Своя позиция'),
+    el('div',{class:'row'},
+      el('label',{for:'f-name'},'Наименование из заявки',el('input',{id:'f-name',required:true,placeholder:'Фланец стальной приварной диам.300мм РУ16'})),
+      el('label',{for:'f-qty'},'Количество',el('input',{id:'f-qty',required:true,inputmode:'decimal',placeholder:'10'})),
+      el('label',{for:'f-unit'},'Единица',el('input',{id:'f-unit',value:'шт'}))),
+    el('label',{for:'f-products'},'Найденные товары — по одному на строку: наименование ; цена ; единица (цена и единица необязательны)',
+      el('textarea',{id:'f-products',required:true,placeholder:'Фланец плоский стальной Ду300 Ру16 ГОСТ 33259 ; 4850 ; шт\nФланец воротниковый Ду300 Ру16 ; 7120 ; шт'})),
+    el('p',{class:'note'},'Скопируйте товары из карточки поставщика или из «Других результатов» в приложении. Всё хранится только в этом браузере.'),
+    el('div',{},el('button',{class:'btn',type:'submit'},'Добавить позицию')));
+  form.onsubmit=e=>{
+    e.preventDefault();
+    const name=form.querySelector('#f-name').value.trim(), qty=parseFloat(form.querySelector('#f-qty').value.replace(',','.'))||0;
+    const products=form.querySelector('#f-products').value.split('\n').map(l=>l.split(/\s*[;\t]\s*/)).filter(a=>a[0]&&a[0].trim()).map(([n,p,u])=>[n.trim(),parseFloat(String(p||'').replace(/\s/g,'').replace(',','.'))||0,(u||'шт').trim()]);
+    if(!name||!products.length)return;
+    const id='p'+Date.now();
+    state.positions.push({id,name,qty,unit:form.querySelector('#f-unit').value.trim()||'шт',products});
+    state.active=id;save();render();
+  };
+  main.append(form);
+}
+
+/* ---------- AI parsing, compared with the rules ----------
+   One call to Claude with every request and product name; each value it returns must stand in the
+   name word for word (its «evidence»), and its rubric must be one of ours — otherwise it is rejected. */
+let sampleFn=null, aiBusy=false, aiError='', aiCtl=null;
+(async()=>{try{sampleFn=await window.claude?.use?.('sample')}catch(e){sampleFn=null} render()})();
+function aiNames(){
+  const names=[];
+  for(const pos of state.positions){names.push({kind:'Заявка',pos:pos.name,name:pos.name});for(const p of pos.products)names.push({kind:'Товар',pos:pos.name,name:p[0]})}
+  return names;
+}
+const squash=s=>String(s||'').toLowerCase().replaceAll('ё','е').replace(/[×*х]/g,'x').replace(/\s+/g,' ').trim();
+async function runAi(){
+  if(!sampleFn||aiBusy)return;
+  aiBusy=true;aiError='';render();
+  const all=aiNames(), out={};
+  aiCtl=new AbortController();
+  try{
+  // Batches of 20 names keep each answer well under the length limit.
+  for(let from=0;from<all.length;from+=20){
+  const names=all.slice(from,from+20);
+  aiError=`Разобрано ${from} из ${all.length}…`;render();
+  const prompt=`Ты разбираешь наименования строительных и промышленных товаров на характеристики.
+Рубрики (используй только их; если значение не подходит ни к одной — пропусти его): ${FIELDS.join('; ')}.
+Правила: значение пиши коротко с единицей (например «10 мм», «M8», «1 м», «AISI 304L», «FFP2»). Для каждого значения дай evidence — точный кусок исходного наименования, из которого оно взято, символ в символ. Ничего не придумывай: если в названии нет — не пиши. «Тип товара» — существительное, что это за товар (в именительном падеже, ед. числе).
+Ответь только JSON-массивом той же длины и порядка: [{"i":0,"fields":[{"field":"Резьба","value":"M8","evidence":"М8"}]}].
+Наименования:
+${names.map((n,i)=>i+'. '+n.name).join('\n')}`;
+    const res=await sampleFn.json(prompt,{signal:aiCtl.signal,cache:{gcTime:86400000}});
+    for(const r of Array.isArray(res)?res:[]){
+      const n=names[Number(r?.i)]; if(!n)continue;
+      const text=squash(n.name);
+      out[n.name]=(Array.isArray(r.fields)?r.fields:[]).map(f=>{
+        const field=String(f?.field||''), value=String(f?.value||''), ev=String(f?.evidence||'');
+        const why=!FIELDS.includes(field)?'рубрики нет в списке':!ev||!text.includes(squash(ev))?'нет в тексте названия':'';
+        return {field,value,evidence:ev,why};
+      });
+    }
+  }
+    state.ai={at:new Date().toLocaleString('ru-RU'),names:out};aiError='';save();
+  }catch(e){aiError=e?.code==='cancelled'?'':e?.code==='not_granted'?'Доступ к Claude для этой страницы не разрешён.':e?.code==='rate_limited'?'Слишком много запросов, попробуйте позже.':'Не удалось получить разбор: '+(e?.code||'ошибка')}
+  finally{aiBusy=false;render()}
+}
+// The same value written two ways is one value: «zn» = «цинк», «1000 мм» = «1 м», «8,8» = «8.8».
+function canonValue(field,value){
+  const v=String(value||'').trim();
+  const d=lookup(v.toLowerCase().replaceAll('ё','е'));
+  if(d&&d.field===field)return d.value;
+  const m=v.toLowerCase().replace(',','.').match(/^(\d+(?:\.\d+)?)\s*(мм|mm|см|м|m)$/);
+  if(m&&['Длина','Ширина','Толщина','Размер','Диаметр'].includes(field)){const n=parseFloat(m[1])*({см:10,м:1000,m:1000}[m[2]]||1);return field==='Длина'||field==='Ширина'?len(n):fmt(n)+' мм'}
+  if(field==='Резьба')return v.toUpperCase().replace('М','M').replace(/\s/g,'');
+  if(field==='Класс прочности')return v.replace(',','.');
+  return v;
+}
+// Rules vs AI for one name: same values, values only one side found, AI values rejected by the checks.
+function compareParse(name){
+  const rules=extract(name).found.filter(f=>f.field!=='Код / артикул').map(f=>({field:f.field,value:f.value}));
+  const ai=((state.ai?.names||{})[name]||[]).map(f=>({...f,value:canonValue(f.field,f.value)}));
+  const key=f=>f.field+'|'+squash(f.value).replace(/\s/g,'');
+  const rk=new Set(rules.map(key)), ok=ai.filter(f=>!f.why&&f.field!=='Код / артикул'), ak=new Set(ok.map(key));
+  return {same:rules.filter(f=>ak.has(key(f))),onlyRules:rules.filter(f=>!ak.has(key(f))),onlyAi:ok.filter(f=>!rk.has(key(f))),rejected:ai.filter(f=>f.why)};
+}
+function aiPanel(){
+  const box=el('details',{class:'aipanel',open:!!state.aiOpen});
+  box.addEventListener('toggle',()=>{state.aiOpen=box.open;save()});
+  box.append(el('summary',{},'Разбор наименований: правила и ИИ'+(state.ai?` · ИИ от ${state.ai.at}`:'')));
+  if(!sampleFn){box.append(el('p',{class:'note'},'ИИ не подключён: на сервере не задан ключ ANTHROPIC_API_KEY.'));return box}
+  box.append(el('p',{class:'hint'},`Один запрос к Claude разбирает все ${aiNames().length} наименований (заявка и найденные товары). Значение ИИ принимается, только если оно буквально есть в названии и его рубрика — из нашего списка. Запрос расходует лимит вашего аккаунта Claude; первый раз Claude спросит разрешение.`),
+    el('div',{class:'posnav'},el('button',{class:'btn',disabled:aiBusy,onclick:runAi},aiBusy?'ИИ разбирает… (до минуты)':state.ai?'Разобрать заново':'Разобрать ИИ'),
+      aiBusy?el('button',{class:'btn',onclick:()=>aiCtl?.abort()},'Остановить'):null,aiError?el('span',{class:'note'},aiError):null));
+  if(!state.ai)return box;
+  let agree=0,diffs=0,rejected=0;
+  const tb=el('tbody');
+  for(const n of aiNames()){
+    const c=compareParse(n.name); rejected+=c.rejected.length;
+    if(!c.onlyRules.length&&!c.onlyAi.length){agree++;continue}
+    diffs++;
+    const list=(arr,cls)=>arr.map(f=>el('span',{class:'cmp '+cls},`${f.field}: ${f.value}`));
+    tb.append(el('tr',{},el('td',{},el('div',{class:'note'},n.kind+(n.kind==='Товар'?' · '+n.pos.slice(0,30):'')),n.name),
+      el('td',{},el('div',{class:'cmprow'},...list(c.onlyRules,'diff'))),
+      el('td',{},el('div',{class:'cmprow'},...list(c.onlyAi,'s-also'))),
+      el('td',{},el('div',{class:'cmprow'},...c.rejected.map(f=>el('span',{class:'cmp',title:f.why,style:'text-decoration:line-through;opacity:.6'},`${f.field}: ${f.value}`))))));
+  }
+  box.append(el('p',{class:'totals'},`Совпало полностью: ${agree} · расходятся: ${diffs} · значений ИИ отклонено проверкой: ${rejected} `,
+    el('button',{class:'btn',onclick:async e=>{
+      const lines=aiNames().map(n=>{const c=compareParse(n.name);if(!c.onlyRules.length&&!c.onlyAi.length&&!c.rejected.length)return null;
+        const f=a=>a.map(x=>x.field+': '+x.value).join('; ');
+        return `${n.name}\n  правила: ${f(c.onlyRules)||'—'}\n  ИИ: ${f(c.onlyAi)||'—'}`+(c.rejected.length?`\n  отклонено: ${f(c.rejected)}`:'')}).filter(Boolean);
+      const text=`Совпало: ${agree}, расходятся: ${diffs}\n\n`+lines.join('\n');
+      try{await navigator.clipboard.writeText(text);e.target.textContent='Скопировано'}catch(err){e.target.textContent='Не удалось скопировать'}
+    }},'Скопировать расхождения')));
+  if(diffs)box.append(el('div',{class:'tablewrap'},el('table',{},el('thead',{},el('tr',{},el('th',{},'Наименование'),el('th',{},'Нашли только правила'),el('th',{},'Нашёл только ИИ'),el('th',{},'ИИ, отклонено проверкой'))),tb)));
+  return box;
+}
+
+/* ---------- AI choice for one position, checked by the rules ----------
+   Claude rates every found product against the request; the request's numbers and sizes (as the rules read
+   them) must be in the product, otherwise «подходит» is lowered to «проверить». Rules can lower, never raise. */
+const NUMERIC=new Set(['Резьба','Длина','Ширина','Толщина','Диаметр','Размер','Размеры','Условный проход','Давление','Сечение','Напряжение','Мощность','Ток','Объём','Масса','Зернистость','Типоразмер']);
+const pickBusy=new Set(); const pickErr={}; const pickCtl={};
+async function runPick(pos){
+  if(!sampleFn||pickBusy.has(pos.id))return;
+  pickBusy.add(pos.id);delete pickErr[pos.id];render();
+  const list=pos.products.map((p,i)=>`${i}. ${p[0]} — ${p[1]} ₽ за ${p[2]||'шт'}`).join('\n');
+  const prompt=`Ты снабженец. Нужно подобрать товар под позицию заявки.
+Позиция заявки: «${pos.name}», количество ${pos.qty} ${pos.unit}.
+Найденные товары поставщика:
+${list}
+
+Оцени КАЖДЫЙ товар: "подходит" — это то же изделие с теми же существенными параметрами (размеры, резьба, материал, класс); "аналог" — может заменить, но есть отличие (назови его); "не подходит" — другое изделие или существенный параметр другой. Не выдумывай параметры, которых нет в названии; если в названии чего-то не хватает для уверенности — это "аналог" с отличием «не указано: …». Цена на оценку не влияет.
+"best" — только товар с оценкой "подходит"; если такого нет, best = null. В "best_reason" одной фразой объясни выбор.
+Ответь только JSON: {"best": номер или null, "best_reason": "…", "items":[{"i":0,"verdict":"подходит|аналог|не подходит","reason":"коротко, словами из названия","differences":["…"]}]}`;
+  pickCtl[pos.id]=new AbortController();
+  try{
+    const res=await sampleFn.json(prompt,{signal:pickCtl[pos.id].signal,cache:{gcTime:86400000}});
+    const items=(Array.isArray(res?.items)?res.items:[]).filter(x=>pos.products[Number(x?.i)]).map(x=>({i:Number(x.i),verdict:['подходит','аналог','не подходит'].includes(x.verdict)?x.verdict:'аналог',reason:String(x.reason||''),differences:(Array.isArray(x.differences)?x.differences:[]).map(String)}));
+    state.aiPick=state.aiPick||{};
+    // A «best» is kept only when the AI itself rated that product «подходит».
+    const best=Number.isInteger(res?.best)&&items.find(x=>x.i===res.best&&x.verdict==='подходит')?res.best:null;
+    state.aiPick[pos.id]={at:new Date().toLocaleString('ru-RU'),best,bestReason:best!=null?String(res?.best_reason||''):'',items};save();
+  }catch(e){pickErr[pos.id]=e?.code==='cancelled'?'':e?.code==='not_granted'?'Доступ к Claude для этой страницы не разрешён.':e?.code==='rate_limited'?'Слишком много запросов, попробуйте позже.':'Не удалось получить подбор: '+(e?.code||'ошибка')}
+  finally{pickBusy.delete(pos.id);render()}
+}
+/* «Спросить ИИ»: a free question about one position. Claude sees the request, every found product with its
+   price per request unit, your marks and the AI choice; the short conversation is kept per position. */
+const askBusy=new Set(), askCtl={}, askLive={};
+async function runAsk(pos,M,question){
+  if(!sampleFn||askBusy.has(pos.id)||!question.trim())return;
+  const chat=(state.aiChat=state.aiChat||{})[pos.id]=(state.aiChat[pos.id]||[]);
+  const goods=M.products.map((p,i)=>`${i}. ${p.name} — ${p.price} ₽ за ${p.unit}`+(p.unitPrice!=null?`; ${Math.round(p.unitPrice*100)/100} ₽ за ${pos.unit}, купить ${p.buy} ${p.unit}`:'; пересчёт в единицы заявки неизвестен')).join('\n');
+  const marks=[...M.marks].map(([k,m])=>({only:'обязательно',also:'аналог',rejected:'исключено'}[m.s]+': '+M.named(k))).join('; ')||'нет';
+  const pick=state.aiPick?.[pos.id]?.items?.map(x=>`${x.i}: ${x.verdict}`).join(', ')||'не запускался';
+  const context=`Ты помогаешь снабженцу разобраться с позицией заявки. Отвечай по-русски, коротко и по делу, опирайся только на данные ниже; если данных не хватает — так и скажи, ничего не выдумывай. Цены не пересчитывай заново, если они уже даны.
+Позиция заявки: «${pos.name}», ${pos.qty} ${pos.unit}.
+Найденные товары:
+${goods}
+Отметки снабженца: ${marks}.
+Оценки подбора ИИ: ${pick}.`;
+  chat.push({role:'user',content:question.trim()});
+  askBusy.add(pos.id);askLive[pos.id]='';render();
+  askCtl[pos.id]=new AbortController();
+  try{
+    const turns=[{role:'user',content:context},...chat.slice(-8)];
+    const {text}=await sampleFn(turns,{cache:false,signal:askCtl[pos.id].signal,onText:({text})=>{askLive[pos.id]=text;const n=document.getElementById('ask-live-'+pos.id);if(n)n.textContent=text}});
+    chat.push({role:'assistant',content:text});
+  }catch(e){
+    chat.push({role:'assistant',content:(e?.text?e.text+'\n\n':'')+(e?.code==='cancelled'?'(остановлено)':e?.code==='not_granted'?'Доступ к Claude для этой страницы не разрешён.':e?.code==='rate_limited'?'Слишком много запросов, попробуйте позже.':'Не удалось получить ответ: '+(e?.code||'ошибка'))});
+  }finally{askBusy.delete(pos.id);delete askLive[pos.id];save();render()}
+}
+function askBlock(pos,M){
+  const box=el('div',{class:'ask'});
+  const chat=state.aiChat?.[pos.id]||[];
+  for(const t of chat.slice(-6))box.append(el('div',{class:'ask-msg '+(t.role==='user'?'q':'a')},t.content));
+  if(askBusy.has(pos.id))box.append(el('div',{class:'ask-msg a',id:'ask-live-'+pos.id},askLive[pos.id]||'Думаю…'));
+  const input=el('textarea',{id:'ask-'+pos.id,rows:2,placeholder:'Например: чем отличаются рулоны 1,4x20 и 1,4x25? Можно ли штангу вместо шпильки?',disabled:askBusy.has(pos.id)});
+  input.addEventListener('keydown',e=>{if(e.key==='Enter'&&(e.ctrlKey||e.metaKey)){e.preventDefault();runAsk(pos,M,input.value)}});
+  box.append(el('div',{class:'ask-row'},input,
+    askBusy.has(pos.id)?el('button',{class:'btn',onclick:()=>askCtl[pos.id]?.abort()},'Остановить'):el('button',{class:'btn',onclick:()=>runAsk(pos,M,input.value)},'Спросить ИИ'),
+    chat.length&&!askBusy.has(pos.id)?el('button',{class:'btn',onclick:()=>{delete state.aiChat[pos.id];save();render()}},'Очистить'):null));
+  return box;
+}
+function aiPickPanel(pos,M){
+  const box=el('section',{class:'panel aipick','aria-label':'Подбор ИИ'});
+  const saved=state.aiPick?.[pos.id], busy=pickBusy.has(pos.id);
+  box.append(el('div',{class:'posnav'},el('b',{},'Подбор ИИ'),
+    sampleFn?el('button',{class:'btn',disabled:busy,onclick:()=>runPick(pos)},busy?'ИИ оценивает товары… (до минуты)':saved?'Подобрать заново':'Подобрать ИИ'):el('span',{class:'note'},'ИИ не подключён: на сервере не задан ключ ANTHROPIC_API_KEY.'),
+    busy?el('button',{class:'btn',onclick:()=>pickCtl[pos.id]?.abort()},'Остановить'):null,
+    pickErr[pos.id]?el('span',{class:'note'},pickErr[pos.id]):null,
+    saved?el('span',{class:'note'},`от ${saved.at} · числа и размеры заявки проверяются правилами`):null));
+  if(sampleFn)box.append(askBlock(pos,M));
+  if(!saved)return box;
+  const reqNums=[...M.reqWords].filter(k=>k.startsWith('f|')&&NUMERIC.has(M.fieldOf.get(k)));
+  const order={'подходит':0,'проверить':1,'аналог':2,'не подходит':3};
+  const rows=saved.items.map(x=>{
+    const p=M.products[x.i]; const missing=reqNums.filter(k=>!p.words.has(k));
+    const verdict=x.verdict==='подходит'&&missing.length?'проверить':x.verdict;
+    return {...x,p,missing,verdict};
+  }).sort((a,b)=>order[a.verdict]-order[b.verdict]||(a.p.unitPrice??Infinity)-(b.p.unitPrice??Infinity));
+  const shown=rows.filter(r=>r.verdict!=='не подходит'), hidden=rows.length-shown.length;
+  const tb=el('tbody');
+  for(const r of shown){
+    const pill={'подходит':'done','проверить':'todo','аналог':'todo','не подходит':'miss'}[r.verdict];
+    tb.append(el('tr',{},
+      el('td',{},el('span',{class:'pill '+pill},r.verdict),r.i===saved.best&&r.verdict==='подходит'?el('div',{class:'bestmark',title:saved.bestReason||''},'★ выбор ИИ'):null),
+      el('td',{},r.p.name,el('div',{class:'note'},r.reason),
+        r.differences.length?el('div',{class:'neardiff'},'отличия: '+r.differences.join('; ')):null,
+        r.missing.length?el('div',{class:'cmprow'},...r.missing.map(k=>el('span',{class:'cmp diff'},'не подтверждено: '+M.named(k)))):null),
+      el('td',{class:'num'},money(r.p.unitPrice)),
+      el('td',{},el('button',{class:'btn'+(state.chosen?.[pos.id]===r.p.name?' chosen':''),type:'button',onclick:()=>{state.chosen=state.chosen||{};state.chosen[pos.id]=state.chosen[pos.id]===r.p.name?undefined:r.p.name;save();render()}},state.chosen?.[pos.id]===r.p.name?'Выбрано ✓':'Выбрать'))));
+  }
+  box.append(el('div',{class:'tablewrap'},el('table',{},el('thead',{},el('tr',{},el('th',{},'Оценка'),el('th',{},'Товар и обоснование ИИ'),el('th',{},'Цена за ед. заявки'),el('th',{},''))),tb)));
+  if(hidden)box.append(el('p',{class:'note'},`ИИ отнёс к «не подходит»: ${hidden} товаров — они не показаны.`));
+  return box;
+}
+
+// Status of a position in the whole request.
+function status(pos){
+  if(!pos.products.length)return {code:'none',text:'Поиск не запускался'};
+  const M=model(pos);
+  const chosen=state.chosen?.[pos.id]!=null&&M.products.find(p=>p.name===state.chosen[pos.id]);
+  if(chosen)return {code:'done',text:'Выбрано',offer:chosen};
+  const ranked=M.rankAll(M.reference), best=ranked.find(r=>r.dReq.length===0&&r.same.length>0&&r.p.unitPrice!=null)?.p;
+  const near=ranked.find(r=>r.dReq.length<=2&&r.same.length>=2&&r.p.unitPrice!=null)?.p;
+  return best?{code:'todo',text:'Нужно решение',offer:best,recommended:true}:near?{code:'todo',text:'Нужно решение',offer:near,recommended:true,closeOnly:true}:{code:'miss',text:'Не найдено'};
+}
+const STATUS_ORDER=[['all','Все'],['todo','Нужно решение'],['done','Выбрано'],['miss','Не найдено'],['none','Поиск не запускался']];
+function render(){
+  const main=document.getElementById('main');main.replaceChildren();
+  const tabs=document.getElementById('tabs');tabs.replaceChildren();
+  if(state.active==='new'){
+    tabs.append(el('button',{class:'tab',onclick:()=>{state.active=null;render()}},'← К заявке'));
+    renderNew();return;
+  }
+  const rows=state.positions.map((pos,i)=>({pos,n:i+1,st:status(pos)}));
+  const filter=state.filter||'all';
+  for(const[code,label]of STATUS_ORDER){
+    const count=code==='all'?rows.length:rows.filter(r=>r.st.code===code).length;
+    tabs.append(el('button',{class:'tab',role:'tab','aria-selected':String(filter===code),onclick:()=>{state.filter=code;save();render()}},`${label} (${count})`));
+  }
+  tabs.append(el('button',{class:'tab add',onclick:()=>{state.active='new';render()}},'+ Своя позиция'));
+  main.append(aiPanel());
+  const shown=rows.filter(r=>filter==='all'||r.st.code===filter);
+  const done=rows.filter(r=>r.st.code==='done');
+  const sum=done.reduce((s,r)=>s+(r.st.offer.total||0),0);
+  main.append(el('p',{class:'totals'},`Выбрано: ${done.length} из ${rows.length} · Итого по выбранным: `,el('b',{},money(sum))));
+  const order=rows.filter(r=>r.st.code==='todo').map(r=>r.pos.id);
+  const go=id=>{state.active=id;save();render();setTimeout(()=>document.getElementById('row-'+id)?.scrollIntoView({block:'start',behavior:'smooth'}),0)};
+  const tb=el('tbody');
+  for(const r of shown){
+    const open=state.active===r.pos.id, o=r.st.offer;
+    tb.append(el('tr',{id:'row-'+r.pos.id,class:'sumrow'+(open?' open':''),tabindex:0,onclick:()=>{state.active=open?null:r.pos.id;save();render()},onkeydown:e=>{if(e.key==='Enter'){state.active=open?null:r.pos.id;save();render()}}},
+      el('td',{class:'num'},String(r.n)),el('td',{},el('span',{class:'caret'},open?'▾ ':'▸ '),r.pos.name),el('td',{class:'num'},num(r.pos.qty)),el('td',{},r.pos.unit),
+      el('td',{},el('span',{class:'pill '+r.st.code},r.st.text)),
+      el('td',{},o?o.name:'—',o&&r.st.recommended?el('div',{class:'note'},r.st.closeOnly?'точного нет, ближайший по характеристикам':'рекомендовано: лучшая цена'):null),
+      el('td',{class:'num'},o?money(o.unitPrice):'—'),el('td',{class:'num'},o?money(o.total):'—')));
+    if(open){
+      const i=state.positions.indexOf(r.pos);
+      const prev=state.positions[i-1], next=state.positions[i+1], nextTodo=order.find(id=>state.positions.findIndex(p=>p.id===id)>i)||order.find(id=>id!==r.pos.id);
+      const nav=el('div',{class:'posnav'},
+        el('button',{class:'btn',disabled:!prev,onclick:()=>prev&&go(prev.id)},'← Предыдущая'),
+        el('button',{class:'btn',disabled:!next,onclick:()=>next&&go(next.id)},'Следующая →'),
+        el('button',{class:'btn',disabled:!nextTodo,onclick:()=>nextTodo&&go(nextTodo)},'Следующая нерешённая →'),
+        r.pos.example?el('span',{class:'note'},r.pos.example):el('button',{class:'btn',onclick:()=>{state.positions=state.positions.filter(p=>p.id!==r.pos.id);delete state.marks[r.pos.id];state.active=null;save();render()}},'Удалить позицию'));
+      const work=r.pos.products.length?renderPosition(r.pos):el('p',{class:'note'},'Товаров нет: поиск по этой позиции не запускался. Когда приложение снова получит доступ к базе, сюда попадут найденные товары.');
+      tb.append(el('tr',{class:'workrow'},el('td',{colspan:8},nav,work)));
+    }
+  }
+  main.append(el('div',{class:'tablewrap'},el('table',{class:'summary-table'},
+    el('thead',{},el('tr',{},...['№','Наименование заявки','Кол-во','Ед.','Статус','Предложение','Цена за ед. заявки','Сумма'].map(h=>el('th',{},h)))),tb)));
+}
+/* APP: заголовок и ссылки приложения */
+document.getElementById('app-title').textContent=APP.title;
+for(const[href,text]of APP.links){const a=document.createElement('a');a.href=href;a.textContent=text;document.getElementById('app-nav').append(a)}
+render();
+})();
+</script>
