@@ -138,6 +138,14 @@ td.num{font-family:var(--mono);font-variant-numeric:tabular-nums;white-space:now
 /* Rows: green — has the ✓ values, yellow — shown thanks to + (analog). */
 .offers tr.main td{background:color-mix(in srgb,var(--ok-bg) 60%,transparent)}
 .offers tr.alt td{background:color-mix(in srgb,var(--warn-bg) 70%,transparent)}
+/* Comparing products side by side: what differs among the ticked products is outlined in orange
+   (an outline, so the status fill of the value stays as it is). */
+:root{--cmp:#d9730d}
+.w.cmp-diff{outline:2px dashed var(--cmp);outline-offset:1px}
+.cmp-miss{display:inline-block;font-size:12px;color:var(--cmp);border:1px dashed var(--cmp);border-radius:4px;padding:0 5px}
+.offers tr.compared td:nth-child(3){box-shadow:inset 3px 0 0 var(--cmp)}
+.cmpbox{display:flex;align-items:center;gap:4px;margin-top:4px;font-size:12px;color:var(--muted);cursor:pointer;white-space:nowrap}
+.cmpbar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;font-size:13px;color:var(--cmp);margin:0 0 8px}
 .bestmark{display:inline-block;margin-left:4px;font-size:12px;color:var(--ok);font-weight:600}
 .rowvals{display:flex;flex-wrap:wrap;gap:3px;margin-top:4px}
 .rowvals .w{font-size:12px;padding:0 0 0 5px}
@@ -759,7 +767,19 @@ function renderPosition(pos){
   // if no product has them all, the cheapest of the suitable ones.
   const cheapest=list=>list.filter(r=>r.p.unitPrice!=null).sort((a,b)=>a.p.unitPrice-b.p.unitPrice)[0]?.p;
   const best=cheapest(exact.filter(r=>!r.unknown.length))||cheapest(exact);
+  // Products ticked «Сравнить»: rubrics whose values are not the same in all of them.
+  const cmpNames=new Set((state.compare||{})[pos.id]||[]);
+  const cmpList=M.products.filter(p=>cmpNames.has(p.name));
+  const cmpFields=new Set();
+  if(cmpList.length>1){
+    const per=cmpList.map(p=>{const m=new Map();for(const k of p.words)if(k.startsWith('f|')&&M.fieldOf.get(k)!=='Код / артикул'){const f=M.fieldOf.get(k);if(!m.has(f))m.set(f,[]);m.get(f).push(k)}return m});
+    const all=new Set(per.flatMap(m=>[...m.keys()]));
+    for(const f of all){const sig=per.map(m=>[...(m.get(f)||[])].sort().join('|'));if(new Set(sig).size>1)cmpFields.add(f)}
+  }
   pp.append(el('h2',{},`Подходящие товары (${exact.length})`));
+  if(cmpList.length)pp.append(el('div',{class:'cmpbar'},
+    cmpList.length>1?`Сравниваются ${cmpList.length} товара: отличия обведены оранжевым`+(cmpFields.size?` (${[...cmpFields].join(', ').toLowerCase()})`:' — по характеристикам они не отличаются'):'Отметьте «Сравнить» ещё у одного товара',
+    el('button',{class:'btn',type:'button',onclick:()=>{delete state.compare[pos.id];save();render()}},'Снять сравнение')));
   if(M.reference)pp.append(el('p',{class:'hint'},'Эталон: ',el('b',{},M.reference.name),' — его характеристики дополняют заявку при сравнении; характеристики заявки важнее. ',
     el('button',{class:'btn',onclick:()=>{delete state.anchor[pos.id];save();render()}},'Убрать эталон')));
   pp.append(el('p',{class:'hint'},best?`Лучшая цена за ${unit(pos.unit)}: ${money(best.unitPrice)} — на ${num(pos.qty)} ${pos.unit} нужно купить ${num(best.buy)} ${best.unit}, сумма ${money(best.total)}.`:'Товаров со всеми характеристиками заявки нет — смотрите близкие ниже.'));
@@ -784,14 +804,21 @@ function renderPosition(pos){
   const rowVals=p=>{
     const keys=[...p.words].filter(k=>k.startsWith('f|')&&M.fieldOf.get(k)!=='Код / артикул')
       .sort((a,b)=>FIELDS.indexOf(M.fieldOf.get(a))-FIELDS.indexOf(M.fieldOf.get(b)));
-    return keys.length?el('div',{class:'rowvals'},keys.map(valueButton)):null;
+    const inCmp=cmpList.length>1&&cmpList.includes(p);
+    const buttons=keys.map(k=>{const b=valueButton(k);if(inCmp&&cmpFields.has(M.fieldOf.get(k))){b.classList.add('cmp-diff');b.title='Отличается от других сравниваемых товаров · '+b.title}return b});
+    // A rubric the other compared products have and this one does not.
+    const missing=inCmp?[...cmpFields].filter(f=>!keys.some(k=>M.fieldOf.get(k)===f)).map(f=>el('span',{class:'cmp-miss',title:'У других сравниваемых товаров указано'},'нет: '+f.toLowerCase())):[];
+    return keys.length||missing.length?el('div',{class:'rowvals'},buttons,missing):null;
   };
+  const compareBox=p=>{const on=cmpNames.has(p.name);
+    return el('label',{class:'cmpbox',title:'Сравнить с другими отмеченными товарами: отличия будут обведены оранжевым'},
+      el('input',{type:'checkbox',checked:on,onchange:()=>{state.compare=state.compare||{};const l=new Set(state.compare[pos.id]||[]);on?l.delete(p.name):l.add(p.name);state.compare[pos.id]=[...l];save();render()}}),'Сравнить')};
   const hideOne=p=>{state.hidden=state.hidden||{};(state.hidden[pos.id]=state.hidden[pos.id]||[]).push(p.name);save();render()};
   const diffTag=(c,x)=>el('span',{class:'cmp diff'},x.has.length?`${x.f}: ${x.has.map(M.label).join('/')} вместо ${x.want.map(M.label).join('/')}`:`нет ${x.f}`,
     el('button',{type:'button',class:'xbtn',title:'Убрать только этот товар','aria-label':'Убрать товар: '+c.p.name,onclick:()=>hideOne(c.p)},'✕'),
     x.has.length?el('button',{type:'button',class:'xbtn all',title:'Исключить товары с этим значением во всей позиции','aria-label':'Исключить везде: '+x.has.map(M.label).join('/'),onclick:()=>{for(const k of x.has)state.marks[pos.id]=Object.assign(state.marks[pos.id]||{},{[k]:'rejected'});save();render()}},'✕'):null);
   const tb=el('tbody');
-  const row=(c,cls)=>{const p=c.p;return el('tr',{class:cls},
+  const row=(c,cls)=>{const p=c.p;return el('tr',{class:cls+(cmpNames.has(p.name)?' compared':'')},
     el('td',{class:'g-start'},pos.unit),el('td',{class:'num'},num(pos.qty)),
     el('td',{class:'g-start'},c.anchor?el('div',{class:'anchormark'},'эталон — остальные сравниваются с ним'):null,p.name,p===best?el('span',{class:'bestmark'},'★ лучшая цена'):null,c.analog?el('div',{class:'analog'},'аналог / замена'):null,
       cls!=='main'?el('div',{class:'neardiff'},`совпадает ${c.same.length} из ${c.total}`+(c.unknown.length?` · не указано: ${c.unknown.join(', ').toLowerCase()}`:'')):null,
@@ -801,7 +828,7 @@ function renderPosition(pos){
     el('td',{class:'num'},p.buy==null?'—':num(p.buy)),el('td',{class:'num'},money(p.price)),
     el('td',{class:'num',title:p.factor?'':p.note},money(p.unitPrice)),el('td',{class:'num g-end'},money(p.total)),
     el('td',{},el('button',{class:'btn'+(isChosen(pos,p)?' chosen':''),type:'button',onclick:()=>chooseToggle(pos,p)},isChosen(pos,p)?'Выбрано ✓':'Выбрать'),
-      el('button',{class:'btn anchorbtn'+(c.anchor?' on':''),type:'button',title:'Сравнивать остальные товары с этим',onclick:()=>{state.anchor=state.anchor||{};state.anchor[pos.id]=c.anchor?undefined:p.name;save();render()}},c.anchor?'Эталон ✓':'Взять за основу')))};
+      el('button',{class:'btn anchorbtn'+(c.anchor?' on':''),type:'button',title:'Сравнивать остальные товары с этим',onclick:()=>{state.anchor=state.anchor||{};state.anchor[pos.id]=c.anchor?undefined:p.name;save();render()}},c.anchor?'Эталон ✓':'Взять за основу'),compareBox(p)))};
   for(const c of exact)tb.append(row(c,c.analog?'alt':'main'));
   if(near.length){
     const limit=state.closeAll?.[pos.id]?near.length:8;
