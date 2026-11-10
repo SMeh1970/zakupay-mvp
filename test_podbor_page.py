@@ -131,6 +131,26 @@ class PodborPageTests(unittest.TestCase):
         self.assertIn("aria-label='Этапы заявки'", page.text)
         self.assertIn("Повторить поиск у поставщиков", page.text)
 
+    def test_page_can_choose_a_product_the_server_comparison_does_not_list(self):
+        from datetime import datetime, timezone
+        offer = dict(supplier="ВсеИнструменты.ру", name="Удлинитель силовой iTOK КГтп-ХЛ 5x2,5 мм 16А 380В IP67 ГОСТ 25 м", sku="x",
+                     unit="Штука", price=20949, price_date=datetime.now(timezone.utc).date().isoformat())
+        result = dict(order_id=1, markup=.05, items=[dict(position=1, requested_name="Переноска 25м 380В", quantity=2, unit="шт",
+                                                          selected=None, candidates=[offer], decision="auto_ready")])
+        with pipeline._connect() as conn:
+            conn.execute("UPDATE automation_jobs SET result_json=? WHERE id=?", (json.dumps(result), self.job))
+        data, _ = self.data()
+        key = data["positions"][0]["products"][0][3]["key"]
+        response = self.client.post(data["action_url"], headers=H, json={
+            "action": "value_accept_select", "position": 1, "key": key, "csrf": data["csrf"], "revision": data["revision"],
+            "page": {"unit_price": 20949, "buy": 2, "total": 41898}})
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(self.data()[0]["chosen"], {"p1": offer["name"]})
+        with pipeline._connect() as conn:
+            item = json.loads(conn.execute("SELECT result_json FROM automation_jobs WHERE id=?", (self.job,)).fetchone()["result_json"])["items"][0]
+        self.assertTrue(comparison.selected_allowed(item))   # it stays in the invoice
+        self.assertEqual((item["purchase_units"], item["decision"]), (2, "approved"))
+
     def test_ai_needs_key_and_returns_json(self):
         self.assertEqual(self.client.post(self.url + "/ai", json={"mode": "json", "prompt": "x"}, headers=H).status_code, 503)
         reply = Mock(ok=True, status_code=200)
