@@ -160,7 +160,10 @@ form.add textarea{min-height:180px;font-family:var(--mono);font-size:13px}
 .note{font-size:12px;color:var(--muted)}
 :focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 @media (prefers-reduced-motion: reduce){*{transition:none!important}}
-/* APP: строка ссылок и сообщения о сохранении */
+/* APP: строка ссылок и сообщения о сохранении; поставщик и фото под названием товара */
+.supplier-line{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:4px;font-size:12px;color:var(--muted)}
+.photo-btn{font:inherit;font-size:12px;padding:1px 8px;border:1px solid var(--line);border-radius:4px;background:var(--panel);color:var(--fg);cursor:pointer}
+.supplier-line img.photo{display:block;max-width:240px;max-height:240px;margin:6px 0;border:1px solid var(--line);border-radius:6px;background:#fff}
 .appnav{display:flex;gap:14px;flex-wrap:wrap;font-size:14px;margin:0 0 6px}.appnav a{color:var(--accent)}
 .app-status{font-size:13px;color:var(--muted);min-height:1em;margin:4px 0 0}.app-status.error{color:var(--no)}
 </style>
@@ -192,11 +195,14 @@ const load=()=>{
   const chosen={};
   for(const[k,v]of Object.entries(s.chosen||{}))if(!appIds.has(k))chosen[k]=v;
   Object.assign(chosen,APP.chosen||{});
+  const chosenKey={};
+  for(const[k,v]of Object.entries(s.chosenKey||{}))if(!appIds.has(k))chosenKey[k]=v;
+  Object.assign(chosenKey,APP.chosenKey||{});
   const positions=[...APP.positions,...own];
   const active=positions.some(p=>p.id===s.active)?s.active:null;
-  return {...s,version:5,positions,chosen,active,marks:s.marks||{}};
+  return {...s,version:5,positions,chosen,chosenKey,active,marks:s.marks||{}};
 };
-let saveTimer=null, synced={...(APP.chosen||{})}, revision=APP.revision, syncing=Promise.resolve();
+let saveTimer=null, synced={...(APP.chosen||{})}, syncedKey={...(APP.chosenKey||{})}, revision=APP.revision, syncing=Promise.resolve();
 const appStatus=(text,error)=>{const n=document.getElementById('app-status');if(n){n.textContent=text||'';n.className=error?'app-status error':'app-status'}};
 const post=async(url,body)=>{
   const r=await fetch(url,{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json','X-Requested-With':'podbor'},body:JSON.stringify(body)});
@@ -211,16 +217,16 @@ function syncChosen(){
     if(cur===prev)continue;
     synced[pos.id]=cur;
     syncing=syncing.then(async()=>{
-      const product=cur==null?null:pos.products.find(p=>p[0]===cur);
+      const wanted=state.chosenKey?.[pos.id], product=cur==null?null:(pos.products.find(p=>p[0]===cur&&p[3]?.key===wanted)||pos.products.find(p=>p[0]===cur));
       try{
         appStatus(cur==null?'Убираю товар из счёта…':'Переношу выбор в счёт…');
         const d=await post(APP.action_url,cur==null
           ?{action:'value_unselect',position:pos.position,csrf:APP.csrf,revision}
           :{action:'value_accept_select',position:pos.position,key:product?.[3]?.key,csrf:APP.csrf,revision});
-        revision=d.revision;
+        revision=d.revision;syncedKey[pos.id]=cur==null?undefined:product?.[3]?.key;
         appStatus(cur==null?'Товар убран из счёта.':'Выбор сохранён в счёте.');
       }catch(e){
-        synced[pos.id]=prev;
+        synced[pos.id]=prev;if(state.chosenKey){if(syncedKey[pos.id]==null)delete state.chosenKey[pos.id];else state.chosenKey[pos.id]=syncedKey[pos.id]}
         if(prev==null)delete state.chosen[pos.id];else state.chosen[pos.id]=prev;
         appStatus('Позиция «'+pos.name+'»: '+e.message,true);
         storeState();render();
@@ -237,6 +243,33 @@ function storeState(){
   },600);
 }
 const save=()=>{storeState();syncChosen()};
+/* APP: товар определяется не только названием — у разных поставщиков названия могут совпадать. */
+const metaOf=(pos,p)=>pos.products[p.i]?.[3]||{};
+const isChosen=(pos,p)=>{if(state.chosen?.[pos.id]!==p.name)return false;const k=state.chosenKey?.[pos.id];return !k||!metaOf(pos,p).key||metaOf(pos,p).key===k};
+function chooseToggle(pos,p){
+  state.chosen=state.chosen||{};state.chosenKey=state.chosenKey||{};
+  if(isChosen(pos,p)){state.chosen[pos.id]=undefined;delete state.chosenKey[pos.id]}
+  else{state.chosen[pos.id]=p.name;state.chosenKey[pos.id]=metaOf(pos,p).key}
+  if(state.chosenKey[pos.id]!==syncedKey[pos.id]&&state.chosen[pos.id]!=null)synced[pos.id]=undefined; // другой товар с тем же названием
+  save();render();
+}
+// Поставщик мелкой строкой и фото по нажатию: картинка грузится с сайта поставщика только после нажатия.
+function productMeta(pos,p){
+  const m=metaOf(pos,p);
+  if(!m.supplier&&!m.image_url)return null;
+  const box=el('div',{class:'supplier-line'},m.supplier?el('span',{},m.supplier):null);
+  if(m.image_url){
+    const holder=el('div',{});
+    const btn=el('button',{type:'button',class:'photo-btn','aria-expanded':'false',title:'Показать фото товара (загружается с сайта поставщика)',onclick:()=>{
+      if(holder.firstChild){holder.replaceChildren();btn.setAttribute('aria-expanded','false');return}
+      const img=el('img',{alt:'Фото: '+p.name,src:m.image_url,referrerpolicy:'no-referrer',class:'photo'});
+      img.onerror=()=>holder.replaceChildren(el('span',{class:'note'},'Фото не загрузилось'));
+      holder.append(img);btn.setAttribute('aria-expanded','true');
+    }},'Фото');
+    box.append(btn,holder);
+  }
+  return box;
+}
 let state=load()||{positions:EXAMPLES,active:'ex1',marks:{}};
 state.positions=(state.positions||[]).filter(Boolean);
 if(state.version!==5){state.marks={};state.chosen={};state.positions=EXAMPLES;state.active=null;state.version=5;}
@@ -727,11 +760,11 @@ function renderPosition(pos){
     el('td',{class:'g-start'},c.anchor?el('div',{class:'anchormark'},'эталон — остальные сравниваются с ним'):null,p.name,p===best?el('span',{class:'bestmark'},'★ лучшая цена'):null,c.analog?el('div',{class:'analog'},'аналог / замена'):null,
       cls!=='main'?el('div',{class:'neardiff'},`совпадает ${c.same.length} из ${c.total}`+(c.unknown.length?` · не указано: ${c.unknown.join(', ').toLowerCase()}`:'')):null,
       c.diff.length?el('div',{class:'cmprow'},...c.diff.map(x=>diffTag(c,x))):null,
-      rowVals(p)),
+      rowVals(p),productMeta(pos,p)),
     el('td',{title:p.factor&&p.factor!==1?'Сколько в единице поставщика — из наименования':''},p.unit+(p.factor&&p.factor!==1?` (${p.note})`:'')),
     el('td',{class:'num'},p.buy==null?'—':num(p.buy)),el('td',{class:'num'},money(p.price)),
     el('td',{class:'num',title:p.factor?'':p.note},money(p.unitPrice)),el('td',{class:'num g-end'},money(p.total)),
-    el('td',{},el('button',{class:'btn'+(state.chosen?.[pos.id]===p.name?' chosen':''),type:'button',onclick:()=>{state.chosen=state.chosen||{};state.chosen[pos.id]=state.chosen[pos.id]===p.name?undefined:p.name;save();render()}},state.chosen?.[pos.id]===p.name?'Выбрано ✓':'Выбрать'),
+    el('td',{},el('button',{class:'btn'+(isChosen(pos,p)?' chosen':''),type:'button',onclick:()=>chooseToggle(pos,p)},isChosen(pos,p)?'Выбрано ✓':'Выбрать'),
       el('button',{class:'btn anchorbtn'+(c.anchor?' on':''),type:'button',title:'Сравнивать остальные товары с этим',onclick:()=>{state.anchor=state.anchor||{};state.anchor[pos.id]=c.anchor?undefined:p.name;save();render()}},c.anchor?'Эталон ✓':'Взять за основу')))};
   for(const c of exact)tb.append(row(c,c.analog?'alt':'main'));
   if(near.length){
@@ -964,7 +997,7 @@ function aiPickPanel(pos,M){
         r.differences.length?el('div',{class:'neardiff'},'отличия: '+r.differences.join('; ')):null,
         r.missing.length?el('div',{class:'cmprow'},...r.missing.map(k=>el('span',{class:'cmp diff'},'не подтверждено: '+M.named(k)))):null),
       el('td',{class:'num'},money(r.p.unitPrice)),
-      el('td',{},el('button',{class:'btn'+(state.chosen?.[pos.id]===r.p.name?' chosen':''),type:'button',onclick:()=>{state.chosen=state.chosen||{};state.chosen[pos.id]=state.chosen[pos.id]===r.p.name?undefined:r.p.name;save();render()}},state.chosen?.[pos.id]===r.p.name?'Выбрано ✓':'Выбрать'))));
+      el('td',{},el('button',{class:'btn'+(isChosen(pos,r.p)?' chosen':''),type:'button',onclick:()=>chooseToggle(pos,r.p)},isChosen(pos,r.p)?'Выбрано ✓':'Выбрать'))));
   }
   box.append(el('div',{class:'tablewrap'},el('table',{},el('thead',{},el('tr',{},el('th',{},'Оценка'),el('th',{},'Товар и обоснование ИИ'),el('th',{},'Цена за ед. заявки'),el('th',{},''))),tb)));
   if(hidden)box.append(el('p',{class:'note'},`ИИ отнёс к «не подходит»: ${hidden} товаров — они не показаны.`));

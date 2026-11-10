@@ -84,6 +84,24 @@ class PodborPageTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(self.data()[0]["chosen"], {})
 
+    def test_supplier_photo_and_same_name_from_two_suppliers(self):
+        same = {**self.a, "supplier": "Б", "sku": "Б1", "price": 80, "image_url": "https://img.example/1.jpg"}
+        bad = {**self.a, "supplier": "В", "sku": "В1", "image_url": "javascript:alert(1)"}
+        result = result_with(self.a, same, bad)
+        with pipeline._connect() as conn:
+            conn.execute("UPDATE automation_jobs SET result_json=? WHERE id=?", (json.dumps(result), self.job))
+        data, _ = self.data()
+        metas = [p[3] for p in data["positions"][0]["products"]]
+        self.assertEqual([m["supplier"] for m in metas], ["А", "Б", "В"])
+        self.assertEqual([m["image_url"] for m in metas], ["", "https://img.example/1.jpg", ""])
+        key = metas[1]["key"]
+        response = self.client.post(data["action_url"], headers=H, json={
+            "action": "value_accept_select", "position": 1, "key": key, "csrf": data["csrf"], "revision": data["revision"]})
+        self.assertEqual(response.status_code, 200, response.text)
+        after, _ = self.data()
+        self.assertEqual(after["chosen"], {"p1": "Труба 89х4 мм"})
+        self.assertEqual(after["chosenKey"], {"p1": key})
+
     def test_ai_needs_key_and_returns_json(self):
         self.assertEqual(self.client.post(self.url + "/ai", json={"mode": "json", "prompt": "x"}, headers=H).status_code, 503)
         reply = Mock(ok=True, status_code=200)

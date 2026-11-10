@@ -32,9 +32,9 @@ def _number(value):
 
 
 def positions(result, heading):
-    """Request positions in the stand's format: [name, price, unit, {key, supplier, url}] per product."""
-    from supplier_comparison import candidates, quote_key
-    out, chosen = [], {}
+    """Request positions in the stand's format: [name, price, unit, {key, supplier, url, image_url}] per product."""
+    from supplier_comparison import candidates, quote_key, safe_url
+    out, chosen, chosen_key = [], {}, {}
     for item in result.get("items") or []:
         source = item.get("comparison_source") or item
         position = item.get("position")
@@ -47,7 +47,8 @@ def positions(result, heading):
                 price if price is not None else 0,
                 str(candidate.get("unit") or "шт"),
                 {"key": quote_key(candidate), "supplier": str(candidate.get("supplier") or "ВсеИнструменты.ру"),
-                 "url": str(candidate.get("url") or "")},
+                 "url": safe_url(candidate.get("url") or candidate.get("source_url")) or "",
+                 "image_url": safe_url(candidate.get("image_url")) or ""},
             ])
         out.append({
             "id": pid, "app": True, "position": position,
@@ -60,7 +61,8 @@ def positions(result, heading):
         selected = item.get("selected")
         if selected and selected.get("name") and item.get("decision") == "approved":
             chosen[pid] = str(selected["name"])
-    return out, chosen
+            chosen_key[pid] = quote_key(selected)
+    return out, chosen, chosen_key
 
 
 def page_html(data, nonce):
@@ -184,10 +186,10 @@ def install(app):
         is_manual = row["event_type"] == "manual_order"
         heading = (f"Ручная заявка {result.get('manual_reference') or 'без номера'}" if is_manual
                    else f"Заявка Закупай № {row['order_id']}")
-        items, chosen = positions(result, heading)
+        items, chosen, chosen_key = positions(result, heading)
         base = f"/dashboard/automation/jobs/{job_id}"
         data = {
-            "title": "Подбор товаров · " + heading, "positions": items, "chosen": chosen,
+            "title": "Подбор товаров · " + heading, "positions": items, "chosen": chosen, "chosenKey": chosen_key,
             "state": json.loads(saved["state_json"]) if saved else None,
             "revision": revision(row["result_json"]), "csrf": _csrf(request),
             "action_url": base + "/comparison/action", "state_url": base + "/podbor/state", "ai_url": base + "/podbor/ai",
