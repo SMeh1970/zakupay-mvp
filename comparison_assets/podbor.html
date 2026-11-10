@@ -408,8 +408,11 @@ const slotLabel=(f,v)=>f==='Длина'?len(v):fmt(v)+' мм';
 function numSpan(text,s,e,value){
   const want=(String(value).match(/\d+(?:,\d+)?/g)||[]).map(x=>numv(x));
   const got=[...text.slice(s,e).matchAll(/\d+(?:[.,]\d+)?/g)].map(m=>({v:numv(m[0]),s:s+m.index,e:s+m.index+m[0].length}));
-  const hit=got.filter(g=>want.some(w=>Math.abs(w-g.v)<1e-9||Math.abs(w-g.v*1000)<1e-9||Math.abs(w-g.v*10)<1e-9));
-  return hit.length?{s:Math.min(...hit.map(h=>h.s)),e:Math.max(...hit.map(h=>h.e))}:{s,e};
+  const hit=got.filter(g=>want.some(w=>[1,10,1000].some(k=>Math.abs(w-g.v*k)<1e-9||Math.abs(w*k-g.v)<1e-9)));
+  if(!hit.length)return {s,e};
+  let a=Math.min(...hit.map(h=>h.s));
+  while(a>s&&/[a-zа-яё]/i.test(text[a-1])&&!/[xх×*]/i.test(text[a-1]))a--; // «М10»: the letter belongs to the number
+  return {s:a,e:Math.max(...hit.map(h=>h.e))};
 }
 function applyScheme(found,t,used,text,toks){
   const kind=String(found.find(f=>f.field==='Тип товара')?.value||'');
@@ -491,12 +494,12 @@ function extract(name){
     if(dict){add(dict.field,dict.value,null,i);continue}
     if((m=w.match(/^m(\d{1,2}(?:[.,]\d)?)(?:[x×*](\d+(?:[.,]\d+)?)(?:\/\d+)?)?$/))){
       add('Резьба','M'+m[1],numv(m[1]),i);
-      if(m[2]){const u=['м','m','мм','mm'].includes(nx)?nx:'мм';const v=mmOf(numv(m[2]),u);add('Длина',len(v),v);if(u===nx)used.add(i+1);}
+      if(m[2]){const u=['м','m','мм','mm'].includes(nx)?nx:'мм';const v=mmOf(numv(m[2]),u);add('Длина',len(v),v,i);if(u===nx)used.add(i+1);}
       continue;
     }
     if(w==='l'&&(m=nx.match(/^(\d+(?:[.,]\d+)?)(мм|mm|м|m)?$/))){const u=m[2]||(['мм','mm','м','m'].includes(n2)?n2:'мм');const v=mmOf(numv(m[1]),u);add('Длина',len(v),v,i,i+1);if(!m[2]&&u===n2)used.add(i+2);continue}
     if((m=w.match(/^l(\d+(?:[.,]\d+)?)$/))){const v=numv(m[1]);add('Длина',len(v),v,i);if(nx==='мм')used.add(i+1);continue}
-    if((m=w.match(/^(\d+(?:[.,]\d+)?)x(\d+(?:[.,]\d+)?)$/))&&['м','m'].includes(nx)){add('Ширина',len(numv(m[1])*1000),numv(m[1])*1000,i,i+1);add('Длина',len(numv(m[2])*1000),numv(m[2])*1000);continue}
+    if((m=w.match(/^(\d+(?:[.,]\d+)?)x(\d+(?:[.,]\d+)?)$/))&&['м','m'].includes(nx)){add('Ширина',len(numv(m[1])*1000),numv(m[1])*1000,i,i+1);add('Длина',len(numv(m[2])*1000),numv(m[2])*1000,i);continue}
     if(NUM.test(w)&&['м','m'].includes(nx)&&numv(w)<=12){const v=numv(w)*1000;add('Длина',len(v),v,i,i+1);continue}
     if((m=w.match(/^(\d+(?:[.,]\d+)?)m$/))&&numv(m[1])<=12){const v=numv(m[1])*1000;add('Длина',len(v),v,i);continue}
     if((m=w.match(/^d(\d+(?:[.,]\d+)?(?:-\d+(?:[.,]\d+)?)?)$/))&&nx==='мм'){add('Диаметр',m[1]+' мм',numv(m[1]),i,i+1);continue}
@@ -519,6 +522,13 @@ function extract(name){
   if(sec.length)for(const f of found)if(f.field==='Размер'&&f.n!=null&&f.n*10<=Math.min(...sec))f.field='Толщина';
   applyScheme(found,t,used,text,toks);
   const rest=new Set();
+  // One piece of text with several values («1,05x10 м» — ширина и длина, «М10×30» — резьба и длина):
+  // each value gets its own numbers, as in the filter column.
+  for(const f of found){
+    if(f.s==null||!found.some(g=>g!==f&&g.s!=null&&g.s<f.e&&f.s<g.e))continue;
+    const sp=numSpan(text,f.s,f.e,f.value); f.ns=sp.s; f.ne=sp.e;
+  }
+  for(const f of found)if(f.ns!=null){f.s=f.ns;f.e=f.ne;delete f.ns;delete f.ne}
   const spans=[];
   t.forEach((w,i)=>{if(!used.has(i)){rest.add(w);spans.push({w,s:toks[i].s,e:toks[i].e})}});
   return {found,rest,spans};
