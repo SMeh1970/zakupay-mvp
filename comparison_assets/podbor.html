@@ -44,6 +44,9 @@ h1{font-size:20px;font-weight:600;margin:0;text-wrap:balance}
 .s-also{background:var(--warn-bg)!important;color:var(--warn)!important}
 .s-rejected{background:var(--no-bg)!important;color:var(--no)!important}
 /* A frame only on your own marks, in the colour of the mark. */
+/* Fill — the value matches the request (and is applied); frame — your own mark: ✓ green, + yellow, ✕ red. */
+.mk{border-width:2px!important;border-style:solid!important}
+.mk.mk-only{border-color:var(--ok)!important} .mk.mk-also{border-color:var(--warn)!important} .mk.mk-rejected{border-color:var(--no)!important}
 .framed{border-width:2px!important;border-style:solid!important}
 .framed.s-only{border-color:var(--ok)!important} .framed.s-also{border-color:var(--warn)!important} .framed.s-rejected{border-color:var(--no)!important}
 .cmp{border:1px solid transparent;background:var(--bg)}
@@ -141,12 +144,12 @@ td.num{font-family:var(--mono);font-variant-numeric:tabular-nums;white-space:now
 /* The name as filters: parts are plain text with a dotted underline until marked. */
 .pname .w.cyc.inl{display:inline;font:inherit;font-size:inherit;padding:0 1px;border:0;border-bottom:1px dotted var(--muted);border-radius:3px;background:transparent;color:inherit;line-height:inherit}
 .pname .w.cyc.inl:hover{background:var(--accent-bg)}
-.pname .pgroup{display:inline;white-space:nowrap;border:1px solid var(--line);border-radius:4px;padding:0 2px;background:var(--panel)}
+.pname .pgroup{display:inline;white-space:nowrap} /* one designation stays on one line; no box around it */
 .pname .w.cyc.inl.s-only,.pname .w.cyc.inl.s-also,.pname .w.cyc.inl.s-rejected{border-bottom-color:transparent}
 /* Comparing products side by side: what differs among the ticked products is outlined in orange
    (an outline, so the status fill of the value stays as it is). */
 :root{--cmp:#d9730d}
-.w.cmp-diff{outline:2px dashed var(--cmp);outline-offset:1px}
+.w.cmp-diff{background:#fbe1c6!important;color:#8a4508!important}
 .cmp-miss{display:inline-block;font-size:12px;color:var(--cmp);border:1px dashed var(--cmp);border-radius:4px;padding:0 5px}
 .offers tr.compared td:nth-child(3){box-shadow:inset 3px 0 0 var(--cmp)}
 .cmpbox{display:flex;align-items:center;gap:4px;margin-top:4px;font-size:12px;color:var(--muted);cursor:pointer;white-space:nowrap}
@@ -553,7 +556,7 @@ function model(pos){
   for(const w of reqRaw)if(!freq.has(w))freq.set(w,0);
   const keyOf=new Map(), stems=[];
   for(const w of [...freq.keys()].sort((a,b)=>freq.get(b)-freq.get(a))){
-    const s=stem(w); const hit=stems.find(x=>x===s||(/^[а-я]+$/.test(s)&&close(x,s)));
+    const s=stem(w); const hit=stems.find(x=>x===s||(/^[а-я]+$/.test(s)&&(close(x,s)||Math.min(x.length,s.length)>=5&&Math.abs(x.length-s.length)<=2&&(x.startsWith(s)||s.startsWith(x)))));
     if(!hit)stems.push(s); keyOf.set(w,'w|'+(hit||s));
   }
   const forms=new Map(), labels=new Map(), fieldOf=new Map(), numOf=new Map();
@@ -736,10 +739,11 @@ function renderPosition(pos){
   const sample=(cls,text,n,pressed)=>{const b=(sym,on,extra='')=>el('button',{type:'button',tabindex:-1,'aria-hidden':'true',class:extra,'aria-pressed':String(on)},sym);
     return el('span',{class:'w '+cls},text,el('span',{class:'n'},`(${n})`),b('✓',pressed==='only','bk'),b('+',pressed==='also','ba'),b('✕',pressed==='rejected','bx'))};
   const legend=[
-    [sample('s-only framed','M8',4,'only'),'Вы отметили ✓ — показаны товары с этим значением'],
-    [sample('s-also framed','M10',1,'also'),'Вы отметили + — такие товары показаны как аналог / замена'],
-    [sample('s-rejected framed','держатель',0,'rejected'),'Вы отметили ✕ — товары с этим значением убраны'],
-    [sample('s-only','шпилька',4,'only'),'Значение из заявки — программа отметила ✓ сама (заливка без рамки)'],
+    [sample('mk mk-only','M8',4,'only'),'Рамка зелёная — вы отметили ✓: показаны товары с этим значением'],
+    [sample('mk mk-also','M10',1,'also'),'Рамка жёлтая — вы отметили +: такие товары показаны как аналог / замена'],
+    [sample('mk mk-rejected','держатель',0,'rejected'),'Рамка красная — вы отметили ✕: товары с этим значением убраны'],
+    [sample('s-only','шпилька',4,'only'),'Заливка — совпадает с заявкой (программа отобрала по нему сама)'],
+    [sample('w cmp-diff','М12',1,null),'Оранжевая заливка — отличие при сравнении товаров'],
     [sample('','M12',1,null),'Без отметки — можно отметить'],
     [sample('dim','M24',0,null),'Нет у показанных товаров — есть только у отсеянных'],
   ];
@@ -759,7 +763,7 @@ function renderPosition(pos){
   const chip=(w,text,what)=>{
     const m=M.marks.get(w), n=shownCount.get(w)||0, isReq=M.reqWords.has(w);
     // Fill shows the status (✓ green, + yellow, ✕ red), whoever set it; a frame only on your own marks.
-    let cls='w'+(m?' s-'+m.s:'')+(m&&m.by==='user'?' framed':'');
+    let cls='w'+(isReq&&m&&m.s!=='rejected'?' s-only':'')+(m&&m.by==='user'?' mk mk-'+m.s:'');
     if(!m&&!n)cls+=' dim';
     const s=m&&m.by==='user'?m.s:null;
     const fs=w.startsWith('w|')?(M.forms.get(w)||[]):[];
@@ -862,7 +866,7 @@ function renderPosition(pos){
   }
   pp.append(el('h2',{},`Подходящие товары (${exact.length})`));
   if(cmpList.length)pp.append(el('div',{class:'cmpbar'},
-    cmpList.length>1?`Сравниваются ${cmpList.length} товара: отличия обведены оранжевым`+(cmpFields.size?` (${[...cmpFields].join(', ').toLowerCase()})`:' — по характеристикам они не отличаются'):'Отметьте «Сравнить» ещё у одного товара',
+    cmpList.length>1?`Сравниваются ${cmpList.length} товара: отличия выделены оранжевым`+(cmpFields.size?` (${[...cmpFields].join(', ').toLowerCase()})`:' — по характеристикам они не отличаются'):'Отметьте «Сравнить» ещё у одного товара',
     el('button',{class:'btn',type:'button',onclick:()=>{delete state.compare[pos.id];save();render()}},'Снять сравнение')));
   if(M.reference)pp.append(el('p',{class:'hint'},'Эталон: ',el('b',{},M.reference.name),' — его характеристики дополняют заявку при сравнении; характеристики заявки важнее. ',
     el('button',{class:'btn',onclick:()=>{delete state.anchor[pos.id];save();render()}},'Убрать эталон')));
@@ -876,7 +880,7 @@ function renderPosition(pos){
   const valueButton=(k,raw)=>{const lab=raw??M.label(k), sym=st=>raw!=null?'':SYM[st];
     const s=M.marks.get(k)?.s||'none', isReq=M.reqWords.has(k);
     let framed=M.marks.get(k)?.by==='user';
-    const cls=st=>'w cyc'+(st!=='none'?' s-'+st:'')+(framed&&st!=='none'?' framed':'');
+    const cls=st=>'w cyc'+(isReq&&st!=='none'&&st!=='rejected'?' s-only':'')+(framed&&st!=='none'?' mk mk-'+st:'');
     let presses=0, timer=null;
     const button=el('button',{type:'button',class:cls(s),
       title:`${M.fieldOf.get(k)?M.fieldOf.get(k)+': '+M.label(k):'Слово «'+M.label(k)+'»'} — ${STATE[s]}. Быстрые нажатия: 1 — обязательно, 2 — аналог, 3 — исключить, 4 — снять`,
@@ -928,7 +932,7 @@ function renderPosition(pos){
     return keys.length||missing.length?el('div',{class:'rowvals'},buttons,missing):null;
   };
   const compareBox=p=>{const on=cmpNames.has(p.name);
-    return el('label',{class:'cmpbox',title:'Сравнить с другими отмеченными товарами: отличия будут обведены оранжевым'},
+    return el('label',{class:'cmpbox',title:'Сравнить с другими отмеченными товарами: отличия будут выделены оранжевым'},
       el('input',{type:'checkbox',checked:on,onchange:()=>{state.compare=state.compare||{};const l=new Set(state.compare[pos.id]||[]);on?l.delete(p.name):l.add(p.name);state.compare[pos.id]=[...l];save();render()}}),'Сравнить')};
   const hideOne=p=>{state.hidden=state.hidden||{};(state.hidden[pos.id]=state.hidden[pos.id]||[]).push(p.name);save();render()};
   const diffTag=(c,x)=>el('span',{class:'cmp diff'},x.has.length?`${x.f}: ${x.has.map(M.label).join('/')} вместо ${x.want.map(M.label).join('/')}`:(x.f.startsWith('слово')?'нет слова'+x.f.slice(5):'нет '+x.f),
@@ -938,14 +942,14 @@ function renderPosition(pos){
   const row=(c,cls)=>{const p=c.p;return el('tr',{class:cls+(cmpNames.has(p.name)?' compared':'')},
     el('td',{class:'g-start'},pos.unit),el('td',{class:'num'},num(pos.qty)),
     el('td',{class:'g-start'},c.anchor?el('div',{class:'anchormark'},'эталон — остальные сравниваются с ним'):null,nameButtons(p),p===best?el('span',{class:'bestmark'},'★ лучшая цена'):null,c.analog?el('div',{class:'analog'},'аналог / замена'):null,
-      cls!=='main'?el('div',{class:'neardiff'},`совпадает ${c.same.length} из ${c.total}`+(c.unknown.length?` · не указано: ${c.unknown.join(', ').toLowerCase()}`:'')):null,
-      c.diff.length?el('div',{class:'cmprow'},...c.diff.map(x=>diffTag(c,x))):null,
+      cls!=='main'?el('div',{class:'neardiff',title:c.diff.map(x=>x.has.length?`${x.f}: ${x.has.map(M.label).join('/')} вместо ${x.want.map(M.label).join('/')}`:`нет ${x.f}`).join('\n')},`совпадает ${c.same.length} из ${c.total}`+(c.unknown.length?` · не указано: ${c.unknown.join(', ').toLowerCase()}`:'')):null,
+      c.diff.length&&cmpNames.has(p.name)?el('div',{class:'cmprow'},...c.diff.map(x=>diffTag(c,x))):null,
       rowVals(p),productMeta(pos,p)),
     el('td',{title:p.factor&&p.factor!==1?'Сколько в единице поставщика — из наименования':''},p.unit+(p.factor&&p.factor!==1?` (${p.note})`:'')),
     el('td',{class:'num'},p.buy==null?'—':num(p.buy)),el('td',{class:'num'},money(p.price)),
     el('td',{class:'num',title:p.factor?'':p.note},money(p.unitPrice)),el('td',{class:'num g-end'},money(p.total)),
     el('td',{},el('button',{class:'btn'+(isChosen(pos,p)?' chosen':''),type:'button',onclick:()=>chooseToggle(pos,p)},isChosen(pos,p)?'Выбрано ✓':'Выбрать'),
-      el('button',{class:'btn anchorbtn'+(c.anchor?' on':''),type:'button',title:'Сравнивать остальные товары с этим',onclick:()=>{state.anchor=state.anchor||{};state.anchor[pos.id]=c.anchor?undefined:p.name;save();render()}},c.anchor?'Эталон ✓':'Взять за основу'),compareBox(p)))};
+      el('button',{class:'btn anchorbtn'+(c.anchor?' on':''),type:'button',title:'Сравнивать остальные товары с этим',onclick:()=>{state.anchor=state.anchor||{};state.anchor[pos.id]=c.anchor?undefined:p.name;save();render()}},c.anchor?'Эталон ✓':'Взять за основу'),compareBox(p),el('button',{class:'more',type:'button',title:'Убрать этот товар из выдачи',onclick:()=>hideOne(p)},'Скрыть товар')))};
   for(const c of exact)tb.append(row(c,c.analog?'alt':'main'));
   if(near.length){
     const limit=state.closeAll?.[pos.id]?near.length:8;
