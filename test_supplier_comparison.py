@@ -34,6 +34,11 @@ def accept_name(result, key):
 
 
 class ComparisonLogicTests(unittest.TestCase):
+    def test_pair_is_two_pieces(self):
+        item = dict(position=1, requested_name="Стропа текстильная 3т", quantity=3, unit="пара")
+        view = comparison.offer_view(item, dict(name="Строп текстильный 3т 3м", price=817.4, unit="шт", supplier="Сатурн", sku="s"))
+        self.assertEqual((view["factor"], view["quantity"]), (0.5, 6))
+
     def test_pack_unit_with_count_buys_whole_packs(self):
         item = dict(position=1, requested_name="Дюбель-гвоздь 6×40", quantity=5000, unit="шт")
         offer = dict(name="Дюбель-гвоздь RMG M 6x40, пластик, гриб, 2600", price=3300, unit="Упаковка 2600 шт", supplier="ВсеИнструменты.ру", sku="b")

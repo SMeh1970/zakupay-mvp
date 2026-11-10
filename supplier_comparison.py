@@ -217,7 +217,8 @@ def conversion(item, candidate):
         pack = supplier_pack_pieces(candidate) or _candidate_pack_size(candidate, source.get("unit") or "")
         if pack > 1:
             return float(pack), "Количество в упаковке"
-    factors = {("т", "кг"): 1000, ("кг", "т"): .001, ("г", "кг"): .001,
+    factors = {("шт", "пара"): .5, ("пара", "шт"): 2,  # a pair is two pieces
+               ("т", "кг"): 1000, ("кг", "т"): .001, ("г", "кг"): .001,
                ("м", "мм"): 1000, ("мм", "м"): .001, ("см", "м"): .01,
                ("л", "мл"): 1000, ("мл", "л"): .001}
     if (supplied, requested) in factors:
