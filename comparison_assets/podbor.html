@@ -397,7 +397,7 @@ const TEXT_RULES=[
   // Three sizes: a much larger one is the length (профиль 50×40×3000 мм -> 50×40 мм, длина 3 м),
   // a much smaller one is the thickness (лист 2×1250×2500 -> толщина 2 мм, 1250×2500 мм).
   ['Размеры',R(NB+NN+'\\s*[xх×*]\\s*'+NN+'\\s*[xх×*]\\s*'+NN+'(?:\\s*(мм|см))?'),m=>dims3(m)],
-  ['Размеры',R(NB+NN+'\\s*[xх×*]\\s*'+NN+'(?:\\s*(мм|см))?(?!\\s*[xх×*\\d])(?!\\s*м(?![мa-zа-яё]))'+NA),m=>dims([m[1],m[2]],m[3])],
+  ['Размеры',R(NB+NN+'\\s*[xх×*]\\s*'+NN+'(?:\\s*(мм|см))?(?![xх×*\\d]|\\s*[xх×*])(?!\\s*м(?![мa-zа-яё]))'+NA),m=>dims([m[1],m[2]],m[3])],
 ];
 function extract(name){
   const text=String(name||''), toks=[], found=[], covered=[];
@@ -439,6 +439,7 @@ function extract(name){
     if((m=w.match(/^l(\d+(?:[.,]\d+)?)$/))){const v=numv(m[1]);add('Длина',len(v),v,i);if(nx==='мм')used.add(i+1);continue}
     if((m=w.match(/^(\d+(?:[.,]\d+)?)x(\d+(?:[.,]\d+)?)$/))&&['м','m'].includes(nx)){add('Ширина',len(numv(m[1])*1000),numv(m[1])*1000,i,i+1);add('Длина',len(numv(m[2])*1000),numv(m[2])*1000);continue}
     if(NUM.test(w)&&['м','m'].includes(nx)&&numv(w)<=12){const v=numv(w)*1000;add('Длина',len(v),v,i,i+1);continue}
+    if((m=w.match(/^(\d+(?:[.,]\d+)?)m$/))&&numv(m[1])<=12){const v=numv(m[1])*1000;add('Длина',len(v),v,i);continue}
     if((m=w.match(/^d(\d+(?:[.,]\d+)?(?:-\d+(?:[.,]\d+)?)?)$/))&&nx==='мм'){add('Диаметр',m[1]+' мм',numv(m[1]),i,i+1);continue}
     if(NUM.test(w)&&nx==='мм'){add('Размер',fmt(numv(w))+' мм',numv(w),i,i+1);continue}
     if((m=w.match(/^(\d+(?:[.,]\d+)?)(?:mm|мм)$/))){add('Размер',fmt(numv(m[1]))+' мм',numv(m[1]),i);continue}
@@ -754,7 +755,10 @@ function renderPosition(pos){
   const exact=ranked.filter(r=>r.dReq.length===0&&r.same.length>0);
   const near=ranked.filter(r=>!exact.includes(r)&&r.dReq.length<=2&&r.same.length>=2);
   const rest=ranked.filter(r=>!exact.includes(r)&&!near.includes(r));
-  const best=exact.find(r=>r.p.unitPrice!=null)?.p;
+  // ★ — the cheapest per request unit among products with every request value confirmed (none unknown);
+  // if no product has them all, the cheapest of the suitable ones.
+  const cheapest=list=>list.filter(r=>r.p.unitPrice!=null).sort((a,b)=>a.p.unitPrice-b.p.unitPrice)[0]?.p;
+  const best=cheapest(exact.filter(r=>!r.unknown.length))||cheapest(exact);
   pp.append(el('h2',{},`Подходящие товары (${exact.length})`));
   if(M.reference)pp.append(el('p',{class:'hint'},'Эталон: ',el('b',{},M.reference.name),' — его характеристики дополняют заявку при сравнении; характеристики заявки важнее. ',
     el('button',{class:'btn',onclick:()=>{delete state.anchor[pos.id];save();render()}},'Убрать эталон')));
@@ -1042,7 +1046,8 @@ function status(pos){
   const M=model(pos);
   const chosen=state.chosen?.[pos.id]!=null&&M.products.find(p=>p.name===state.chosen[pos.id]);
   if(chosen)return {code:'done',text:'Выбрано',offer:chosen};
-  const ranked=M.rankAll(M.reference), best=ranked.find(r=>r.dReq.length===0&&r.same.length>0&&r.p.unitPrice!=null)?.p;
+  const ranked=M.rankAll(M.reference), fit=ranked.filter(r=>r.dReq.length===0&&r.same.length>0&&r.p.unitPrice!=null), cheap=l=>[...l].sort((a,b)=>a.p.unitPrice-b.p.unitPrice)[0]?.p;
+  const best=cheap(fit.filter(r=>!r.unknown.length))||cheap(fit);
   const near=ranked.find(r=>r.dReq.length<=2&&r.same.length>=2&&r.p.unitPrice!=null)?.p;
   return best?{code:'todo',text:'Нужно решение',offer:best,recommended:true}:near?{code:'todo',text:'Нужно решение',offer:near,recommended:true,closeOnly:true}:{code:'miss',text:'Не найдено'};
 }
