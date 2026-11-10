@@ -34,6 +34,11 @@ def accept_name(result, key):
 
 
 class ComparisonLogicTests(unittest.TestCase):
+    def test_pack_written_as_up_slash_n_pieces(self):
+        item = dict(position=1, requested_name="Дюбель 6×40", quantity=200, unit="шт")
+        offer = dict(name="Дюбель-R ООО ПКФ Сварком 6x40 (уп/250шт.) k00004658", price=778, unit="Штука", supplier="ВсеИнструменты.ру", sku="a")
+        self.assertEqual(comparison.conversion(item, offer)[0], 250)
+
     def test_shared_quantity_decision_applies_only_to_same_amount_unit_and_row(self):
         a, b, c = quote("А", offered_quantity=56), quote("Б", offered_quantity=56), quote("В", offered_quantity=55)
         result = result_with(a, b, c)
