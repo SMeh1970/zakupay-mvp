@@ -388,7 +388,7 @@ const fmt=n=>String(+(+n).toFixed(3)).replace('.',',');
 const len=v=>v>=1000?fmt(v/1000)+' м':fmt(v)+' мм'; // one label for one value
 // Words that name a characteristic by themselves (matched by stem, so «стальная» = «стальной»).
 const WORD_DICT={
-  'Цвет':['белый','черный','чёрный','серый','зеленый','синий','красный','желтый','бурый','коричневый','прозрачный','бежевый','оранжевый','голубой','фиолетовый','графитовый','хромированный'],
+  'Цвет':['red','blue','green','yellow','black','white','orange','grey','gray','белый','черный','чёрный','серый','зеленый','синий','красный','желтый','бурый','коричневый','прозрачный','бежевый','оранжевый','голубой','фиолетовый','графитовый','хромированный'],
   'Материал':['стальной','сталь','нержавеющий','латунный','латунь','медный','медь','алюминиевый','алюминий','чугунный','чугун','пвх','пнд','полипропилен','полипропиленовый','полиэтилен','полиэтиленовый','резиновый','резина','деревянный','пластиковый','пластик','поликарбонат','поликарбонатный','стекло','стеклянный','картон','бумажный','текстильный','силиконовый','полиуретановый','керамический','бетонный','фанерный','монолитный','a2','a4'],
   'Покрытие':['оцинкованный','оцинк','цинк','zn','никелированный','окрашенный','порошковый','омедненный','омеднённый','фосфатированный','черненый','анодированный'],
 };
@@ -560,7 +560,7 @@ function extract(name){
 function lookup(w){
   const s=stem(w);
   const mine=(state.dict||{})[s]; if(mine)return mine;
-  const CANON={a2:'нерж. A2',a4:'нерж. A4',zn:'цинк','оцинкованный':'цинк','оцинк':'цинк','чёрный':'черный','сталь':'стальной','латунь':'латунный','медь':'медный','алюминий':'алюминиевый','чугун':'чугунный','пластик':'пластиковый','резина':'резиновый','полипропилен':'полипропиленовый','полиэтилен':'полиэтиленовый','поликарбонат':'поликарбонатный'};
+  const CANON={red:'красный',blue:'синий',green:'зеленый',yellow:'желтый',black:'черный',white:'белый',orange:'оранжевый',grey:'серый',gray:'серый',a2:'нерж. A2',a4:'нерж. A4',zn:'цинк','оцинкованный':'цинк','оцинк':'цинк','чёрный':'черный','сталь':'стальной','латунь':'латунный','медь':'медный','алюминий':'алюминиевый','чугун':'чугунный','пластик':'пластиковый','резина':'резиновый','полипропилен':'полипропиленовый','полиэтилен':'полиэтиленовый','поликарбонат':'поликарбонатный'};
   for(const[field,list]of Object.entries(WORD_DICT)){const x=list.find(x=>x===w||stem(x)===s);if(x)return {field,value:CANON[x]||x}}
   return null;
 }
@@ -893,15 +893,17 @@ function renderPosition(pos){
   // Products ticked «Сравнить»: rubrics whose values are not the same in all of them.
   const cmpNames=new Set((state.compare||{})[pos.id]||[]);
   const cmpList=M.products.filter(p=>cmpNames.has(p.name));
-  const cmpFields=new Set();
+  const cmpFields=new Set(), cmpWords=new Set();
   if(cmpList.length>1){
     const per=cmpList.map(p=>{const m=new Map();for(const k of p.words)if(k.startsWith('f|')&&M.fieldOf.get(k)!=='Код / артикул'){const f=M.fieldOf.get(k);if(!m.has(f))m.set(f,[]);m.get(f).push(k)}return m});
     const all=new Set(per.flatMap(m=>[...m.keys()]));
     for(const f of all){const sig=per.map(m=>[...(m.get(f)||[])].sort().join('|'));if(new Set(sig).size>1)cmpFields.add(f)}
+    // Words outside the rubrics too («45» / «55», «RED» / «BLUE»): a word not in every compared product differs.
+    for(const p of cmpList)for(const k of p.words)if(k.startsWith('w|')&&!cmpList.every(q=>q.words.has(k)))cmpWords.add(k);
   }
   pp.append(el('h2',{},`Подходящие товары (${exact.length})`));
   if(cmpList.length)pp.append(el('div',{class:'cmpbar'},
-    cmpList.length>1?`Сравниваются ${cmpList.length} товара: отличия выделены оранжевым`+(cmpFields.size?` (${[...cmpFields].join(', ').toLowerCase()})`:' — по характеристикам они не отличаются'):'Отметьте «Сравнить» ещё у одного товара',
+    cmpList.length>1?`Сравниваются ${cmpList.length} товара: отличия выделены оранжевым`+(cmpFields.size||cmpWords.size?` (${[...cmpFields].join(', ').toLowerCase()}${cmpFields.size&&cmpWords.size?', ':''}${cmpWords.size?'слова: '+[...cmpWords].map(M.label).join(', '):''})`:' — по характеристикам они не отличаются'):'Отметьте «Сравнить» ещё у одного товара',
     el('button',{class:'btn',type:'button',onclick:()=>{delete state.compare[pos.id];save();render()}},'Снять сравнение')));
   if(M.reference)pp.append(el('p',{class:'hint'},'Эталон: ',el('b',{},M.reference.name),' — его характеристики дополняют заявку при сравнении; характеристики заявки важнее. ',
     el('button',{class:'btn',onclick:()=>{delete state.anchor[pos.id];save();render()}},'Убрать эталон')));
@@ -931,7 +933,7 @@ function renderPosition(pos){
     const button=x=>{
       const b=valueButton(x.k,p.name.slice(x.s,x.e));b.classList.add('inl');
       if(x.guess){b.append('?');b.title='Определено методом исключения — проверьте · '+b.title}
-      if(inCmp&&cmpFields.has(M.fieldOf.get(x.k))){b.classList.add('cmp-diff');b.title='Отличается от других сравниваемых товаров · '+b.title}
+      if(inCmp&&(cmpFields.has(M.fieldOf.get(x.k))||cmpWords.has(x.k))){b.classList.add('cmp-diff');b.title='Отличается от других сравниваемых товаров · '+b.title}
       return b;
     };
     const ok=x=>x.k&&M.fieldOf.get(x.k)!=='Код / артикул';
