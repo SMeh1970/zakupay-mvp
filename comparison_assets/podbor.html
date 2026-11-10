@@ -147,7 +147,7 @@ td.num{font-family:var(--mono);font-variant-numeric:tabular-nums;white-space:now
 /* Every clickable part of the name is blue, like a link; your mark adds a thin coloured frame. */
 /* The same blue for values in the filter column and under the name: what is blue can be clicked. */
 .rubric .words .w,.rowvals .w.cyc{color:#2b5fb4}
-.pname .w.cyc.inl{display:inline;font:inherit;font-size:inherit;padding:0 2px;border:0;border-radius:3px;background:transparent;color:#2b5fb4;line-height:inherit}
+.pname .w.cyc.inl{display:inline;font:inherit;font-size:inherit;padding:0 2px;border:0;border-radius:3px;background:transparent;color:#2b5fb4;line-height:inherit;box-shadow:inset 0 0 0 1px #c9d0ca}
 .pname .w.cyc.inl:hover{background:var(--accent-bg)}
 .pname .pgroup{display:inline;white-space:nowrap} /* one designation stays on one line; no box around it */
 
@@ -993,14 +993,15 @@ function renderPosition(pos){
     for(const c of near.slice(0,limit))tb.append(row(c,'close'));
     if(near.length>8)tb.append(el('tr',{class:'sep'},el('td',{colspan:9},el('button',{class:'more',type:'button',onclick:()=>{state.closeAll=state.closeAll||{};state.closeAll[pos.id]=!state.closeAll[pos.id];save();render()}},state.closeAll?.[pos.id]?'Свернуть':`Ещё ${near.length-8}`))));
   }
-  pp.append(el('div',{class:'tablewrap'},el('table',{class:'offers'},el('thead',{},head),tb)));
+  // «Остальные» are rows of the same table with every function of the others; folded until opened.
   if(rest.length){
-    const tb2=el('tbody');
-    for(const c of rest)tb2.append(el('tr',{class:'out'},el('td',{},c.p.name,el('div',{class:'why'},c.diff.length?c.diff.map(x=>x.has.length?`${x.f}: ${x.has.map(M.label).join('/')} вместо ${x.want.map(M.label).join('/')}`:`нет ${x.f}`).join('; '):`совпадает только ${c.same.length}`)),el('td',{},c.p.unit),el('td',{class:'num'},money(c.p.price)),
-      el('td',{},el('button',{class:'btn'+(isChosen(pos,c.p)?' chosen':''),type:'button',onclick:()=>chooseToggle(pos,c.p)},isChosen(pos,c.p)?'Выбрано ✓':'Выбрать'),
-        el('button',{class:'btn anchorbtn'+(c.anchor?' on':''),type:'button',title:'Сравнивать остальные товары с этим',onclick:()=>{state.anchor=state.anchor||{};state.anchor[pos.id]=c.anchor?undefined:c.p.name;save();render()}},c.anchor?'Эталон ✓':'Взять за основу'))));
-    pp.append(el('details',{class:'out'},el('summary',{},`Остальные — отличаются больше: ${rest.length}`),el('div',{class:'tablewrap'},el('table',{},tb2))));
+    const open=!!state.restOpen?.[pos.id];
+    tb.append(el('tr',{class:'sep'},el('td',{colspan:9},el('button',{class:'more',type:'button','aria-expanded':String(open),
+      onclick:()=>{state.restOpen=state.restOpen||{};state.restOpen[pos.id]=!open;save();render()}},
+      `${open?'▾':'▸'} Остальные — отличаются больше: ${rest.length}`))));
+    if(open)for(const c of rest)tb.append(row(c,'out'));
   }
+  pp.append(el('div',{class:'tablewrap'},el('table',{class:'offers'},el('thead',{},head),tb)));
   pp.append(el('p',{class:'note'},'Наличие и дату цены проверьте на этапе «Счёт» перед выставлением.'));
   main.append(aiPickPanel(pos,M));
   main.append(el('div',{class:'grid'},wp,pp));
