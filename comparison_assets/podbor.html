@@ -144,9 +144,9 @@ td.num{font-family:var(--mono);font-variant-numeric:tabular-nums;white-space:now
 .offers tr.main td{background:color-mix(in srgb,var(--ok-bg) 60%,transparent)}
 .offers tr.alt td{background:color-mix(in srgb,var(--warn-bg) 70%,transparent)}
 /* The name as filters: parts are plain text with a dotted underline until marked. */
-/* Every clickable part of the name: a light grey background and a slightly bolder font; your mark adds a thin coloured frame. */
-.pname .w.cyc.inl{display:inline;font:inherit;font-size:inherit;font-weight:500;padding:0 2px;border:0;border-radius:3px;background:#e9ece8;color:inherit;line-height:inherit}
-.pname .w.cyc.inl:hover{background:#dde1dc}
+/* Every clickable part of the name is blue, like a link; your mark adds a thin coloured frame. */
+.pname .w.cyc.inl{display:inline;font:inherit;font-size:inherit;padding:0 2px;border:0;border-radius:3px;background:transparent;color:#2b5fb4;line-height:inherit}
+.pname .w.cyc.inl:hover{background:var(--accent-bg)}
 .pname .pgroup{display:inline;white-space:nowrap} /* one designation stays on one line; no box around it */
 
 /* Comparing products side by side: what differs among the ticked products is outlined in orange
