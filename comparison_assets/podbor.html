@@ -352,7 +352,7 @@ function tokens(name){
     return w;
   });
 }
-const FIELDS=['Тип товара','Резьба','Условный проход','Давление','Длина','Ширина','Толщина','Диаметр','Размеры','Размер','Сечение','Напряжение','Мощность','Ток','Объём','Масса','Температура','Защита IP','Обороты','Момент','Площадь','Зернистость','Угол','Угол резьбы','Класс прочности','Марка стали','Стандарт','Материал','Покрытие','Цвет','Фасовка','Бренд','Код / артикул'];
+const FIELDS=['Тип товара','Резьба','Условный проход','Давление','Длина','Ширина','Толщина','Диаметр','Посадка','Конструкция','Размеры','Размер','Сечение','Напряжение','Мощность','Ток','Объём','Масса','Температура','Защита IP','Обороты','Момент','Площадь','Зернистость','Угол','Угол резьбы','Класс прочности','Марка стали','Стандарт','Материал','Покрытие','Цвет','Фасовка','Бренд','Код / артикул'];
 const BRANDS=new Set(['starfix','aurafort','креп-комп','опм','messer','мастак','rtp','ремоколор','mw','zitar','fischer','sormat','mungo','hilti','зубр','makita','bosch','gp','askaynak','alfamag','valtti','руссиз','tikkurila','knauf','ceresit','tytan','penosil','dewalt','metabo','интерскол']);
 const CLASSES=new Set(['4.6','4.8','5.6','5.8','6.8','8.8','10.9','12.9']);
 const NUM=/^\d+(?:[.,]\d+)?$/, numv=s=>parseFloat(String(s).replace(',','.'));
@@ -375,6 +375,39 @@ function dims3(m){
   if(sorted[2]>=500&&sorted[2]>=10*sorted[1]){const rest=v.filter((_,i)=>i!==big);return {multi:[['Размеры',...dims(rest)],['Длина',len(v[big]),v[big]]]}}
   if(sorted[0]*10<=sorted[1]){const rest=v.filter((_,i)=>i!==small);return {multi:[['Размеры',...dims(rest)],['Толщина',fmt(v[small])+' мм',v[small]]]}}
   return dims(v);
+}
+/* Rubric schemes by kind of product (first noun of the name). slots — rubrics of the kind with the usual
+   range in mm: a generic «N мм» goes to the free rubric it fits; a bare number goes there by elimination and
+   is a guess (shown with «?», not used to drop products). dims — rubrics of «A×B» for this kind, in order. */
+const SCHEMES=[
+  {re:/^(профил|швеллер|уголок|уголк|балк)/, slots:[['Длина',1000,12000],['Толщина',0.3,6]]},
+  {re:/^труб/, slots:[['Диаметр',6,1600],['Толщина',0.5,20],['Длина',1000,12000]], dims:['Диаметр','Толщина']},
+  {re:/^(лист|плит|панел)/, slots:[['Толщина',0.3,100]]},
+  {re:/^фанер/, slots:[['Толщина',3,40]]},
+  {re:/^поликарбонат/, slots:[['Толщина',2,32]]},
+  {re:/^(болт|винт|шпильк|штанг|анкер|шуруп|саморез|заклепк|дюбел)/, slots:[['Длина',4,3000],['Диаметр',2,36]]},
+  {re:/^(гайк|шайб)/, slots:[]},
+  {re:/^электрод/, slots:[['Диаметр',1.5,6.5],['Длина',200,500]], dims:['Диаметр','Длина']},
+  {re:/^проволок/, slots:[['Диаметр',0.3,6]]},
+  {re:/^(круг|диск)/, slots:[['Диаметр',50,500],['Толщина',0.5,10],['Посадка',10,32]], dims:['Диаметр','Посадка']},
+  {re:/^сверл/, slots:[['Диаметр',0.5,60],['Длина',20,600]], dims:['Диаметр','Длина']},
+  {re:/^трос/, slots:[['Диаметр',0.5,40]], dims:'Конструкция'},
+];
+const slotLabel=(f,v)=>f==='Длина'?len(v):fmt(v)+' мм';
+function applyScheme(found,t,used){
+  const kind=String(found.find(f=>f.field==='Тип товара')?.value||'');
+  const sch=SCHEMES.find(x=>x.re.test(kind)); if(!sch)return;
+  const has=f=>found.some(x=>x.field===f);
+  const range=f=>sch.slots.find(s=>s[0]===f);
+  const fits=(f,v)=>{const r=range(f);return !r||v>=r[1]&&v<=r[2]};
+  const slot=v=>sch.slots.find(([f,a,b])=>!has(f)&&v>=a&&v<=b);
+  if(sch.dims)for(const f of found.filter(x=>x.field==='Размеры')){
+    if(sch.dims==='Конструкция'){f.field='Конструкция';f.value=f.value.replace(/ мм$/,'');continue}
+    const ns=(f.value.match(/\d+(?:,\d+)?/g)||[]).map(numv), free=sch.dims.filter(d=>!has(d));
+    if(ns.length===free.length&&ns.every((v,j)=>fits(free[j],v))){found.splice(found.indexOf(f),1);ns.forEach((v,j)=>found.push({field:free[j],value:slotLabel(free[j],v),n:v}))}
+  }
+  for(const f of found)if(f.field==='Размер'&&f.n!=null){const s=slot(f.n);if(s){f.field=s[0];f.value=slotLabel(s[0],f.n)}}
+  t.forEach((w,i)=>{if(used.has(i)||!NUM.test(w))return;const v=numv(w),s=slot(v);if(s){found.push({field:s[0],value:slotLabel(s[0],v),n:v,guess:true});used.add(i)}});
 }
 const TEXT_RULES=[
   ['Марка стали',R('\\bAISI\\s*(\\d{3}L?)'),m=>['AISI '+m[1].toUpperCase(),null]],
@@ -466,6 +499,7 @@ function extract(name){
   // («0,5 мм», «(0,4мм)») is the wall / sheet thickness, as in «50x40x0,65 мм».
   const sec=found.filter(f=>f.field==='Размеры').flatMap(f=>(f.value.match(/\d+(?:,\d+)?/g)||[]).map(x=>numv(x)));
   if(sec.length)for(const f of found)if(f.field==='Размер'&&f.n!=null&&f.n*10<=Math.min(...sec))f.field='Толщина';
+  applyScheme(found,t,used);
   const rest=new Set();
   t.forEach((w,i)=>{if(!used.has(i))rest.add(w)});
   return {found,rest};
@@ -505,8 +539,10 @@ function model(pos){
     for(const w of raw)keys.add(keyOf.get(w));
     return keys;
   };
-  for(const p of products)p.words=keysOf(p,p.raw);
+  for(const p of products){p.words=keysOf(p,p.raw);p.guess=new Set(p.found.filter(f=>f.guess).map(fkey))}
   const reqKeys=[...keysOf(reqX,reqRaw)].filter(k=>!k.startsWith('r|'));
+  // A request value found by elimination is a guess: not applied by itself, not a requirement.
+  const reqGuess=new Set(reqX.found.filter(f=>f.guess).map(fkey));
   const reqWords=new Set(reqKeys);
   const label=k=>labels.get(k)||k;
   const counts=new Map();
@@ -544,6 +580,7 @@ function model(pos){
   const current=()=>[...marks].map(([w,m])=>[w,m.s]);
   // Request values and words are applied by the program in request order, never one that leaves no product.
   for(const w of reqKeys){
+    if(reqGuess.has(w))continue;
     if(marks.has(w)||saved[w]==='none'||!counts.has(w))continue;
     if(products.some(passesWith([...current(),[w,'only']])))marks.set(w,{s:'only',by:'auto'});
     else skipped.add(w);
@@ -569,7 +606,7 @@ function model(pos){
   const SKIP=new Set(['Код / артикул','Бренд','Фасовка']);
   const valuesOf=p=>{const m=new Map();for(const k of p.words)if(k.startsWith('f|')&&!SKIP.has(fieldOf.get(k))){const f=fieldOf.get(k);if(!m.has(f))m.set(f,new Set());m.get(f).add(k)}return m};
   const target=new Map();
-  for(const k of reqKeys)if(k.startsWith('f|')&&saved[k]!=='none'&&!SKIP.has(fieldOf.get(k))){const f=fieldOf.get(k);if(!target.has(f))target.set(f,new Set());target.get(f).add(k)}
+  for(const k of reqKeys)if(k.startsWith('f|')&&!reqGuess.has(k)&&saved[k]!=='none'&&!SKIP.has(fieldOf.get(k))){const f=fieldOf.get(k);if(!target.has(f))target.set(f,new Set());target.get(f).add(k)}
   for(const[k,m]of marks)if(k.startsWith('f|')&&m.s!=='rejected'&&!SKIP.has(fieldOf.get(k))){const f=fieldOf.get(k);if(!target.has(f))target.set(f,new Set());target.get(f).add(k)}
   for(const[k,m]of marks)if(k.startsWith('w|')&&m.s==='only')target.set('слово «'+label(k)+'»',new Set([k]));
   // One order for all products: how many characteristics of the request (and of your marks) they share.
@@ -585,6 +622,7 @@ function model(pos){
       for(const[f,ks]of t2){
         const o=f.startsWith('слово')?new Set([...ks].filter(k=>p.words.has(k))):own.get(f);
         if(!o||!o.size){if(f.startsWith('слово'))diff.push({f,want:[...ks],has:[]});else unknown.push(f);continue}
+        if(![...o].some(k=>ks.has(k))&&[...o].every(k=>p.guess?.has(k))){unknown.push(f);continue} // a guess does not count as a difference
         ([...o].some(k=>ks.has(k))?same:diff).push({f,want:[...ks],has:[...o]});
       }
       const analog=same.some(x=>x.has.some(k=>marks.get(k)?.s==='also')&&!x.has.some(k=>marks.get(k)?.s==='only'||reqKeys.includes(k)));
@@ -809,7 +847,7 @@ function renderPosition(pos){
     const keys=[...p.words].filter(k=>k.startsWith('f|')&&M.fieldOf.get(k)!=='Код / артикул')
       .sort((a,b)=>FIELDS.indexOf(M.fieldOf.get(a))-FIELDS.indexOf(M.fieldOf.get(b)));
     const inCmp=cmpList.length>1&&cmpList.includes(p);
-    const buttons=keys.map(k=>{const b=valueButton(k);if(inCmp&&cmpFields.has(M.fieldOf.get(k))){b.classList.add('cmp-diff');b.title='Отличается от других сравниваемых товаров · '+b.title}return b});
+    const buttons=keys.map(k=>{const b=valueButton(k);if(p.guess?.has(k)){b.append('?');b.title='Определено методом исключения — проверьте · '+b.title}if(inCmp&&cmpFields.has(M.fieldOf.get(k))){b.classList.add('cmp-diff');b.title='Отличается от других сравниваемых товаров · '+b.title}return b});
     // A rubric the other compared products have and this one does not.
     const missing=inCmp?[...cmpFields].filter(f=>!keys.some(k=>M.fieldOf.get(k)===f)).map(f=>el('span',{class:'cmp-miss',title:'У других сравниваемых товаров указано'},'нет: '+f.toLowerCase())):[];
     return keys.length||missing.length?el('div',{class:'rowvals'},buttons,missing):null;
@@ -974,7 +1012,7 @@ function aiPanel(){
 /* ---------- AI choice for one position, checked by the rules ----------
    Claude rates every found product against the request; the request's numbers and sizes (as the rules read
    them) must be in the product, otherwise «подходит» is lowered to «проверить». Rules can lower, never raise. */
-const NUMERIC=new Set(['Резьба','Длина','Ширина','Толщина','Диаметр','Размер','Размеры','Условный проход','Давление','Сечение','Напряжение','Мощность','Ток','Объём','Масса','Зернистость','Типоразмер']);
+const NUMERIC=new Set(['Резьба','Длина','Ширина','Толщина','Диаметр','Посадка','Размер','Размеры','Условный проход','Давление','Сечение','Напряжение','Мощность','Ток','Объём','Масса','Зернистость','Типоразмер']);
 const pickBusy=new Set(); const pickErr={}; const pickCtl={};
 async function runPick(pos){
   if(!sampleFn||pickBusy.has(pos.id))return;
