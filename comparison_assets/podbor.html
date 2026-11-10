@@ -610,10 +610,14 @@ function model(pos){
   const passesWith=list=>p=>grade(list,p)>0;
   const current=()=>[...marks].map(([w,m])=>[w,m.s]);
   // Request values and words are applied by the program in request order, never one that leaves no product.
+  // If your own marks already leave no product, a request value is checked against the request alone:
+  // «гофрокартон» is not «не применено» just because no product has both of your widths and length.
+  const autoOnly=[];
   for(const w of reqKeys){
     if(reqGuess.has(w))continue;
     if(marks.has(w)||saved[w]==='none'||!counts.has(w))continue;
-    if(products.some(passesWith([...current(),[w,'only']])))marks.set(w,{s:'only',by:'auto'});
+    const userEmpty=!products.some(passesWith(current()));
+    if(products.some(passesWith([...current(),[w,'only']]))||(userEmpty&&products.some(passesWith([...autoOnly,[w,'only']])))){marks.set(w,{s:'only',by:'auto'});autoOnly.push([w,'only'])}
     else skipped.add(w);
   }
   const only=pick('only'), also=pick('also'), rej=pick('rejected');
