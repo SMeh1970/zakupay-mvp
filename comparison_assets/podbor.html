@@ -138,6 +138,10 @@ td.num{font-family:var(--mono);font-variant-numeric:tabular-nums;white-space:now
 /* Rows: green — has the ✓ values, yellow — shown thanks to + (analog). */
 .offers tr.main td{background:color-mix(in srgb,var(--ok-bg) 60%,transparent)}
 .offers tr.alt td{background:color-mix(in srgb,var(--warn-bg) 70%,transparent)}
+/* The name as filters: parts are plain text with a dotted underline until marked. */
+.pname .w.cyc.inl{display:inline;font:inherit;font-size:inherit;padding:0 1px;border:0;border-bottom:1px dotted var(--muted);border-radius:3px;background:transparent;color:inherit;line-height:inherit}
+.pname .w.cyc.inl:hover{background:var(--accent-bg)}
+.pname .w.cyc.inl.s-only,.pname .w.cyc.inl.s-also,.pname .w.cyc.inl.s-rejected{border-bottom-color:transparent}
 /* Comparing products side by side: what differs among the ticked products is outlined in orange
    (an outline, so the status fill of the value stays as it is). */
 :root{--cmp:#d9730d}
@@ -400,7 +404,14 @@ const SCHEMES=[
 // Kinds of plastic: a request for «пластиковый» is met by any of them.
 const PLASTICS=new Set(['пластиковый','пвх','пнд','полипропиленовый','полиэтиленовый','поликарбонатный','полиамид','нейлон','полиуретановый']);
 const slotLabel=(f,v)=>f==='Длина'?len(v):fmt(v)+' мм';
-function applyScheme(found,t,used){
+// Where the numbers of a value stand in the name, between s and e: «50×40» of «50x40x3000 мм».
+function numSpan(text,s,e,value){
+  const want=(String(value).match(/\d+(?:,\d+)?/g)||[]).map(x=>numv(x));
+  const got=[...text.slice(s,e).matchAll(/\d+(?:[.,]\d+)?/g)].map(m=>({v:numv(m[0]),s:s+m.index,e:s+m.index+m[0].length}));
+  const hit=got.filter(g=>want.some(w=>Math.abs(w-g.v)<1e-9||Math.abs(w-g.v*1000)<1e-9||Math.abs(w-g.v*10)<1e-9));
+  return hit.length?{s:Math.min(...hit.map(h=>h.s)),e:Math.max(...hit.map(h=>h.e))}:{s,e};
+}
+function applyScheme(found,t,used,text,toks){
   const kind=String(found.find(f=>f.field==='Тип товара')?.value||'');
   const sch=SCHEMES.find(x=>x.re.test(kind)); if(!sch)return;
   const has=f=>found.some(x=>x.field===f);
@@ -410,10 +421,10 @@ function applyScheme(found,t,used){
   if(sch.dims)for(const f of found.filter(x=>x.field==='Размеры')){
     if(sch.dims==='Конструкция'){f.field='Конструкция';f.value=f.value.replace(/ мм$/,'');continue}
     const ns=(f.value.match(/\d+(?:,\d+)?/g)||[]).map(numv), free=sch.dims.filter(d=>!has(d));
-    if(ns.length===free.length&&ns.every((v,j)=>fits(free[j],v))){found.splice(found.indexOf(f),1);ns.forEach((v,j)=>found.push({field:free[j],value:slotLabel(free[j],v),n:v}))}
+    if(ns.length===free.length&&ns.every((v,j)=>fits(free[j],v))){found.splice(found.indexOf(f),1);ns.forEach((v,j)=>found.push({field:free[j],value:slotLabel(free[j],v),n:v,...(f.s!=null?numSpan(text,f.s,f.e,fmt(v)):{})}))}
   }
   for(const f of found)if(f.field==='Размер'&&f.n!=null){const s=slot(f.n);if(s){f.field=s[0];f.value=slotLabel(s[0],f.n)}}
-  t.forEach((w,i)=>{if(used.has(i)||!NUM.test(w))return;const v=numv(w),s=slot(v);if(s){found.push({field:s[0],value:slotLabel(s[0],v),n:v,guess:true});used.add(i)}});
+  t.forEach((w,i)=>{if(used.has(i)||!NUM.test(w))return;const v=numv(w),s=slot(v);if(s){found.push({field:s[0],value:slotLabel(s[0],v),n:v,guess:true,s:toks[i].s,e:toks[i].e});used.add(i)}});
 }
 const TEXT_RULES=[
   ['Марка стали',R('\\bAISI\\s*(\\d{3}L?)'),m=>['AISI '+m[1].toUpperCase(),null]],
@@ -454,13 +465,13 @@ function extract(name){
     toks.push({w,o:m[0],s:m.index,e:m.index+m[0].length});
   }
   const used=new Set();
-  const add=(field,value,n,...idx)=>{found.push({field,value:String(value),n});idx.forEach(i=>used.add(i))};
+  const add=(field,value,n,...idx)=>{const sp=idx.filter(i=>toks[i]);found.push({field,value:String(value),n,s:sp.length?Math.min(...sp.map(i=>toks[i].s)):undefined,e:sp.length?Math.max(...sp.map(i=>toks[i].e)):undefined});idx.forEach(i=>used.add(i))};
   for(const [field,re,fn] of TEXT_RULES){
     for(const m of text.matchAll(re)){
       const s=m.index, e=m.index+m[0].length;
       if(covered.some(([a,b])=>s<b&&e>a))continue;
       covered.push([s,e]);
-      const r=fn(m); if(r.multi)for(const[f,value,n]of r.multi)add(f,value,n); else add(field,r[0],r[1]);
+      const r=fn(m); if(r.multi)for(const[f,value,n]of r.multi)found.push({field:f,value:String(value),n,...numSpan(text,s,e,value)}); else found.push({field,value:String(r[0]),n:r[1],s,e});
       toks.forEach((t,i)=>{if(t.s<e&&t.e>s)used.add(i)});
     }
   }
@@ -506,10 +517,11 @@ function extract(name){
   // («0,5 мм», «(0,4мм)») is the wall / sheet thickness, as in «50x40x0,65 мм».
   const sec=found.filter(f=>f.field==='Размеры').flatMap(f=>(f.value.match(/\d+(?:,\d+)?/g)||[]).map(x=>numv(x)));
   if(sec.length)for(const f of found)if(f.field==='Размер'&&f.n!=null&&f.n*10<=Math.min(...sec))f.field='Толщина';
-  applyScheme(found,t,used);
+  applyScheme(found,t,used,text,toks);
   const rest=new Set();
-  t.forEach((w,i)=>{if(!used.has(i))rest.add(w)});
-  return {found,rest};
+  const spans=[];
+  t.forEach((w,i)=>{if(!used.has(i)){rest.add(w);spans.push({w,s:toks[i].s,e:toks[i].e})}});
+  return {found,rest,spans};
 }
 // Built-in dictionary plus the words you assigned to a rubric on this page.
 function lookup(w){
@@ -522,7 +534,7 @@ function lookup(w){
 
 /* ---------- Model of one position ---------- */
 function model(pos){
-  const products=pos.products.map((p,i)=>{const x=extract(p[0]);return {i,name:p[0],price:+p[1]||0,unit:p[2]||'шт',found:x.found,raw:x.rest}});
+  const products=pos.products.map((p,i)=>{const x=extract(p[0]);return {i,name:p[0],price:+p[1]||0,unit:p[2]||'шт',found:x.found,raw:x.rest,spans:x.spans}});
   const reqX=extract(pos.name), reqRaw=[...reqX.rest];
   // Heap words: one key per word with its forms (same stem, or stems one letter apart).
   const freq=new Map();
@@ -546,7 +558,8 @@ function model(pos){
     for(const w of raw)keys.add(keyOf.get(w));
     return keys;
   };
-  for(const p of products){p.words=keysOf(p,p.raw);p.guess=new Set(p.found.filter(f=>f.guess).map(fkey))}
+  for(const p of products){p.words=keysOf(p,p.raw);
+    p.pieces=[...p.found.filter(f=>f.s!=null).map(f=>({s:f.s,e:f.e,k:fkey(f),guess:!!f.guess})),...p.spans.map(x=>({s:x.s,e:x.e,k:keyOf.get(x.w)}))].sort((a,b)=>a.s-b.s||b.e-a.e);p.guess=new Set(p.found.filter(f=>f.guess).map(fkey))}
   const reqKeys=[...keysOf(reqX,reqRaw)].filter(k=>!k.startsWith('r|'));
   // A request value found by elimination is a guess: not applied by itself, not a requirement.
   const reqGuess=new Set(reqX.found.filter(f=>f.guess).map(fkey));
@@ -844,39 +857,56 @@ function renderPosition(pos){
   // Table values: quick presses — 1 ✓ green, 2 + yellow, 3 ✕ red, 4 no mark; applied 0.35 s after the last.
   const BY_COUNT=['only','also','rejected','none'], SYM={only:'✓ ',also:'+ ',rejected:'✕ ',none:''};
   const STATE={only:'обязательно',also:'аналог / замена',rejected:'исключено',none:'без отметки'};
-  const valueButton=k=>{
+  // In the product name only the fill shows the mark — no ✓/+/✕ signs inside the text.
+  const valueButton=(k,raw)=>{const lab=raw??M.label(k), sym=st=>raw!=null?'':SYM[st];
     const s=M.marks.get(k)?.s||'none', isReq=M.reqWords.has(k);
     let framed=M.marks.get(k)?.by==='user';
     const cls=st=>'w cyc'+(st!=='none'?' s-'+st:'')+(framed&&st!=='none'?' framed':'');
     let presses=0, timer=null;
     const button=el('button',{type:'button',class:cls(s),
-      title:`${M.fieldOf.get(k)}: ${STATE[s]}. Быстрые нажатия: 1 — обязательно, 2 — аналог, 3 — исключить, 4 — снять`,
+      title:`${M.fieldOf.get(k)?M.fieldOf.get(k)+': '+M.label(k):'Слово «'+M.label(k)+'»'} — ${STATE[s]}. Быстрые нажатия: 1 — обязательно, 2 — аналог, 3 — исключить, 4 — снять`,
       'aria-label':`${M.named(k)}: ${STATE[s]}`,
       onclick:()=>{presses=Math.min(presses+1,4);const st=BY_COUNT[presses-1];framed=true;
-        button.className=cls(st);button.textContent=SYM[st]+M.label(k);
-        clearTimeout(timer);timer=setTimeout(()=>setMark(pos,k,st==='none'?(isReq?'none':null):st),350);}},SYM[s]+M.label(k));
+        button.className=cls(st);button.textContent=sym(st)+lab;
+        clearTimeout(timer);timer=setTimeout(()=>setMark(pos,k,st==='none'?(isReq?'none':null):st),350);}},sym(s)+lab);
     return button;
   };
+  // The name of the product, its recognised parts and words as buttons (same marks as in the filter column).
+  const nameButtons=p=>{
+    const box=el('span',{class:'pname'}), inCmp=cmpList.length>1&&cmpList.includes(p);
+    let at=0;
+    for(const x of p.pieces||[]){
+      if(x.s<at||!x.k||M.fieldOf.get(x.k)==='Код / артикул')continue;
+      if(x.s>at)box.append(p.name.slice(at,x.s));
+      const b=valueButton(x.k,p.name.slice(x.s,x.e));b.classList.add('inl');
+      if(x.guess){b.append('?');b.title='Определено методом исключения — проверьте · '+b.title}
+      if(inCmp&&cmpFields.has(M.fieldOf.get(x.k))){b.classList.add('cmp-diff');b.title='Отличается от других сравниваемых товаров · '+b.title}
+      box.append(b);at=x.e;
+    }
+    if(at<p.name.length)box.append(p.name.slice(at));
+    return box;
+  };
+  const inName=p=>new Set((p.pieces||[]).map(x=>x.k));
   const rowVals=p=>{
-    const keys=[...p.words].filter(k=>k.startsWith('f|')&&M.fieldOf.get(k)!=='Код / артикул')
+    const shown=inName(p), keys=[...p.words].filter(k=>k.startsWith('f|')&&M.fieldOf.get(k)!=='Код / артикул'&&!shown.has(k))
       .sort((a,b)=>FIELDS.indexOf(M.fieldOf.get(a))-FIELDS.indexOf(M.fieldOf.get(b)));
     const inCmp=cmpList.length>1&&cmpList.includes(p);
     const buttons=keys.map(k=>{const b=valueButton(k);if(p.guess?.has(k)){b.append('?');b.title='Определено методом исключения — проверьте · '+b.title}if(inCmp&&cmpFields.has(M.fieldOf.get(k))){b.classList.add('cmp-diff');b.title='Отличается от других сравниваемых товаров · '+b.title}return b});
     // A rubric the other compared products have and this one does not.
-    const missing=inCmp?[...cmpFields].filter(f=>!keys.some(k=>M.fieldOf.get(k)===f)).map(f=>el('span',{class:'cmp-miss',title:'У других сравниваемых товаров указано'},'нет: '+f.toLowerCase())):[];
+    const missing=inCmp?[...cmpFields].filter(f=>![...p.words].some(k=>M.fieldOf.get(k)===f)).map(f=>el('span',{class:'cmp-miss',title:'У других сравниваемых товаров указано'},'нет: '+f.toLowerCase())):[];
     return keys.length||missing.length?el('div',{class:'rowvals'},buttons,missing):null;
   };
   const compareBox=p=>{const on=cmpNames.has(p.name);
     return el('label',{class:'cmpbox',title:'Сравнить с другими отмеченными товарами: отличия будут обведены оранжевым'},
       el('input',{type:'checkbox',checked:on,onchange:()=>{state.compare=state.compare||{};const l=new Set(state.compare[pos.id]||[]);on?l.delete(p.name):l.add(p.name);state.compare[pos.id]=[...l];save();render()}}),'Сравнить')};
   const hideOne=p=>{state.hidden=state.hidden||{};(state.hidden[pos.id]=state.hidden[pos.id]||[]).push(p.name);save();render()};
-  const diffTag=(c,x)=>el('span',{class:'cmp diff'},x.has.length?`${x.f}: ${x.has.map(M.label).join('/')} вместо ${x.want.map(M.label).join('/')}`:`нет ${x.f}`,
+  const diffTag=(c,x)=>el('span',{class:'cmp diff'},x.has.length?`${x.f}: ${x.has.map(M.label).join('/')} вместо ${x.want.map(M.label).join('/')}`:(x.f.startsWith('слово')?'нет слова'+x.f.slice(5):'нет '+x.f),
     el('button',{type:'button',class:'xbtn',title:'Убрать только этот товар','aria-label':'Убрать товар: '+c.p.name,onclick:()=>hideOne(c.p)},'✕'),
     x.has.length?el('button',{type:'button',class:'xbtn all',title:'Исключить товары с этим значением во всей позиции','aria-label':'Исключить везде: '+x.has.map(M.label).join('/'),onclick:()=>{for(const k of x.has)state.marks[pos.id]=Object.assign(state.marks[pos.id]||{},{[k]:'rejected'});save();render()}},'✕'):null);
   const tb=el('tbody');
   const row=(c,cls)=>{const p=c.p;return el('tr',{class:cls+(cmpNames.has(p.name)?' compared':'')},
     el('td',{class:'g-start'},pos.unit),el('td',{class:'num'},num(pos.qty)),
-    el('td',{class:'g-start'},c.anchor?el('div',{class:'anchormark'},'эталон — остальные сравниваются с ним'):null,p.name,p===best?el('span',{class:'bestmark'},'★ лучшая цена'):null,c.analog?el('div',{class:'analog'},'аналог / замена'):null,
+    el('td',{class:'g-start'},c.anchor?el('div',{class:'anchormark'},'эталон — остальные сравниваются с ним'):null,nameButtons(p),p===best?el('span',{class:'bestmark'},'★ лучшая цена'):null,c.analog?el('div',{class:'analog'},'аналог / замена'):null,
       cls!=='main'?el('div',{class:'neardiff'},`совпадает ${c.same.length} из ${c.total}`+(c.unknown.length?` · не указано: ${c.unknown.join(', ').toLowerCase()}`:'')):null,
       c.diff.length?el('div',{class:'cmprow'},...c.diff.map(x=>diffTag(c,x))):null,
       rowVals(p),productMeta(pos,p)),
