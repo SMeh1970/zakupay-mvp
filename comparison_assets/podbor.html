@@ -878,7 +878,7 @@ function renderPosition(pos){
     el('tr',{},el('th',{class:'g-start'},'Ед. изм.'),el('th',{},'Кол-во'),el('th',{class:'g-start'},'Товар'),el('th',{},'Ед. изм.'),el('th',{},'Кол-во'),el('th',{},'Цена'),el('th',{},'Цена за ед. заявки'),el('th',{class:'g-end'},'Сумма'),el('th',{},''))];
   // Table values: quick presses — 1 ✓ green, 2 + yellow, 3 ✕ red, 4 no mark; applied 0.35 s after the last.
   const BY_COUNT=['only','also','rejected','none'], SYM={only:'✓ ',also:'+ ',rejected:'✕ ',none:''};
-  const STATE={only:'обязательно',also:'аналог / замена',rejected:'исключено',none:'без отметки'};
+  const STATE={only:'выбрано мной',also:'аналог / замена',rejected:'исключено',none:'не выбрано'};
   // In the product name only the fill shows the mark — no ✓/+/✕ signs inside the text.
   const valueButton=(k,raw)=>{const lab=raw??M.label(k), sym=st=>raw!=null?'':SYM[st];
     const s=M.marks.get(k)?.s||'none', isReq=M.reqWords.has(k);
@@ -886,7 +886,7 @@ function renderPosition(pos){
     const cls=st=>'w cyc'+(isReq&&st!=='none'&&st!=='rejected'?' s-only':'')+(framed&&st!=='none'?' mk mk-'+st:'');
     let presses=0, timer=null;
     const button=el('button',{type:'button',class:cls(s),
-      title:`${M.fieldOf.get(k)?M.fieldOf.get(k)+': '+M.label(k):'Слово «'+M.label(k)+'»'} — ${STATE[s]}. Быстрые нажатия: 1 — обязательно, 2 — аналог, 3 — исключить, 4 — снять`,
+      title:`${M.fieldOf.get(k)?M.fieldOf.get(k)+': '+M.label(k):'Слово «'+M.label(k)+'»'} — ${STATE[s]}.\nНажмите: 1 раз — выбрано мной (✓), 2 — аналог / замена (+), 3 — исключить (✕), 4 — снять выбор`,
       'aria-label':`${M.named(k)}: ${STATE[s]}`,
       onclick:()=>{presses=Math.min(presses+1,4);const st=BY_COUNT[presses-1];framed=true;
         button.className=cls(st)+['inl','cmp-diff'].filter(c=>button.classList.contains(c)).map(c=>' '+c).join(''); // keep the look of a part of the namebutton.textContent=sym(st)+lab;
