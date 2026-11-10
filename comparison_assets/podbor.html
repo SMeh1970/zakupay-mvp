@@ -377,6 +377,9 @@ function conversion(pos,p){
   if(req==='шт'&&(sup==='шт'||sup==='упак')){const k=unitPieces(p.unit)||packPieces(p.name);if(k)return [k,`${k} шт`]}
   if(req===sup)return [1,''];
   if(req==='м'&&(sup==='шт'||sup==='рулон')){const l=rollLength(p.name);if(l)return [l,`${String(l).replace('.',',')} м`]}
+  // A pair is two pieces: a piece is half of a requested pair (and a pair is two requested pieces).
+  if(req==='пара'&&sup==='шт')return [0.5,'2 шт = 1 пара'];
+  if(req==='шт'&&sup==='пара')return [2,'пара = 2 шт'];
   return [null,`Нет пересчёта: заявка в «${pos.unit}», поставщик в «${p.unit}»`];
 }
 
@@ -930,7 +933,7 @@ function renderPosition(pos){
     el('button',{class:'btn',type:'button',onclick:()=>{delete state.compare[pos.id];save();render()}},'Снять сравнение')));
   if(M.reference)pp.append(el('p',{class:'hint'},'Эталон: ',el('b',{},M.reference.name),' — его характеристики дополняют заявку при сравнении; характеристики заявки важнее. ',
     el('button',{class:'btn',onclick:()=>{delete state.anchor[pos.id];save();render()}},'Убрать эталон')));
-  pp.append(el('p',{class:'hint'},best?`Лучшая цена за ${unit(pos.unit)}: ${money(best.unitPrice)} — на ${num(pos.qty)} ${pos.unit} нужно купить ${num(best.buy)} ${best.unit}, сумма ${money(best.total)}.`:'Товаров со всеми характеристиками заявки нет — смотрите близкие ниже.'));
+  pp.append(el('p',{class:'hint'},best?`Лучшая цена за ${unit(pos.unit)}: ${money(best.unitPrice)} — на ${num(pos.qty)} ${pos.unit} нужно купить ${num(best.buy)} ${best.unit}, сумма ${money(best.total)}.`:exact.length?`Подходящие есть, но цену за ${pos.unit} не посчитать: ${exact[0].p.note||'нет пересчёта единиц поставщика в единицы заявки'}.`:'Товаров со всеми характеристиками заявки нет — смотрите близкие ниже.'));
   const head=[el('tr',{class:'group'},el('th',{colspan:2,class:'g-start'},'Данные заявки'),el('th',{colspan:6,class:'g-start g-end'},'Данные поставщика'),el('th',{})),
     el('tr',{},el('th',{class:'g-start'},'Ед. изм.'),el('th',{},'Кол-во'),el('th',{class:'g-start'},'Товар'),el('th',{},'Ед. изм.'),el('th',{},'Кол-во'),el('th',{},'Цена'),sortHead('unit','Цена за ед. заявки'),sortHead('total','Сумма','g-end'),el('th',{},''))];
   // Table values: quick presses — 1 ✓ green, 2 + yellow, 3 ✕ red, 4 no mark; applied 0.35 s after the last.
@@ -1269,7 +1272,11 @@ function status(pos){
   const ranked=M.ranked(), fit=ranked.filter(r=>r.dReq.length===0&&r.same.length>0&&r.p.unitPrice!=null), cheap=l=>[...l].sort((a,b)=>a.p.unitPrice-b.p.unitPrice)[0]?.p;
   const best=cheap(fit.filter(r=>!r.unknown.length))||cheap(fit);
   const near=ranked.find(r=>r.dReq.length<=2&&r.same.length>=2&&r.p.unitPrice!=null)?.p;
-  return best?{code:'todo',text:'Нужно решение',offer:best,recommended:true}:near?{code:'todo',text:'Нужно решение',offer:near,recommended:true,closeOnly:true}:{code:'miss',text:'Не найдено'};
+  if(best)return {code:'todo',text:'Нужно решение',offer:best,recommended:true};
+  if(near)return {code:'todo',text:'Нужно решение',offer:near,recommended:true,closeOnly:true};
+  // Suitable or close products without a price per request unit (no unit conversion) are still found.
+  const any=ranked.find(r=>r.dReq.length===0&&r.same.length>0)||ranked.find(r=>r.dReq.length<=2&&r.same.length>=2);
+  return any?{code:'todo',text:'Нужно решение',offer:any.p,noPrice:true}:{code:'miss',text:'Не найдено'};
 }
 const STATUS_ORDER=[['all','Все'],['todo','Нужно решение'],['done','Выбрано'],['miss','Не найдено'],['none','Поиск не запускался']];
 function render(){
@@ -1299,7 +1306,7 @@ function render(){
     tb.append(el('tr',{id:'row-'+r.pos.id,class:'sumrow'+(open?' open':''),tabindex:0,onclick:()=>{state.active=open?null:r.pos.id;save();render()},onkeydown:e=>{if(e.key==='Enter'){state.active=open?null:r.pos.id;save();render()}}},
       el('td',{class:'num'},String(r.n)),el('td',{},el('span',{class:'caret'},open?'▾ ':'▸ '),r.pos.name),el('td',{class:'num'},num(r.pos.qty)),el('td',{},r.pos.unit),
       el('td',{},el('span',{class:'pill '+r.st.code},r.st.text)),
-      el('td',{},o?o.name:'—',o&&r.st.recommended?el('div',{class:'note'},r.st.closeOnly?'точного нет, ближайший по характеристикам':'рекомендовано: лучшая цена'):null),
+      el('td',{},o?o.name:'—',o&&r.st.recommended?el('div',{class:'note'},r.st.closeOnly?'точного нет, ближайший по характеристикам':'рекомендовано: лучшая цена'):o&&r.st.noPrice?el('div',{class:'note'},'найдено, но цену за единицу заявки не посчитать: нет пересчёта единиц'):null),
       el('td',{class:'num'},o?money(o.unitPrice):'—'),el('td',{class:'num'},o?money(o.total):'—')));
     if(open){
       const i=state.positions.indexOf(r.pos);
