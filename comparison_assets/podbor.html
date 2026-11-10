@@ -689,19 +689,40 @@ function renderPosition(pos){
   const fields=[...FIELDS,...[...byField.keys()].filter(f=>!FIELDS.includes(f))].filter(f=>byField.has(f));
   const rankField=f=>Math.min(M.marks.has('r|'+f)?0:9,...byField.get(f).map(rankKey));
   fields.sort((a,b)=>rankField(a)-rankField(b));
-  const limited=(keys,f,limit,make)=>{
+  // A value is live when the remaining products have it, it is marked, or it is in the request;
+  // values with 0 products wait under their own «Ещё N с 0», so the rubric list stays short.
+  const live=k=>M.marks.has(k)||M.reqWords.has(k)||(M.left.get(k)||0)>0;
+  const limited=(allKeys,f,limit,make)=>{
     const box=el('div',{class:'words',role:'group','aria-label':f});
+    const keys=allKeys.filter(live), zero=allKeys.filter(k=>!live(k));
     const open=expanded.has(pos.id+'|'+f), keep=Math.max(limit,keys.filter(k=>M.marks.has(k)).length);
     for(const k of open?keys:keys.slice(0,keep))box.append(make(k));
     if(keys.length>keep)box.append(el('button',{class:'more',type:'button',onclick:()=>{open?expanded.delete(pos.id+'|'+f):expanded.add(pos.id+'|'+f);render()}},open?'Свернуть':`Ещё ${keys.length-keep}`));
+    if(zero.length&&keys.length){
+      const zo=expanded.has(pos.id+'|'+f+'|0');
+      if(zo)for(const k of zero)box.append(make(k));
+      box.append(el('button',{class:'more',type:'button',title:'Значения, которых нет у оставшихся товаров',onclick:()=>{zo?expanded.delete(pos.id+'|'+f+'|0'):expanded.add(pos.id+'|'+f+'|0');render()}},zo?'Скрыть значения с 0':`Ещё ${zero.length} с 0`));
+    } else for(const k of zero)box.append(make(k)); // a rubric shown with all zeros shows them all
     return box;
   };
-  for(const f of fields){
+  // Rubrics where no remaining product has a value (and nothing is marked) are folded together;
+  // their button comes right after the visible rubrics.
+  const emptyRubrics=[], showEmpty=expanded.has(pos.id+'|empty');
+  const rubricBlock=f=>{
     const keys=byField.get(f);
     keys.sort((a,b)=>rankKey(a)-rankKey(b)||(M.numOf.get(a)??Infinity)-(M.numOf.get(b)??Infinity)||M.label(a).localeCompare(M.label(b),'ru'));
-    wp.append(el('div',{class:'rubric'},
+    return el('div',{class:'rubric'},
       el('div',{class:'rubric-head'},el('b',{},f),rubricMarks(f)),
-      limited(keys,f,5,k=>chip(k,M.label(k),`${f} ${M.label(k)}`))));
+      limited(keys,f,5,k=>chip(k,M.label(k),`${f} ${M.label(k)}`)));
+  };
+  for(const f of fields){
+    if(!M.marks.has('r|'+f)&&!byField.get(f).some(live)){emptyRubrics.push(f);continue}
+    wp.append(rubricBlock(f));
+  }
+  if(emptyRubrics.length){
+    if(showEmpty)for(const f of emptyRubrics)wp.append(rubricBlock(f));
+    wp.append(el('div',{class:'rubric'},el('button',{class:'more',type:'button',title:emptyRubrics.join(', '),onclick:()=>{showEmpty?expanded.delete(pos.id+'|empty'):expanded.add(pos.id+'|empty');render()}},
+      showEmpty?'Скрыть рубрики без товаров':`Рубрики без товаров: ${emptyRubrics.length} — показать`)));
   }
   const heap=[...M.counts.keys()].filter(k=>k.startsWith('w|')).sort((a,b)=>(M.left.get(b)||0)-(M.left.get(a)||0)||M.counts.get(b)-M.counts.get(a)||M.label(a).localeCompare(M.label(b),'ru'));
   if(heap.length){
