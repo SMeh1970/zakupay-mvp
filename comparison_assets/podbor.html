@@ -110,6 +110,8 @@ details.near summary{color:var(--warn);font-weight:600}
 .offers td .anchorbtn{display:block;margin-top:4px;font-size:12px}
 .btn.anchorbtn.on{border-color:var(--accent);color:var(--accent);font-weight:600}
 .btn.chosen{border-color:var(--ok);color:var(--ok);font-weight:600}
+.unitcell{display:grid;gap:2px}.convedit{border:0;background:transparent;color:#2b5fb4;cursor:pointer;font:inherit;font-size:12px;padding:0;text-align:left}
+.convrow{display:flex;gap:4px;align-items:center;font-size:12px;flex-wrap:wrap}.convin{width:64px;font:inherit;font-size:13px;padding:2px 4px;border:1px solid var(--line);border-radius:4px}
 .sorth{border:0;background:transparent;padding:0;font:inherit;color:inherit;cursor:pointer;text-align:left}.sorth:hover{color:var(--accent)}
 /* Product actions as icon buttons in one row; the hint names the action. */
 .acts-row{display:flex;gap:4px;flex-wrap:nowrap}
@@ -250,6 +252,15 @@ function pagePrice(pos,product){
   const mp=modelOf(pos).products.find(p=>p.i===pos.products.indexOf(product));
   return mp?{unit_price:mp.unitPrice,buy:mp.buy,total:mp.total}:null;
 }
+// A conversion set in the table goes to the app too, so the invoice counts the same way.
+function sendConversion(pos,p,factor){
+  if(APP.local||!pos.position)return;
+  const key=pos.products[p.i]?.[3]?.key; if(!key)return;
+  syncing=syncing.then(async()=>{
+    try{const d=await post(APP.action_url,{action:'conversion',position:pos.position,key,factor,csrf:APP.csrf,revision});revision=d.revision;appStatus('Пересчёт единиц сохранён.')}
+    catch(e){appStatus('Пересчёт не сохранён: '+e.message,true)}
+  });
+}
 function syncChosen(){
   if(APP.local)return; // on the stand «Выбрать» only marks the product
   for(const pos of APP.positions){
@@ -372,8 +383,12 @@ function rollLength(name){
   const m=String(name).match(/(\d+(?:[.,]\d+)?)\s*[xх×*]\s*(\d+(?:[.,]\d+)?)\s*м(?![a-zа-яё0-9²])/i);
   return m?parseFloat(m[2].replace(',','.')):0;
 }
+const convKey=(pos,p)=>pos.products[p.i]?.[3]?.key||p.name;
 function conversion(pos,p){
   const req=unit(pos.unit), sup=unit(p.unit);
+  // Set by hand in the table: how many request units are in one supplier unit.
+  const own=state.conv?.[pos.id]?.[convKey(pos,p)];
+  if(own>0)return [own,`задано: 1 ${p.unit} = ${String(own).replace('.',',')} ${pos.unit}`];
   if(req==='шт'&&(sup==='шт'||sup==='упак')){const k=unitPieces(p.unit)||packPieces(p.name);if(k)return [k,`${k} шт`]}
   if(req===sup)return [1,''];
   if(req==='м'&&(sup==='шт'||sup==='рулон')){const l=rollLength(p.name);if(l)return [l,`${String(l).replace('.',',')} м`]}
@@ -588,7 +603,7 @@ function lookup(w){
 // the other positions of the request reuse what was computed before.
 const modelCache=new Map();
 function modelOf(pos){
-  const key=JSON.stringify([pos.name,pos.qty,pos.unit,pos.products.length,state.marks?.[pos.id]||{},state.anchor?.[pos.id]||null,state.dict||{}]);
+  const key=JSON.stringify([pos.name,pos.qty,pos.unit,pos.products.length,state.marks?.[pos.id]||{},state.anchor?.[pos.id]||null,state.dict||{},state.conv?.[pos.id]||{}]);
   const hit=modelCache.get(pos.id);
   if(hit&&hit.key===key&&hit.products===pos.products)return hit.M;
   const M=model(pos);
@@ -742,7 +757,7 @@ const el=(tag,attrs={},...kids)=>{const n=document.createElement(tag);for(const[
 const money=v=>v==null?'—':v.toLocaleString('ru-RU',{maximumFractionDigits:2})+' ₽';
 const num=v=>v==null?'—':v.toLocaleString('ru-RU',{maximumFractionDigits:3});
 
-let assigning=null; const expanded=new Set();
+let assigning=null, editingConv=null; const expanded=new Set();
 // One vocabulary for all hints: выбрано мной / аналог / замена / исключено / из заявки / не выбрано.
 const cap=t=>String(t).charAt(0).toUpperCase()+String(t).slice(1);
 const stateWord=m=>!m?'не выбрано':m.by==='auto'?'из заявки':{only:'выбрано мной',also:'аналог / замена',rejected:'исключено'}[m.s];
@@ -1007,6 +1022,24 @@ function renderPosition(pos){
       b('scales',cmp?'Сравнивается — нажмите, чтобы убрать из сравнения':'Сравнить с другими отмеченными товарами',cmp,'i-cmp',()=>{state.compare=state.compare||{};const l=new Set(state.compare[pos.id]||[]);cmp?l.delete(p.name):l.add(p.name);state.compare[pos.id]=[...l];save();render()}),
       b('eyeoff','Скрыть товар',false,'i-hide',()=>hideOne(p)));
   };
+  // Supplier unit: a pack is shown as «уп (250 шт)»; the conversion can be set by hand (✎), and it goes to the invoice.
+  const unitCell=(pos,p)=>{
+    const own=state.conv?.[pos.id]?.[convKey(pos,p)];
+    const packed=!own&&p.factor&&p.factor>1&&['шт','упак'].includes(unit(p.unit))&&unit(pos.unit)==='шт';
+    const label=packed?`уп (${num(p.factor)} шт)`:p.unit+(p.factor&&p.factor!==1&&!own?` (${p.note})`:'');
+    const box=el('div',{class:'unitcell'},el('span',{title:p.factor?'':p.note},label));
+    if(editingConv===pos.id+'|'+p.i){
+      const input=el('input',{type:'number',min:'0',step:'any',value:p.factor||'',class:'convin','aria-label':`Сколько ${pos.unit} в 1 ${p.unit}`});
+      const apply=()=>{const v=parseFloat(String(input.value).replace(',','.'));editingConv=null;
+        state.conv=state.conv||{};state.conv[pos.id]=state.conv[pos.id]||{};
+        if(v>0)state.conv[pos.id][convKey(pos,p)]=v;else delete state.conv[pos.id][convKey(pos,p)];
+        save();render();if(v>0)sendConversion(pos,p,v)};
+      input.onkeydown=e=>{if(e.key==='Enter')apply();if(e.key==='Escape'){editingConv=null;render()}};
+      box.append(el('div',{class:'convrow'},`1 ${p.unit} =`,input,pos.unit,el('button',{type:'button',class:'btn',onclick:apply},'OK')));
+      setTimeout(()=>input.focus(),0);
+    } else box.append(el('button',{type:'button',class:'convedit',title:`Задать пересчёт: сколько ${pos.unit} в 1 ${p.unit}`,'aria-label':'Задать пересчёт единиц',onclick:()=>{editingConv=pos.id+'|'+p.i;render()}},own?`1 ${p.unit} = ${num(own)} ${pos.unit} ✎`:p.factor?'✎':'задать пересчёт ✎'));
+    return box;
+  };
   const hideOne=p=>{state.hidden=state.hidden||{};(state.hidden[pos.id]=state.hidden[pos.id]||[]).push(p.name);save();render()};
   const diffTag=(c,x)=>el('span',{class:'cmp diff'},x.has.length?`${x.f}: ${x.has.map(M.label).join('/')} вместо ${x.want.map(M.label).join('/')}`:(x.f.startsWith('слово')?'нет слова'+x.f.slice(5):'нет '+x.f),
     el('button',{type:'button',class:'xbtn',title:'Убрать только этот товар','aria-label':'Убрать товар: '+c.p.name,onclick:()=>hideOne(c.p)},'✕'),
@@ -1018,7 +1051,7 @@ function renderPosition(pos){
       cls!=='main'?el('div',{class:'neardiff',title:c.diff.map(x=>x.has.length?`${x.f}: ${x.has.map(M.label).join('/')} вместо ${x.want.map(M.label).join('/')}`:`нет ${x.f}`).join('\n')},`совпадает ${c.same.length} из ${c.total}`+(c.unknown.length?` · не указано: ${c.unknown.join(', ').toLowerCase()}`:'')):null,
       c.diff.length&&cmpNames.has(p.name)?el('div',{class:'cmprow'},...c.diff.map(x=>diffTag(c,x))):null,
       rowVals(p),productMeta(pos,p)),
-    el('td',{title:p.factor&&p.factor!==1?'Сколько в единице поставщика — из наименования':''},p.unit+(p.factor&&p.factor!==1?` (${p.note})`:'')),
+    el('td',{},unitCell(pos,p)),
     el('td',{class:'num'},p.buy==null?'—':num(p.buy)),el('td',{class:'num'},money(p.price)),
     el('td',{class:'num',title:p.factor?'':p.note},money(p.unitPrice)),el('td',{class:'num g-end'},money(p.total)),
     el('td',{class:'acts'},productActions(pos,p,c)))};
