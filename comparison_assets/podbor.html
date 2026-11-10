@@ -145,6 +145,8 @@ td.num{font-family:var(--mono);font-variant-numeric:tabular-nums;white-space:now
 .offers tr.alt td{background:color-mix(in srgb,var(--warn-bg) 70%,transparent)}
 /* The name as filters: parts are plain text with a dotted underline until marked. */
 /* Every clickable part of the name is blue, like a link; your mark adds a thin coloured frame. */
+/* The same blue for values in the filter column and under the name: what is blue can be clicked. */
+.rubric .words .w,.rowvals .w.cyc{color:#2b5fb4}
 .pname .w.cyc.inl{display:inline;font:inherit;font-size:inherit;padding:0 2px;border:0;border-radius:3px;background:transparent;color:#2b5fb4;line-height:inherit}
 .pname .w.cyc.inl:hover{background:var(--accent-bg)}
 .pname .pgroup{display:inline;white-space:nowrap} /* one designation stays on one line; no box around it */
