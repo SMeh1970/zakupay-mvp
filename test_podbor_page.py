@@ -50,7 +50,7 @@ class PodborPageTests(unittest.TestCase):
         data, response = self.data()
         self.assertTrue(response.text.startswith("<!doctype html>"))
         self.assertIn("script-src 'nonce-", response.headers["content-security-policy"])
-        self.assertNotIn("localStorage", response.text)
+        self.assertFalse(data.get("local"))  # the app page keeps decisions on the server
         position = data["positions"][0]
         self.assertEqual((position["id"], position["name"], position["qty"], position["unit"]), ("p1", "Труба 89х4 мм", 60, "м"))
         self.assertEqual([p[0] for p in position["products"]], ["Труба 89х4 мм", "Труба 89х5 мм"])
@@ -114,6 +114,20 @@ class PodborPageTests(unittest.TestCase):
             self.assertEqual(response.json(), {"text": 'Вот: {"items":[{"i":0,"verdict":"подходит"}]}'})
             self.assertEqual(post.call_args.kwargs["json"]["messages"], [{"role": "user", "content": "a\n\nb"}])
             self.assertEqual(self.client.post(self.url + "/ai", json={"mode": "x"}, headers=H).status_code, 400)
+
+
+
+class StandBuildTests(unittest.TestCase):
+    def test_stand_is_built_from_the_app_page(self):
+        import sys
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), "scripts"))
+        import build_podbor_stand
+        html = build_podbor_stand.build()
+        data = json.loads(re.search(r'id="podbor-data">(.*?)</script>', html, re.S)[1])
+        self.assertTrue(data["local"])
+        self.assertGreater(len(data["positions"]), 2)
+        page = podbor_page.ASSET.read_text(encoding="utf-8")
+        self.assertEqual(html.replace(re.search(r'<script type="application/json" id="podbor-data">.*?</script>', html, re.S)[0], ""), page)
 
 
 if __name__ == "__main__":

@@ -1,4 +1,4 @@
-<title>Стенд подбора В2</title>
+<title>Подбор товаров</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
 <style>
@@ -209,15 +209,19 @@ const EXAMPLES=APP.positions;
 /* ---------- Storage (per viewer convenience) ---------- */
 /* APP: решения хранятся в приложении, а не в браузере. Позиции заявки берутся свежими из приложения,
    свои позиции и отметки — из сохранённого состояния; «Выбрано» по позициям заявки — то, что сейчас в счёте. */
+/* APP.local — the claude.ai stand built from this same file (scripts/build_podbor_stand.py):
+   decisions stay in the browser, nothing is sent anywhere. */
+const LOCAL_KEY='podbor-stand-v2';
+if(APP.local){try{APP.state=JSON.parse(localStorage.getItem(LOCAL_KEY)||'null')}catch(e){APP.state=null}}
 const load=()=>{
   const s=APP.state&&typeof APP.state==='object'?APP.state:{};
   const appIds=new Set(APP.positions.map(p=>p.id));
   const own=(s.positions||[]).filter(p=>p&&!appIds.has(p.id)&&!p.app);
   const chosen={};
-  for(const[k,v]of Object.entries(s.chosen||{}))if(!appIds.has(k))chosen[k]=v;
+  for(const[k,v]of Object.entries(s.chosen||{}))if(APP.local||!appIds.has(k))chosen[k]=v;
   Object.assign(chosen,APP.chosen||{});
   const chosenKey={};
-  for(const[k,v]of Object.entries(s.chosenKey||{}))if(!appIds.has(k))chosenKey[k]=v;
+  for(const[k,v]of Object.entries(s.chosenKey||{}))if(APP.local||!appIds.has(k))chosenKey[k]=v;
   Object.assign(chosenKey,APP.chosenKey||{});
   const positions=[...APP.positions,...own];
   const active=positions.some(p=>p.id===s.active)?s.active:null;
@@ -233,6 +237,7 @@ const post=async(url,body)=>{
 };
 // «Выбрать» по позиции заявки идёт в счёт приложения: то же действие, что выбор товара в сравнении.
 function syncChosen(){
+  if(APP.local)return; // on the stand «Выбрать» only marks the product
   for(const pos of APP.positions){
     const cur=state.chosen?.[pos.id]??null, prev=synced[pos.id]??null;
     if(cur===prev)continue;
@@ -256,6 +261,7 @@ function syncChosen(){
   }
 }
 function storeState(){
+  if(APP.local){try{localStorage.setItem(LOCAL_KEY,JSON.stringify(state))}catch(e){}return}
   clearTimeout(saveTimer);
   saveTimer=setTimeout(async()=>{
     const appIds=new Set(APP.positions.map(p=>p.id));
@@ -552,6 +558,18 @@ function lookup(w){
 }
 
 /* ---------- Model of one position ---------- */
+// A position is recomputed only when its own inputs change (marks, anchor, dictionary, products);
+// the other positions of the request reuse what was computed before.
+const modelCache=new Map();
+function modelOf(pos){
+  const key=JSON.stringify([pos.name,pos.qty,pos.unit,pos.products.length,state.marks?.[pos.id]||{},state.anchor?.[pos.id]||null,state.dict||{}]);
+  const hit=modelCache.get(pos.id);
+  if(hit&&hit.key===key&&hit.products===pos.products)return hit.M;
+  const M=model(pos);
+  M.ranked=()=>M.__ranked||(M.__ranked=M.rankAll(M.reference));
+  modelCache.set(pos.id,{key,products:pos.products,M});
+  return M;
+}
 function model(pos){
   const products=pos.products.map((p,i)=>{const x=extract(p[0]);return {i,name:p[0],price:+p[1]||0,unit:p[2]||'шт',found:x.found,raw:x.rest,spans:x.spans}});
   const reqX=extract(pos.name), reqRaw=[...reqX.rest];
@@ -721,12 +739,12 @@ function renderTabs(){
 }
 
 function renderPosition(pos){
-  const M=model(pos);
+  const M=modelOf(pos);
   // Counts in the filter column are of the products shown in the table — suitable and close ones —
   // so a value that close products have is not hidden as «0».
   const shownCount=new Map();
   {const hid=new Set((state.hidden||{})[pos.id]||[]);
-   for(const r of M.rankAll(M.reference))if(!hid.has(r.p.name)&&r.same.length>0&&r.dReq.length<=2&&(r.dReq.length===0||r.same.length>=2))
+   for(const r of M.ranked())if(!hid.has(r.p.name)&&r.same.length>0&&r.dReq.length<=2&&(r.dReq.length===0||r.same.length>=2))
      for(const w of r.p.words)shownCount.set(w,(shownCount.get(w)||0)+1);}
   const main=el('div',{class:'pos-work'});
   main.append(el('div',{class:'req'},
@@ -856,7 +874,7 @@ function renderPosition(pos){
   // (green), then the closest ones with their differences, then the rest folded away.
   const pp=el('section',{class:'panel','aria-label':'Подходящие товары'});
   const hidden=new Set((state.hidden||{})[pos.id]||[]);
-  const ranked=M.rankAll(M.reference).filter(r=>!hidden.has(r.p.name));
+  const ranked=M.ranked().filter(r=>!hidden.has(r.p.name));
   const exact=ranked.filter(r=>r.dReq.length===0&&r.same.length>0);
   const near=ranked.filter(r=>!exact.includes(r)&&r.dReq.length<=2&&r.same.length>=2);
   const rest=ranked.filter(r=>!exact.includes(r)&&!near.includes(r));
@@ -1200,10 +1218,10 @@ function aiPickPanel(pos,M){
 // Status of a position in the whole request.
 function status(pos){
   if(!pos.products.length)return {code:'none',text:'Поиск не запускался'};
-  const M=model(pos);
+  const M=modelOf(pos);
   const chosen=state.chosen?.[pos.id]!=null&&M.products.find(p=>p.name===state.chosen[pos.id]);
   if(chosen)return {code:'done',text:'Выбрано',offer:chosen};
-  const ranked=M.rankAll(M.reference), fit=ranked.filter(r=>r.dReq.length===0&&r.same.length>0&&r.p.unitPrice!=null), cheap=l=>[...l].sort((a,b)=>a.p.unitPrice-b.p.unitPrice)[0]?.p;
+  const ranked=M.ranked(), fit=ranked.filter(r=>r.dReq.length===0&&r.same.length>0&&r.p.unitPrice!=null), cheap=l=>[...l].sort((a,b)=>a.p.unitPrice-b.p.unitPrice)[0]?.p;
   const best=cheap(fit.filter(r=>!r.unknown.length))||cheap(fit);
   const near=ranked.find(r=>r.dReq.length<=2&&r.same.length>=2&&r.p.unitPrice!=null)?.p;
   return best?{code:'todo',text:'Нужно решение',offer:best,recommended:true}:near?{code:'todo',text:'Нужно решение',offer:near,recommended:true,closeOnly:true}:{code:'miss',text:'Не найдено'};
@@ -1254,7 +1272,8 @@ function render(){
     el('thead',{},el('tr',{},...['№','Наименование заявки','Кол-во','Ед.','Статус','Предложение','Цена за ед. заявки','Сумма'].map(h=>el('th',{},h)))),tb)));
 }
 /* APP: заголовок и ссылки приложения */
-document.getElementById('app-title').textContent=APP.title;
+document.getElementById('app-title').textContent=APP.title;document.title=APP.title;
+if(APP.local){const sub=document.querySelector('header .sub');if(sub)sub.textContent='Стенд: та же страница «Подбор товаров», что в приложении, на примерах. Решения хранятся только в этом браузере, в счёт ничего не уходит.'}
 for(const[href,text]of APP.links){const a=document.createElement('a');a.href=href;a.textContent=text;document.getElementById('app-nav').append(a)}
 render();
 })();
