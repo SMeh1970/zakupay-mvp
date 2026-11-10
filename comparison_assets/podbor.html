@@ -26,7 +26,9 @@ h1{font-size:20px;font-weight:600;margin:0;text-wrap:balance}
 .req b{font-size:17px}
 .req .meta{color:var(--muted);font-family:var(--mono);font-size:13px}
 .grid{display:grid;grid-template-columns:fit-content(250px) minmax(0,1fr);gap:14px;align-items:start}
-@media (max-width:900px){.grid{grid-template-columns:minmax(0,1fr)}}
+/* Half a screen still shows filters and table side by side; one column only on a phone. */
+@media (max-width:1100px){.grid{grid-template-columns:fit-content(200px) minmax(0,1fr);gap:10px}}
+@media (max-width:560px){.grid{grid-template-columns:minmax(0,1fr)}}
 .panel{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:12px 14px;min-width:0}
 .panel h2{font-size:15px;margin:0 0 6px;font-weight:600}
 .hint{color:var(--muted);font-size:13px;margin:0 0 8px}
@@ -45,8 +47,8 @@ h1{font-size:20px;font-weight:600;margin:0;text-wrap:balance}
 .s-rejected{background:var(--no-bg)!important;color:var(--no)!important}
 /* A frame only on your own marks, in the colour of the mark. */
 /* Fill — the value matches the request (and is applied); frame — your own mark: ✓ green, + yellow, ✕ red. */
-.mk{border-width:2px!important;border-style:solid!important}
-.mk.mk-only{border-color:var(--ok)!important} .mk.mk-also{border-color:var(--warn)!important} .mk.mk-rejected{border-color:var(--no)!important}
+/* The frame is drawn inside the value, so marking never changes its width (no jump to the next line). */
+.mk.mk-only{box-shadow:inset 0 0 0 2px var(--ok)!important} .mk.mk-also{box-shadow:inset 0 0 0 2px var(--warn)!important} .mk.mk-rejected{box-shadow:inset 0 0 0 2px var(--no)!important}
 .framed{border-width:2px!important;border-style:solid!important}
 .framed.s-only{border-color:var(--ok)!important} .framed.s-also{border-color:var(--warn)!important} .framed.s-rejected{border-color:var(--no)!important}
 .cmp{border:1px solid transparent;background:var(--bg)}
@@ -886,7 +888,7 @@ function renderPosition(pos){
       title:`${M.fieldOf.get(k)?M.fieldOf.get(k)+': '+M.label(k):'Слово «'+M.label(k)+'»'} — ${STATE[s]}. Быстрые нажатия: 1 — обязательно, 2 — аналог, 3 — исключить, 4 — снять`,
       'aria-label':`${M.named(k)}: ${STATE[s]}`,
       onclick:()=>{presses=Math.min(presses+1,4);const st=BY_COUNT[presses-1];framed=true;
-        button.className=cls(st);button.textContent=sym(st)+lab;
+        button.className=cls(st)+['inl','cmp-diff'].filter(c=>button.classList.contains(c)).map(c=>' '+c).join(''); // keep the look of a part of the namebutton.textContent=sym(st)+lab;
         clearTimeout(timer);timer=setTimeout(()=>setMark(pos,k,st==='none'?(isReq?'none':null):st),350);}},sym(s)+lab);
     return button;
   };
