@@ -236,6 +236,8 @@ install_api_discovery(
 )
 install_supplier_panel(app, esc=esc)
 install_supplier_comparison(app)
+from podbor_page import install as install_podbor
+install_podbor(app)
 install_price_lists(app)
 install_own_catalog(app)
 install_sniper(app)
