@@ -141,6 +141,7 @@ td.num{font-family:var(--mono);font-variant-numeric:tabular-nums;white-space:now
 /* The name as filters: parts are plain text with a dotted underline until marked. */
 .pname .w.cyc.inl{display:inline;font:inherit;font-size:inherit;padding:0 1px;border:0;border-bottom:1px dotted var(--muted);border-radius:3px;background:transparent;color:inherit;line-height:inherit}
 .pname .w.cyc.inl:hover{background:var(--accent-bg)}
+.pname .pgroup{display:inline;white-space:nowrap;border:1px solid var(--line);border-radius:4px;padding:0 2px;background:var(--panel)}
 .pname .w.cyc.inl.s-only,.pname .w.cyc.inl.s-also,.pname .w.cyc.inl.s-rejected{border-bottom-color:transparent}
 /* Comparing products side by side: what differs among the ticked products is outlined in orange
    (an outline, so the status fill of the value stays as it is). */
@@ -424,7 +425,7 @@ function applyScheme(found,t,used,text,toks){
   if(sch.dims)for(const f of found.filter(x=>x.field==='Размеры')){
     if(sch.dims==='Конструкция'){f.field='Конструкция';f.value=f.value.replace(/ мм$/,'');continue}
     const ns=(f.value.match(/\d+(?:,\d+)?/g)||[]).map(numv), free=sch.dims.filter(d=>!has(d));
-    if(ns.length===free.length&&ns.every((v,j)=>fits(free[j],v))){found.splice(found.indexOf(f),1);ns.forEach((v,j)=>found.push({field:free[j],value:slotLabel(free[j],v),n:v,...(f.s!=null?numSpan(text,f.s,f.e,fmt(v)):{})}))}
+    if(ns.length===free.length&&ns.every((v,j)=>fits(free[j],v))){found.splice(found.indexOf(f),1);ns.forEach((v,j)=>found.push({field:free[j],value:slotLabel(free[j],v),n:v,...(f.s!=null?{...numSpan(text,f.s,f.e,fmt(v)),gs:f.gs??f.s,ge:f.ge??f.e}:{})}))}
   }
   for(const f of found)if(f.field==='Размер'&&f.n!=null){const s=slot(f.n);if(s){f.field=s[0];f.value=slotLabel(s[0],f.n)}}
   t.forEach((w,i)=>{if(used.has(i)||!NUM.test(w))return;const v=numv(w),s=slot(v);if(s){found.push({field:s[0],value:slotLabel(s[0],v),n:v,guess:true,s:toks[i].s,e:toks[i].e});used.add(i)}});
@@ -474,7 +475,7 @@ function extract(name){
       const s=m.index, e=m.index+m[0].length;
       if(covered.some(([a,b])=>s<b&&e>a))continue;
       covered.push([s,e]);
-      const r=fn(m); if(r.multi)for(const[f,value,n]of r.multi)found.push({field:f,value:String(value),n,...numSpan(text,s,e,value)}); else found.push({field,value:String(r[0]),n:r[1],s,e});
+      const r=fn(m); if(r.multi)for(const[f,value,n]of r.multi)found.push({field:f,value:String(value),n,...numSpan(text,s,e,value),gs:s,ge:e}); else found.push({field,value:String(r[0]),n:r[1],s,e});
       toks.forEach((t,i)=>{if(t.s<e&&t.e>s)used.add(i)});
     }
   }
@@ -526,7 +527,7 @@ function extract(name){
   // each value gets its own numbers, as in the filter column.
   for(const f of found){
     if(f.s==null||!found.some(g=>g!==f&&g.s!=null&&g.s<f.e&&f.s<g.e))continue;
-    const sp=numSpan(text,f.s,f.e,f.value); f.ns=sp.s; f.ne=sp.e;
+    const sp=numSpan(text,f.s,f.e,f.value); f.ns=sp.s; f.ne=sp.e; f.gs=Math.min(...found.filter(g=>g.s!=null&&g.s<f.e&&f.s<g.e).map(g=>g.s)); f.ge=Math.max(...found.filter(g=>g.s!=null&&g.s<f.e&&f.s<g.e).map(g=>g.e));
   }
   for(const f of found)if(f.ns!=null){f.s=f.ns;f.e=f.ne;delete f.ns;delete f.ne}
   const spans=[];
@@ -569,7 +570,7 @@ function model(pos){
     return keys;
   };
   for(const p of products){p.words=keysOf(p,p.raw);
-    p.pieces=[...p.found.filter(f=>f.s!=null).map(f=>({s:f.s,e:f.e,k:fkey(f),guess:!!f.guess})),...p.spans.map(x=>({s:x.s,e:x.e,k:keyOf.get(x.w)}))].sort((a,b)=>a.s-b.s||b.e-a.e);p.guess=new Set(p.found.filter(f=>f.guess).map(fkey))}
+    p.pieces=[...p.found.filter(f=>f.s!=null).map(f=>({s:f.s,e:f.e,gs:f.gs,ge:f.ge,k:fkey(f),guess:!!f.guess})),...p.spans.map(x=>({s:x.s,e:x.e,k:keyOf.get(x.w)}))].sort((a,b)=>a.s-b.s||b.e-a.e);p.guess=new Set(p.found.filter(f=>f.guess).map(fkey))}
   const reqKeys=[...keysOf(reqX,reqRaw)].filter(k=>!k.startsWith('r|'));
   // A request value found by elimination is a guess: not applied by itself, not a requirement.
   const reqGuess=new Set(reqX.found.filter(f=>f.guess).map(fkey));
@@ -884,14 +885,30 @@ function renderPosition(pos){
   // The name of the product, its recognised parts and words as buttons (same marks as in the filter column).
   const nameButtons=p=>{
     const box=el('span',{class:'pname'}), inCmp=cmpList.length>1&&cmpList.includes(p);
-    let at=0;
-    for(const x of p.pieces||[]){
-      if(x.s<at||!x.k||M.fieldOf.get(x.k)==='Код / артикул')continue;
-      if(x.s>at)box.append(p.name.slice(at,x.s));
+    const button=x=>{
       const b=valueButton(x.k,p.name.slice(x.s,x.e));b.classList.add('inl');
       if(x.guess){b.append('?');b.title='Определено методом исключения — проверьте · '+b.title}
       if(inCmp&&cmpFields.has(M.fieldOf.get(x.k))){b.classList.add('cmp-diff');b.title='Отличается от других сравниваемых товаров · '+b.title}
-      box.append(b);at=x.e;
+      return b;
+    };
+    const ok=x=>x.k&&M.fieldOf.get(x.k)!=='Код / артикул';
+    const pieces=(p.pieces||[]).filter(ok);
+    let at=0;
+    for(const x of pieces){
+      if(x.s<at)continue;
+      // A designation with several values («1,05x10 м», «М10×30») is one block: its values are buttons,
+      // the signs between them (×, /, units) are plain text.
+      if(x.gs!=null&&x.gs>=at&&x.ge>x.gs){
+        if(x.gs>at)box.append(p.name.slice(at,x.gs));
+        const g=el('span',{class:'pgroup'}); let gat=x.gs;
+        for(const y of pieces.filter(y=>y.gs===x.gs&&y.ge===x.ge&&y.s>=x.gs&&y.e<=x.ge).sort((a,b)=>a.s-b.s)){
+          if(y.s<gat)continue; if(y.s>gat)g.append(p.name.slice(gat,y.s)); g.append(button(y)); gat=y.e;
+        }
+        if(gat<x.ge)g.append(p.name.slice(gat,x.ge));
+        box.append(g);at=x.ge;continue;
+      }
+      if(x.s>at)box.append(p.name.slice(at,x.s));
+      box.append(button(x));at=x.e;
     }
     if(at<p.name.length)box.append(p.name.slice(at));
     return box;
