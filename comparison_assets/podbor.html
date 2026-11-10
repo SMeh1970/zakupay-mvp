@@ -553,7 +553,7 @@ function model(pos){
   for(const w of reqRaw)if(!freq.has(w))freq.set(w,0);
   const keyOf=new Map(), stems=[];
   for(const w of [...freq.keys()].sort((a,b)=>freq.get(b)-freq.get(a))){
-    const s=stem(w); const hit=stems.find(x=>x===s||(/^[а-я]+$/.test(s)&&close(x,s)));
+    const s=stem(w); const hit=stems.find(x=>x===s||(/^[а-я]+$/.test(s)&&(close(x,s)||Math.min(x.length,s.length)>=5&&Math.abs(x.length-s.length)<=2&&(x.startsWith(s)||s.startsWith(x)))));
     if(!hit)stems.push(s); keyOf.set(w,'w|'+(hit||s));
   }
   const forms=new Map(), labels=new Map(), fieldOf=new Map(), numOf=new Map();
@@ -891,6 +891,14 @@ function renderPosition(pos){
     const box=el('span',{class:'pname'}), inCmp=cmpList.length>1&&cmpList.includes(p);
     const button=x=>{
       const b=valueButton(x.k,p.name.slice(x.s,x.e));b.classList.add('inl');
+      // In the name the fill answers «does this part fit the choice?»: green — it is what is needed,
+      // yellow — an analog (+), red — excluded or another value is needed in this rubric; no fill — no choice here.
+      b.classList.remove('s-only','s-also','s-rejected','framed');
+      const own=M.marks.get(x.k)?.s, f=M.fieldOf.get(x.k);
+      const wanted=f&&!x.k.startsWith('w|')&&[...M.marks].some(([k,m])=>k!==x.k&&M.fieldOf.get(k)===f&&!k.startsWith('r|')&&(m.s==='only'||m.s==='also'));
+      const rel=own==='only'?'s-only':own==='also'?'s-also':own==='rejected'?'s-rejected':wanted?'s-rejected':'';
+      if(rel)b.classList.add(rel);
+      if(rel==='s-rejected'&&!own)b.title='В этой рубрике нужно другое значение · '+b.title;
       if(x.guess){b.append('?');b.title='Определено методом исключения — проверьте · '+b.title}
       if(inCmp&&cmpFields.has(M.fieldOf.get(x.k))){b.classList.add('cmp-diff');b.title='Отличается от других сравниваемых товаров · '+b.title}
       return b;
@@ -938,14 +946,14 @@ function renderPosition(pos){
   const row=(c,cls)=>{const p=c.p;return el('tr',{class:cls+(cmpNames.has(p.name)?' compared':'')},
     el('td',{class:'g-start'},pos.unit),el('td',{class:'num'},num(pos.qty)),
     el('td',{class:'g-start'},c.anchor?el('div',{class:'anchormark'},'эталон — остальные сравниваются с ним'):null,nameButtons(p),p===best?el('span',{class:'bestmark'},'★ лучшая цена'):null,c.analog?el('div',{class:'analog'},'аналог / замена'):null,
-      cls!=='main'?el('div',{class:'neardiff'},`совпадает ${c.same.length} из ${c.total}`+(c.unknown.length?` · не указано: ${c.unknown.join(', ').toLowerCase()}`:'')):null,
-      c.diff.length?el('div',{class:'cmprow'},...c.diff.map(x=>diffTag(c,x))):null,
+      cls!=='main'?el('div',{class:'neardiff',title:c.diff.map(x=>x.has.length?`${x.f}: ${x.has.map(M.label).join('/')} вместо ${x.want.map(M.label).join('/')}`:`нет ${x.f}`).join('\n')},`совпадает ${c.same.length} из ${c.total}`+(c.unknown.length?` · не указано: ${c.unknown.join(', ').toLowerCase()}`:'')):null,
+      c.diff.length&&cmpNames.has(p.name)?el('div',{class:'cmprow'},...c.diff.map(x=>diffTag(c,x))):null,
       rowVals(p),productMeta(pos,p)),
     el('td',{title:p.factor&&p.factor!==1?'Сколько в единице поставщика — из наименования':''},p.unit+(p.factor&&p.factor!==1?` (${p.note})`:'')),
     el('td',{class:'num'},p.buy==null?'—':num(p.buy)),el('td',{class:'num'},money(p.price)),
     el('td',{class:'num',title:p.factor?'':p.note},money(p.unitPrice)),el('td',{class:'num g-end'},money(p.total)),
     el('td',{},el('button',{class:'btn'+(isChosen(pos,p)?' chosen':''),type:'button',onclick:()=>chooseToggle(pos,p)},isChosen(pos,p)?'Выбрано ✓':'Выбрать'),
-      el('button',{class:'btn anchorbtn'+(c.anchor?' on':''),type:'button',title:'Сравнивать остальные товары с этим',onclick:()=>{state.anchor=state.anchor||{};state.anchor[pos.id]=c.anchor?undefined:p.name;save();render()}},c.anchor?'Эталон ✓':'Взять за основу'),compareBox(p)))};
+      el('button',{class:'btn anchorbtn'+(c.anchor?' on':''),type:'button',title:'Сравнивать остальные товары с этим',onclick:()=>{state.anchor=state.anchor||{};state.anchor[pos.id]=c.anchor?undefined:p.name;save();render()}},c.anchor?'Эталон ✓':'Взять за основу'),compareBox(p),el('button',{class:'more',type:'button',title:'Убрать этот товар из выдачи',onclick:()=>hideOne(p)},'Скрыть товар')))};
   for(const c of exact)tb.append(row(c,c.analog?'alt':'main'));
   if(near.length){
     const limit=state.closeAll?.[pos.id]?near.length:8;
