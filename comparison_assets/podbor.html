@@ -397,6 +397,8 @@ const SCHEMES=[
   {re:/^сверл/, slots:[['Диаметр',0.5,60],['Длина',20,600]], dims:['Диаметр','Длина']},
   {re:/^трос/, slots:[['Диаметр',0.5,40]], dims:'Конструкция'},
 ];
+// Kinds of plastic: a request for «пластиковый» is met by any of them.
+const PLASTICS=new Set(['пластиковый','пвх','пнд','полипропиленовый','полиэтиленовый','поликарбонатный','полиамид','нейлон','полиуретановый']);
 const slotLabel=(f,v)=>f==='Длина'?len(v):fmt(v)+' мм';
 function applyScheme(found,t,used){
   const kind=String(found.find(f=>f.field==='Тип товара')?.value||'');
@@ -627,7 +629,8 @@ function model(pos){
       for(const[f,ks]of t2){
         const o=f.startsWith('слово')?new Set([...ks].filter(k=>p.words.has(k))):own.get(f);
         if(!o||!o.size){if(f.startsWith('слово'))diff.push({f,want:[...ks],has:[]});else unknown.push(f);continue}
-        if(![...o].some(k=>ks.has(k))&&[...o].every(k=>p.guess?.has(k))){unknown.push(f);continue} // a guess does not count as a difference
+        if(![...o].some(k=>ks.has(k))&&[...o].every(k=>p.guess?.has(k))){unknown.push(f);continue}
+        if(f==='Материал'&&[...ks].some(k=>labels.get(k)==='пластиковый')&&[...o].some(k=>PLASTICS.has(labels.get(k)))){same.push({f,want:[...ks],has:[...o]});continue} // a guess does not count as a difference
         ([...o].some(k=>ks.has(k))?same:diff).push({f,want:[...ks],has:[...o]});
       }
       const analog=same.some(x=>x.has.some(k=>marks.get(k)?.s==='also')&&!x.has.some(k=>marks.get(k)?.s==='only'||reqKeys.includes(k)));
@@ -680,6 +683,12 @@ function renderTabs(){
 
 function renderPosition(pos){
   const M=model(pos);
+  // Counts in the filter column are of the products shown in the table — suitable and close ones —
+  // so a value that close products have is not hidden as «0».
+  const shownCount=new Map();
+  {const hid=new Set((state.hidden||{})[pos.id]||[]);
+   for(const r of M.rankAll(M.reference))if(!hid.has(r.p.name)&&r.same.length>0&&r.dReq.length<=2&&(r.dReq.length===0||r.same.length>=2))
+     for(const w of r.p.words)shownCount.set(w,(shownCount.get(w)||0)+1);}
   const main=el('div',{class:'pos-work'});
   main.append(el('div',{class:'req'},
     el('b',{},pos.name), el('span',{class:'meta'},`${num(pos.qty)} ${pos.unit}`),
@@ -720,7 +729,7 @@ function renderPosition(pos){
   if(M.skipped.size)wp.append(el('p',{class:'note'},'Из заявки не применено — с этим не остаётся ни одного товара: '+[...M.skipped].map(M.named).join(', ')+'.'));
   const narrowing=M.only.length>0||M.also.length>0;
   const chip=(w,text,what)=>{
-    const m=M.marks.get(w), n=M.left.get(w)||0, isReq=M.reqWords.has(w);
+    const m=M.marks.get(w), n=shownCount.get(w)||0, isReq=M.reqWords.has(w);
     // Fill shows the status (✓ green, + yellow, ✕ red), whoever set it; a frame only on your own marks.
     let cls='w'+(m?' s-'+m.s:'')+(m&&m.by==='user'?' framed':'');
     if(!m&&!n)cls+=' dim';
@@ -741,13 +750,13 @@ function renderPosition(pos){
   // Rubrics with chosen values first, then those with values among the remaining products, then the rest.
   // In a rubric: chosen values, then values the remaining products have, then the others; a few are shown.
   // A value from the request is recommended: it stays at the top even when its mark is taken off.
-  const rankKey=k=>M.marks.has(k)?0:M.reqWords.has(k)?1:(M.left.get(k)||0)>0?2:3;
+  const rankKey=k=>M.marks.has(k)?0:M.reqWords.has(k)?1:(shownCount.get(k)||0)>0?2:3;
   const fields=[...FIELDS,...[...byField.keys()].filter(f=>!FIELDS.includes(f))].filter(f=>byField.has(f));
   const rankField=f=>Math.min(M.marks.has('r|'+f)?0:9,...byField.get(f).map(rankKey));
   fields.sort((a,b)=>rankField(a)-rankField(b));
   // A value is live when the remaining products have it, it is marked, or it is in the request;
   // values with 0 products wait under their own «Ещё N с 0», so the rubric list stays short.
-  const live=k=>M.marks.has(k)||M.reqWords.has(k)||(M.left.get(k)||0)>0;
+  const live=k=>M.marks.has(k)||M.reqWords.has(k)||(shownCount.get(k)||0)>0;
   const limited=(allKeys,f,limit,make)=>{
     const box=el('div',{class:'words',role:'group','aria-label':f});
     const keys=allKeys.filter(live), zero=allKeys.filter(k=>!live(k));
@@ -780,7 +789,7 @@ function renderPosition(pos){
     wp.append(el('div',{class:'rubric'},el('button',{class:'more',type:'button',title:emptyRubrics.join(', '),onclick:()=>{showEmpty?expanded.delete(pos.id+'|empty'):expanded.add(pos.id+'|empty');render()}},
       showEmpty?'Скрыть рубрики без товаров':`Рубрики без товаров: ${emptyRubrics.length} — показать`)));
   }
-  const heap=[...M.counts.keys()].filter(k=>k.startsWith('w|')).sort((a,b)=>(M.left.get(b)||0)-(M.left.get(a)||0)||M.counts.get(b)-M.counts.get(a)||M.label(a).localeCompare(M.label(b),'ru'));
+  const heap=[...M.counts.keys()].filter(k=>k.startsWith('w|')).sort((a,b)=>(shownCount.get(b)||0)-(shownCount.get(a)||0)||M.counts.get(b)-M.counts.get(a)||M.label(a).localeCompare(M.label(b),'ru'));
   if(heap.length){
     const sec=el('div',{class:'rubric'},el('div',{class:'rubric-head'},el('b',{},`Прочие слова (${heap.length})`),el('span',{class:'note',title:'Не попали ни в одну рубрику; формы одного слова объединены (*). Кнопка ⤴ относит слово к рубрике — дальше это работает во всех позициях.'},'ⓘ')));
     if(assigning&&heap.includes(assigning)){
