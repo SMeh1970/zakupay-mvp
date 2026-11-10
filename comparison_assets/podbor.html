@@ -48,7 +48,7 @@ h1{font-size:20px;font-weight:600;margin:0;text-wrap:balance}
 /* A frame only on your own marks, in the colour of the mark. */
 /* Fill — the value matches the request (and is applied); frame — your own mark: ✓ green, + yellow, ✕ red. */
 /* The frame is drawn inside the value, so marking never changes its width (no jump to the next line). */
-.mk.mk-only{box-shadow:inset 0 0 0 1px var(--ok)!important} .mk.mk-also{box-shadow:inset 0 0 0 2px var(--warn)!important} .mk.mk-rejected{box-shadow:inset 0 0 0 2px var(--no)!important}
+.mk.mk-only{box-shadow:inset 0 0 0 1px var(--ok)!important} .mk.mk-also{box-shadow:inset 0 0 0 1px var(--warn)!important} .mk.mk-rejected{box-shadow:inset 0 0 0 1px var(--no)!important}
 .framed{border-width:2px!important;border-style:solid!important}
 .framed.s-only{border-color:var(--ok)!important} .framed.s-also{border-color:var(--warn)!important} .framed.s-rejected{border-color:var(--no)!important}
 .cmp{border:1px solid transparent;background:var(--bg)}
@@ -144,10 +144,11 @@ td.num{font-family:var(--mono);font-variant-numeric:tabular-nums;white-space:now
 .offers tr.main td{background:color-mix(in srgb,var(--ok-bg) 60%,transparent)}
 .offers tr.alt td{background:color-mix(in srgb,var(--warn-bg) 70%,transparent)}
 /* The name as filters: parts are plain text with a dotted underline until marked. */
-.pname .w.cyc.inl{display:inline;font:inherit;font-size:inherit;padding:0 1px;border:0;border-bottom:1px dotted var(--muted);border-radius:3px;background:transparent;color:inherit;line-height:inherit}
+/* Every clickable part of the name has a thin grey frame; your mark changes its colour, not its thickness. */
+.pname .w.cyc.inl{display:inline;font:inherit;font-size:inherit;padding:0 2px;border:0;box-shadow:inset 0 0 0 1px #c3cac4;border-radius:3px;background:transparent;color:inherit;line-height:inherit}
 .pname .w.cyc.inl:hover{background:var(--accent-bg)}
 .pname .pgroup{display:inline;white-space:nowrap} /* one designation stays on one line; no box around it */
-.pname .w.cyc.inl.s-only,.pname .w.cyc.inl.s-also,.pname .w.cyc.inl.s-rejected{border-bottom-color:transparent}
+
 /* Comparing products side by side: what differs among the ticked products is outlined in orange
    (an outline, so the status fill of the value stays as it is). */
 :root{--cmp:#d9730d}
