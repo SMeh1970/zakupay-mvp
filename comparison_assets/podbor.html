@@ -144,8 +144,7 @@ td.num{font-family:var(--mono);font-variant-numeric:tabular-nums;white-space:now
 /* The name as filters: parts are plain text with a dotted underline until marked. */
 .pname .w.cyc.inl{display:inline;font:inherit;font-size:inherit;padding:0 1px;border:0;border-bottom:1px dotted var(--muted);border-radius:3px;background:transparent;color:inherit;line-height:inherit}
 .pname .w.cyc.inl:hover{background:var(--accent-bg)}
-.pname .w.cyc.inl.noframe.mk{border-width:0 0 1px 0!important;border-style:dotted!important;border-color:var(--muted)!important}
-.pname .pgroup{display:inline;white-space:nowrap;border:1px solid var(--line);border-radius:4px;padding:0 2px;background:var(--panel)}
+.pname .pgroup{display:inline;white-space:nowrap} /* one designation stays on one line; no box around it */
 .pname .w.cyc.inl.s-only,.pname .w.cyc.inl.s-also,.pname .w.cyc.inl.s-rejected{border-bottom-color:transparent}
 /* Comparing products side by side: what differs among the ticked products is outlined in orange
    (an outline, so the status fill of the value stays as it is). */
@@ -896,8 +895,6 @@ function renderPosition(pos){
     const box=el('span',{class:'pname'}), inCmp=cmpList.length>1&&cmpList.includes(p);
     const button=x=>{
       const b=valueButton(x.k,p.name.slice(x.s,x.e));b.classList.add('inl');
-      // No frames in the product name: who marked a value is shown in the filter column and in «Отбор».
-      b.classList.add('noframe');
       if(x.guess){b.append('?');b.title='Определено методом исключения — проверьте · '+b.title}
       if(inCmp&&cmpFields.has(M.fieldOf.get(x.k))){b.classList.add('cmp-diff');b.title='Отличается от других сравниваемых товаров · '+b.title}
       return b;
