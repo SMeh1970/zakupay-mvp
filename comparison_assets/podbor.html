@@ -407,6 +407,8 @@ function dims3(m){
 /* Rubric schemes by kind of product (first noun of the name). slots — rubrics of the kind with the usual
    range in mm: a generic «N мм» goes to the free rubric it fits; a bare number goes there by elimination and
    is a guess (shown with «?», not used to drop products). dims — rubrics of «A×B» for this kind, in order. */
+// Different words for one kind of product: «переноска» is an extension cord («удлинитель»).
+const TYPE_SYNONYMS={'переноск':'удлинитель'};
 const SCHEMES=[
   {re:/^(профил|швеллер|уголок|уголк|балк)/, slots:[['Длина',1000,12000],['Толщина',0.3,6]]},
   {re:/^труб/, slots:[['Диаметр',6,1600],['Толщина',0.5,20],['Длина',1000,12000]], dims:['Диаметр','Толщина']},
@@ -471,7 +473,7 @@ const TEXT_RULES=[
   ['Угол',R(NB+NN+'\\s*(?:°|градус[а-яё]*)'),m=>[m[1]+'°',numv(m[1])]],
   ['Цвет',R('\\bRAL\\s*(\\d{4})'),m=>['RAL '+m[1],null]],
   ['Марка стали',new RegExp('(?<![\\d.,×xхA-Za-zА-Яа-я])(\\d{2}[ХГ]\\d{0,2}[А-Я][А-Я\\d]*)(?![A-Za-zА-Яа-я0-9])','g'),m=>[m[1],null]],
-  ['Стандарт',R('(ГОСТ(?:\\s+Р)?|ТУ)\\s*(\\d[\\d./-]*)'),m=>[m[1].toUpperCase()+' '+m[2],null]],
+  ['Стандарт',R('(ГОСТ(?:\\s+Р)?|ТУ)\\s*(\\d[\\d./-]*)(?![\\d./-])(?!\\s*(?:мм|см|м)(?![а-яёa-z]))'),m=>[m[1].toUpperCase()+' '+m[2],null]],
   ['Длина',R('длин[аойе]*\\s*'+NN+'\\s*(мм|см|м)?'+NA),m=>{const v=numv(m[1])*({см:10,м:1000}[(m[2]||'').toLowerCase()]||1);return [len(v),v]}],
   ['Ширина',R('ширин[аойе]*\\s*'+NN+'\\s*(мм|см|м)?'+NA),m=>{const v=numv(m[1])*({см:10,м:1000}[(m[2]||'').toLowerCase()]||1);return [len(v),v]}],
   ['Толщина',R('(?:толщин[аойе]*|стенка)\\s*'+NN+'\\s*(мм)?'),m=>[fmt(numv(m[1]))+' мм',numv(m[1])]],
@@ -504,7 +506,7 @@ function extract(name){
     // «Дюбель-R», «Анкер-LS»: a Latin tail after the hyphen is a model, the type is the Russian word.
     const w=(t[i].match(/^([а-я]+)-[a-z0-9]+$/)||[])[1]||t[i]; if(!/^[а-я-]+$/.test(w))break;
     if(used.has(i)||/(ая|яя|ый|ий|ой|ое|ее|ые|ие)$/.test(w)&&!w.includes('-'))continue;
-    add('Тип товара',w,null,i);break;
+    add('Тип товара',TYPE_SYNONYMS[stem(w)]||w,null,i);break;
   }
   const mmOf=(v,u)=>u==='м'||u==='m'?v*1000:v;
   for(let i=0;i<t.length;i++){
@@ -521,8 +523,8 @@ function extract(name){
     if(w==='l'&&(m=nx.match(/^(\d+(?:[.,]\d+)?)(мм|mm|м|m)?$/))){const u=m[2]||(['мм','mm','м','m'].includes(n2)?n2:'мм');const v=mmOf(numv(m[1]),u);add('Длина',len(v),v,i,i+1);if(!m[2]&&u===n2)used.add(i+2);continue}
     if((m=w.match(/^l(\d+(?:[.,]\d+)?)$/))){const v=numv(m[1]);add('Длина',len(v),v,i);if(nx==='мм')used.add(i+1);continue}
     if((m=w.match(/^(\d+(?:[.,]\d+)?)x(\d+(?:[.,]\d+)?)$/))&&['м','m'].includes(nx)){add('Ширина',len(numv(m[1])*1000),numv(m[1])*1000,i,i+1);add('Длина',len(numv(m[2])*1000),numv(m[2])*1000,i);continue}
-    if(NUM.test(w)&&['м','m'].includes(nx)&&numv(w)<=12){const v=numv(w)*1000;add('Длина',len(v),v,i,i+1);continue}
-    if((m=w.match(/^(\d+(?:[.,]\d+)?)m$/))&&numv(m[1])<=12){const v=numv(m[1])*1000;add('Длина',len(v),v,i);continue}
+    if(NUM.test(w)&&['м','m'].includes(nx)&&numv(w)<=100){const v=numv(w)*1000;add('Длина',len(v),v,i,i+1);continue}
+    if((m=w.match(/^(\d+(?:[.,]\d+)?)m$/))&&numv(m[1])<=100){const v=numv(m[1])*1000;add('Длина',len(v),v,i);continue}
     if((m=w.match(/^d(\d+(?:[.,]\d+)?(?:-\d+(?:[.,]\d+)?)?)$/))&&nx==='мм'){add('Диаметр',m[1]+' мм',numv(m[1]),i,i+1);continue}
     if(NUM.test(w)&&nx==='мм'){add('Размер',fmt(numv(w))+' мм',numv(w),i,i+1);continue}
     if((m=w.match(/^(\d+(?:[.,]\d+)?)(?:mm|мм)$/))){add('Размер',fmt(numv(m[1]))+' мм',numv(m[1]),i);continue}
@@ -994,7 +996,9 @@ function renderPosition(pos){
   pp.append(el('div',{class:'tablewrap'},el('table',{class:'offers'},el('thead',{},head),tb)));
   if(rest.length){
     const tb2=el('tbody');
-    for(const c of rest)tb2.append(el('tr',{class:'out'},el('td',{},c.p.name,el('div',{class:'why'},c.diff.length?c.diff.map(x=>x.has.length?`${x.f}: ${x.has.map(M.label).join('/')} вместо ${x.want.map(M.label).join('/')}`:`нет ${x.f}`).join('; '):`совпадает только ${c.same.length}`)),el('td',{},c.p.unit),el('td',{class:'num'},money(c.p.price))));
+    for(const c of rest)tb2.append(el('tr',{class:'out'},el('td',{},c.p.name,el('div',{class:'why'},c.diff.length?c.diff.map(x=>x.has.length?`${x.f}: ${x.has.map(M.label).join('/')} вместо ${x.want.map(M.label).join('/')}`:`нет ${x.f}`).join('; '):`совпадает только ${c.same.length}`)),el('td',{},c.p.unit),el('td',{class:'num'},money(c.p.price)),
+      el('td',{},el('button',{class:'btn'+(isChosen(pos,c.p)?' chosen':''),type:'button',onclick:()=>chooseToggle(pos,c.p)},isChosen(pos,c.p)?'Выбрано ✓':'Выбрать'),
+        el('button',{class:'btn anchorbtn'+(c.anchor?' on':''),type:'button',title:'Сравнивать остальные товары с этим',onclick:()=>{state.anchor=state.anchor||{};state.anchor[pos.id]=c.anchor?undefined:c.p.name;save();render()}},c.anchor?'Эталон ✓':'Взять за основу'))));
     pp.append(el('details',{class:'out'},el('summary',{},`Остальные — отличаются больше: ${rest.length}`),el('div',{class:'tablewrap'},el('table',{},tb2))));
   }
   pp.append(el('p',{class:'note'},'Наличие и дату цены проверьте на этапе «Счёт» перед выставлением.'));

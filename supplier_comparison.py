@@ -397,8 +397,11 @@ def selected_allowed(item):
         if not candidate or item.get('comparison_supplier_disabled'):
             return False
         from characteristic_comparison import build
-        view = next((v for v in build(item, [offer_view(item,c) for c in candidates(item)])['offers']
-                     if v['key'] == quote_key(candidate) and v['comparable']), None)
+        if settings(item).get('page_selected_key') == quote_key(candidate):
+            view = offer_view(item, candidate) if offer_view(item, candidate).get('factor') else None
+        else:
+            view = next((v for v in build(item, [offer_view(item,c) for c in candidates(item)])['offers']
+                         if v['key'] == quote_key(candidate) and v['comparable']), None)
         source = item.get('comparison_source') or item
         return bool(view and settings(item).get('value_selected_key') == view['key']
                     and number(item.get('quantity')) == number(source.get('quantity'))
@@ -549,14 +552,31 @@ def check_page_price(item, page):
         "Проверьте фасовку и единицы товара.")
 
 
-def apply_value_selection(item, candidate, result):
+def page_view(item, candidate):
+    view = dict(offer_view(item, candidate))
+    if not view.get('factor'):
+        raise ValueError('Нет пересчёта единиц поставщика в единицы заявки — задайте его в сравнении поставщиков.')
+    if view.get('price') is None or view['price'] <= 0:
+        raise ValueError('У предложения нет цены.')
+    view['comparable'] = True
+    return view
+
+
+def apply_value_selection(item, candidate, result, from_page=False):
     from characteristic_comparison import build
     from automation_pipeline import DEFAULT_MARKUP
     from catalog_comparison import effective_quote
     state = activate(item)
     state['value_workflow'] = True
+    state.pop('page_selected_key', None)
     offers = build(item, [offer_view(item,c) for c in candidates(item)], lambda s: supplier_enabled(result,s))['offers']
     view = next((v for v in offers if v['key'] == quote_key(candidate)), None)
+    if (not view or not view['comparable']) and from_page:
+        # Chosen on «Подбор товаров»: the page compared the product with the request itself (synonyms such
+        # as «переноска» = «удлинитель», the operator's own marks). The server still needs a price, a unit
+        # conversion and enough quantity; the page and the invoice prices are checked right after.
+        view = page_view(item, candidate)
+        state['page_selected_key'] = view['key']
     if not view or not view['comparable']:
         raise ValueError('Товар не соответствует разрешённым характеристикам или не имеет сопоставимой цены.')
     if not view['quantity'] or view['quantity'] <= 0 or view['shortage'] is None or view['shortage'] > 0:
@@ -715,6 +735,7 @@ def mutate(result, payload, conn=None):
             # The operator takes the product out of the invoice; decisions on values stay.
             state['value_workflow'] = True
             state.pop('value_selected_key', None)
+            state.pop('page_selected_key', None)
             item.update(selected=None, purchase_price=None, proposed_unit_price=0, purchase_units=0,
                         pack_size=0, decision='excluded', operator_included=False)
         elif action in {'value_select', 'value_accept_select'}:
@@ -745,7 +766,7 @@ def mutate(result, payload, conn=None):
                 if blocking:
                     state.setdefault('values', {}).update({identifier: 'accepted' for identifier in blocking})
                 state['value_workflow'] = True
-            apply_value_selection(item,candidate,result)
+            apply_value_selection(item,candidate,result,from_page=isinstance(payload.get('page'), dict))
             check_page_price(item, payload.get('page'))
         elif action == "feature":
             identifier, decision = payload.get("feature"), payload.get("decision")
