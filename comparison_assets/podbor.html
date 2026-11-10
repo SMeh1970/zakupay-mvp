@@ -110,6 +110,13 @@ details.near summary{color:var(--warn);font-weight:600}
 .offers td .anchorbtn{display:block;margin-top:4px;font-size:12px}
 .btn.anchorbtn.on{border-color:var(--accent);color:var(--accent);font-weight:600}
 .btn.chosen{border-color:var(--ok);color:var(--ok);font-weight:600}
+/* Product actions as icon buttons in one row; the hint names the action. */
+.acts-row{display:flex;gap:4px;flex-wrap:nowrap}
+.ibtn{width:32px;height:32px;display:inline-grid;place-items:center;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--muted);cursor:pointer;padding:0}
+.ibtn:hover{border-color:var(--accent);color:var(--accent)}
+.ibtn.i-cart.on{background:var(--ok-bg);border-color:var(--ok);color:var(--ok)}
+.ibtn.i-pin.on{background:var(--accent-bg);border-color:var(--accent);color:var(--accent)}
+.ibtn.i-cmp.on{background:#fbe1c6;border-color:var(--cmp);color:#8a4508}
 .btn:disabled{opacity:.4;cursor:default}
 .rubric{border-top:1px solid var(--line);padding-top:10px;margin-top:10px;display:grid;gap:6px}
 .assign{display:flex;flex-wrap:wrap;gap:6px;align-items:center;font-size:14px;padding:6px 8px;background:var(--accent-bg);border-radius:6px}
@@ -409,6 +416,13 @@ function dims3(m){
    is a guess (shown with «?», not used to drop products). dims — rubrics of «A×B» for this kind, in order. */
 // Different words for one kind of product: «переноска» is an extension cord («удлинитель»).
 const TYPE_SYNONYMS={'переноск':'удлинитель'};
+// Icons of the product actions (simple outline drawings, 18 px).
+const ICONS={
+  cart:'<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="9" cy="20" r="1.4"/><circle cx="18" cy="20" r="1.4"/><path d="M2 3h3l2.6 12.2a2 2 0 0 0 2 1.6h8.2a2 2 0 0 0 2-1.5L21.5 7H6"/></svg>',
+  pin:'<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 17v5"/><path d="M8 3h8l-1 6 3 3v2H6v-2l3-3z"/></svg>',
+  scales:'<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v18M7 21h10M5 7h14M12 5l-7 2M12 5l7 2"/><path d="M5 7l-3 7a3 3 0 0 0 6 0z"/><path d="M19 7l-3 7a3 3 0 0 0 6 0z"/></svg>',
+  eyeoff:'<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 3l18 18"/><path d="M10.6 5.1A9.8 9.8 0 0 1 12 5c6 0 9.5 7 9.5 7a17 17 0 0 1-3 3.9M6.6 6.6C3.9 8.4 2.5 12 2.5 12s3.5 7 9.5 7a9.4 9.4 0 0 0 4.3-1"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/></svg>'
+};
 const SCHEMES=[
   {re:/^(профил|швеллер|уголок|уголк|балк)/, slots:[['Длина',1000,12000],['Толщина',0.3,6]]},
   {re:/^труб/, slots:[['Диаметр',6,1600],['Толщина',0.5,20],['Длина',1000,12000]], dims:['Диаметр','Толщина']},
@@ -971,6 +985,16 @@ function renderPosition(pos){
   const compareBox=p=>{const on=cmpNames.has(p.name);
     return el('label',{class:'cmpbox',title:'Сравнить с другими отмеченными товарами: отличия будут выделены оранжевым'},
       el('input',{type:'checkbox',checked:on,onchange:()=>{state.compare=state.compare||{};const l=new Set(state.compare[pos.id]||[]);on?l.delete(p.name):l.add(p.name);state.compare[pos.id]=[...l];save();render()}}),'Сравнить')};
+  // Product actions as icons; the word is in the hint. 🛒 choose (goes to the invoice), 📌 reference, ⚖ compare, eye — hide.
+  const productActions=(pos,p,c)=>{
+    const on=isChosen(pos,p), cmp=cmpNames.has(p.name);
+    const b=(name,title,pressed,cls,onclick)=>{const x=el('button',{type:'button',class:'ibtn '+cls+(pressed?' on':''),title,'aria-label':title,'aria-pressed':String(!!pressed),onclick});x.innerHTML=ICONS[name];return x};
+    return el('div',{class:'acts-row'},
+      b('cart',on?'Выбрано — нажмите, чтобы убрать из счёта':'Выбрать',on,'i-cart',()=>chooseToggle(pos,p)),
+      b('pin',c.anchor?'Эталон — нажмите, чтобы убрать':'Взять за основу: сравнивать остальные товары с этим',c.anchor,'i-pin',()=>{state.anchor=state.anchor||{};state.anchor[pos.id]=c.anchor?undefined:p.name;save();render()}),
+      b('scales',cmp?'Сравнивается — нажмите, чтобы убрать из сравнения':'Сравнить с другими отмеченными товарами',cmp,'i-cmp',()=>{state.compare=state.compare||{};const l=new Set(state.compare[pos.id]||[]);cmp?l.delete(p.name):l.add(p.name);state.compare[pos.id]=[...l];save();render()}),
+      b('eyeoff','Скрыть товар',false,'i-hide',()=>hideOne(p)));
+  };
   const hideOne=p=>{state.hidden=state.hidden||{};(state.hidden[pos.id]=state.hidden[pos.id]||[]).push(p.name);save();render()};
   const diffTag=(c,x)=>el('span',{class:'cmp diff'},x.has.length?`${x.f}: ${x.has.map(M.label).join('/')} вместо ${x.want.map(M.label).join('/')}`:(x.f.startsWith('слово')?'нет слова'+x.f.slice(5):'нет '+x.f),
     el('button',{type:'button',class:'xbtn',title:'Убрать только этот товар','aria-label':'Убрать товар: '+c.p.name,onclick:()=>hideOne(c.p)},'✕'),
@@ -985,8 +1009,7 @@ function renderPosition(pos){
     el('td',{title:p.factor&&p.factor!==1?'Сколько в единице поставщика — из наименования':''},p.unit+(p.factor&&p.factor!==1?` (${p.note})`:'')),
     el('td',{class:'num'},p.buy==null?'—':num(p.buy)),el('td',{class:'num'},money(p.price)),
     el('td',{class:'num',title:p.factor?'':p.note},money(p.unitPrice)),el('td',{class:'num g-end'},money(p.total)),
-    el('td',{},el('button',{class:'btn'+(isChosen(pos,p)?' chosen':''),type:'button',onclick:()=>chooseToggle(pos,p)},isChosen(pos,p)?'Выбрано ✓':'Выбрать'),
-      el('button',{class:'btn anchorbtn'+(c.anchor?' on':''),type:'button',title:'Сравнивать остальные товары с этим',onclick:()=>{state.anchor=state.anchor||{};state.anchor[pos.id]=c.anchor?undefined:p.name;save();render()}},c.anchor?'Эталон ✓':'Взять за основу'),compareBox(p),el('button',{class:'more',type:'button',title:'Убрать этот товар из выдачи',onclick:()=>hideOne(p)},'Скрыть товар')))};
+    el('td',{class:'acts'},productActions(pos,p,c)))};
   for(const c of exact)tb.append(row(c,c.analog?'alt':'main'));
   if(near.length){
     const limit=state.closeAll?.[pos.id]?near.length:8;
