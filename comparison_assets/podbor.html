@@ -359,6 +359,15 @@ const WORD_DICT={
 const NN='(\\d+(?:[.,]\\d+)?)', NA='(?![a-zа-яё0-9])', NB='(?<![a-zа-яё0-9.,])';
 const R=(src)=>new RegExp(src,'gi');
 // Rules over the whole name; each takes its text out of the words heap.
+// One spelling for one size: «50*40», «50x40 мм», «50×40» -> «50×40 мм»; «2,0» = «2». Sizes without a unit are millimetres.
+const dims=(ns,u)=>{const k=u&&u.toLowerCase()==='см'?10:1;const v=ns.map(x=>numv(x)*k);return [v.map(fmt).join('×')+' мм',v[0]]};
+function dims3(m){
+  const k=m[4]&&m[4].toLowerCase()==='см'?10:1, v=[m[1],m[2],m[3]].map(x=>numv(x)*k), sorted=[...v].sort((a,b)=>a-b);
+  const big=v.findIndex(x=>x===sorted[2]), small=v.findIndex(x=>x===sorted[0]);
+  if(sorted[2]>=500&&sorted[2]>=10*sorted[1]){const rest=v.filter((_,i)=>i!==big);return {multi:[['Размеры',...dims(rest)],['Длина',len(v[big]),v[big]]]}}
+  if(sorted[0]*10<=sorted[1]){const rest=v.filter((_,i)=>i!==small);return {multi:[['Размеры',...dims(rest)],['Толщина',fmt(v[small])+' мм',v[small]]]}}
+  return dims(v);
+}
 const TEXT_RULES=[
   ['Марка стали',R('\\bAISI\\s*(\\d{3}L?)'),m=>['AISI '+m[1].toUpperCase(),null]],
   ['Угол резьбы',R('угол\\s+резьбы\\s+'+NN+'\\s*(?:°|градус[а-яё]*|гр\\.?)?'),m=>[m[1]+'°',numv(m[1])]],
@@ -385,8 +394,10 @@ const TEXT_RULES=[
   ['Ширина',R('ширин[аойе]*\\s*'+NN+'\\s*(мм|см|м)?'+NA),m=>{const v=numv(m[1])*({см:10,м:1000}[(m[2]||'').toLowerCase()]||1);return [len(v),v]}],
   ['Толщина',R('(?:толщин[аойе]*|стенка)\\s*'+NN+'\\s*(мм)?'),m=>[fmt(numv(m[1]))+' мм',numv(m[1])]],
   ['Диаметр',R('(?:диаметр(?:ом)?|диам\\.?|[ØФ⌀])\\s*'+NN+'(?:\\s*-\\s*'+NN+')?\\s*(мм)?'),m=>[m[1]+(m[2]?'-'+m[2]:'')+' мм',numv(m[1])]],
-  ['Размеры',R(NB+NN+'\\s*[xх×*]\\s*'+NN+'\\s*[xх×*]\\s*'+NN+'(?:\\s*(мм|см))?'),m=>[[m[1],m[2],m[3]].join('×')+(m[4]?' '+m[4]:''),numv(m[1])]],
-  ['Размеры',R(NB+NN+'\\s*[xх×*]\\s*'+NN+'(?:\\s*(мм|см))?(?!\\s*[xх×*\\d])(?!\\s*м(?![мa-zа-яё]))'+NA),m=>[m[1]+'×'+m[2]+(m[3]?' '+m[3]:''),numv(m[1])]],
+  // Three sizes: a much larger one is the length (профиль 50×40×3000 мм -> 50×40 мм, длина 3 м),
+  // a much smaller one is the thickness (лист 2×1250×2500 -> толщина 2 мм, 1250×2500 мм).
+  ['Размеры',R(NB+NN+'\\s*[xх×*]\\s*'+NN+'\\s*[xх×*]\\s*'+NN+'(?:\\s*(мм|см))?'),m=>dims3(m)],
+  ['Размеры',R(NB+NN+'\\s*[xх×*]\\s*'+NN+'(?:\\s*(мм|см))?(?!\\s*[xх×*\\d])(?!\\s*м(?![мa-zа-яё]))'+NA),m=>dims([m[1],m[2]],m[3])],
 ];
 function extract(name){
   const text=String(name||''), toks=[], found=[], covered=[];
@@ -402,7 +413,7 @@ function extract(name){
       const s=m.index, e=m.index+m[0].length;
       if(covered.some(([a,b])=>s<b&&e>a))continue;
       covered.push([s,e]);
-      const [value,n]=fn(m); add(field,value,n);
+      const r=fn(m); if(r.multi)for(const[f,value,n]of r.multi)add(f,value,n); else add(field,r[0],r[1]);
       toks.forEach((t,i)=>{if(t.s<e&&t.e>s)used.add(i)});
     }
   }
