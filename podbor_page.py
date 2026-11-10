@@ -65,7 +65,7 @@ def positions(result, heading):
     return out, chosen, chosen_key
 
 
-def page_html(data, nonce):
+def page_html(data, nonce, top=""):
     text = ASSET.read_text(encoding="utf-8")
     serialized = json.dumps(data, ensure_ascii=False, allow_nan=False).replace("<", "\\u003c").replace("&", "\\u0026")
     for tag in ("<script>",):
@@ -78,7 +78,7 @@ def page_html(data, nonce):
         raise RuntimeError('podbor.html: ожидался один <div class="wrap">')
     return ('<!doctype html><html lang="ru"><head><meta charset="utf-8">'
             '<meta name="viewport" content="width=device-width,initial-scale=1">'
-            + text.replace('<div class="wrap">', '</head><body><div class="wrap">') + "</body></html>")
+            + text.replace('<div class="wrap">', '</head><body><div class="wrap">' + top) + "</body></html>")
 
 
 # The stand asks Claude through window.claude.use('sample'); in the app the same calls go to the server.
@@ -194,10 +194,15 @@ def install(app):
             "revision": revision(row["result_json"]), "csrf": _csrf(request),
             "action_url": base + "/comparison/action", "state_url": base + "/podbor/state", "ai_url": base + "/podbor/ai",
             "ai": _ai_enabled(),
-            "links": [["/dashboard/automation", "← Все заявки"], [base + "/review", "Проверка заявки и счёт"]],
+            "links": [],
         }
         nonce = secrets.token_urlsafe(18)
-        return HTMLResponse(page_html(data, nonce), headers={"Cache-Control": "no-store", "Content-Security-Policy": (
+        from request_steps import steps_html
+        top = steps_html(job_id, "podbor", row, result)
+        if row["status"] not in {"processing", "offer_created"}:
+            top += (f"<form method='post' action='{base}/refresh' style='margin:0'>"
+                    "<button type='submit' class='btn'>Повторить поиск у поставщиков</button></form>")
+        return HTMLResponse(page_html(data, nonce, top), headers={"Cache-Control": "no-store", "Content-Security-Policy": (
             f"default-src 'none'; script-src 'nonce-{nonce}'; style-src 'unsafe-inline' https://fonts.googleapis.com; "
             "font-src https://fonts.gstatic.com; connect-src 'self'; img-src 'self' https:; form-action 'self'; "
             "base-uri 'none'; frame-ancestors 'none'")})
