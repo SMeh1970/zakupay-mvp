@@ -102,6 +102,22 @@ class PodborPageTests(unittest.TestCase):
         self.assertEqual(after["chosen"], {"p1": "Труба 89х4 мм"})
         self.assertEqual(after["chosenKey"], {"p1": key})
 
+    def test_choose_is_refused_when_page_and_invoice_prices_differ(self):
+        data, _ = self.data()
+        key = data["positions"][0]["products"][0][3]["key"]
+        wrong = {"unit_price": 0.4, "buy": 1, "total": 100}
+        response = self.client.post(data["action_url"], headers=H, json={
+            "action": "value_accept_select", "position": 1, "key": key, "csrf": data["csrf"], "revision": data["revision"], "page": wrong})
+        self.assertEqual(response.status_code, 400, response.text)
+        self.assertIn("Цена не сходится", response.json()["detail"])
+        self.assertIn("6 000,00 ₽", response.json()["detail"])
+        self.assertEqual(self.data()[0]["chosen"], {})  # nothing went to the invoice
+        right = {"unit_price": 100, "buy": 60, "total": 6000}
+        response = self.client.post(data["action_url"], headers=H, json={
+            "action": "value_accept_select", "position": 1, "key": key, "csrf": data["csrf"], "revision": data["revision"], "page": right})
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(self.data()[0]["chosen"], {"p1": "Труба 89х4 мм"})
+
     def test_ai_needs_key_and_returns_json(self):
         self.assertEqual(self.client.post(self.url + "/ai", json={"mode": "json", "prompt": "x"}, headers=H).status_code, 503)
         reply = Mock(ok=True, status_code=200)

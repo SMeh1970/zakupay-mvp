@@ -236,6 +236,12 @@ const post=async(url,body)=>{
   return d;
 };
 // «Выбрать» по позиции заявки идёт в счёт приложения: то же действие, что выбор товара в сравнении.
+// What the page shows for the product: the server checks the invoice gets the same numbers.
+function pagePrice(pos,product){
+  if(!product)return null;
+  const mp=modelOf(pos).products.find(p=>p.i===pos.products.indexOf(product));
+  return mp?{unit_price:mp.unitPrice,buy:mp.buy,total:mp.total}:null;
+}
 function syncChosen(){
   if(APP.local)return; // on the stand «Выбрать» only marks the product
   for(const pos of APP.positions){
@@ -248,7 +254,7 @@ function syncChosen(){
         appStatus(cur==null?'Убираю товар из счёта…':'Переношу выбор в счёт…');
         const d=await post(APP.action_url,cur==null
           ?{action:'value_unselect',position:pos.position,csrf:APP.csrf,revision}
-          :{action:'value_accept_select',position:pos.position,key:product?.[3]?.key,csrf:APP.csrf,revision});
+          :{action:'value_accept_select',position:pos.position,key:product?.[3]?.key,csrf:APP.csrf,revision,page:pagePrice(pos,product)});
         revision=d.revision;syncedKey[pos.id]=cur==null?undefined:product?.[3]?.key;
         appStatus(cur==null?'Товар убран из счёта.':'Выбор сохранён в счёте.');
       }catch(e){

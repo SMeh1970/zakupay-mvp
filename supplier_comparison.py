@@ -295,7 +295,8 @@ def offer_view(item, candidate):
     stock = number(candidate.get("stock")) if not historical else None
     if quantity is None and factor and need is not None:
         quantity = need / factor
-        if unit(candidate.get("unit")) in {"шт", "упак", "компл"}:
+        # Whole packs: «Упаковка 2600 шт» is a pack too, as in conversion().
+        if unit(candidate.get("unit")) in {"шт", "упак", "компл"} or unit(candidate.get("unit")).startswith("упак"):
             quantity = math.ceil(round(quantity, 9))
         if stock is not None:
             quantity = min(quantity, stock)
@@ -513,6 +514,41 @@ def apply_selection(item, candidate, result):
     item["comparison"]["applied_quantity_id"] = view["quantity_id"]
 
 
+def _money(value):
+    return f"{value:,.2f}".replace(",", " ").replace(".", ",") + " ₽"
+
+
+def check_page_price(item, page):
+    """The selection page computes the price itself; the invoice must get the same numbers.
+
+    `page` is what the page showed: price per request unit, supplier units to buy and the sum.
+    A difference of more than 0.5 % means the page and the invoice read the offer differently
+    (pack size, roll length, units) — then nothing is chosen and both calculations are shown."""
+    if not isinstance(page, dict):
+        return
+    def num(value):
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            return None
+        return value if math.isfinite(value) else None
+    page_unit, page_buy, page_total = num(page.get("unit_price")), num(page.get("buy")), num(page.get("total"))
+    price, factor, units = number(item.get("purchase_price")), number(item.get("pack_size")), number(item.get("purchase_units"))
+    if None in (page_unit, page_total) or not price or not factor or units is None:
+        return
+    server_unit, server_total = price / factor, price * units
+    close = lambda a, b: abs(a - b) <= max(0.005 * max(abs(a), abs(b)), 0.01)
+    if close(page_unit, server_unit) and close(page_total, server_total):
+        return
+    unit = str((item.get("comparison_source") or item).get("unit") or "ед.")
+    supplier_unit = str((item.get("selected") or {}).get("unit") or "ед.")
+    raise ValueError(
+        "Цена не сходится, товар не выбран. "
+        f"На странице: {_money(page_unit)} за {unit}, купить {page_buy:g} {supplier_unit}, сумма {_money(page_total)}. "
+        f"В счёте вышло бы: {_money(server_unit)} за {unit}, {units:g} {supplier_unit}, сумма {_money(server_total)}. "
+        "Проверьте фасовку и единицы товара.")
+
+
 def apply_value_selection(item, candidate, result):
     from characteristic_comparison import build
     from automation_pipeline import DEFAULT_MARKUP
@@ -698,6 +734,11 @@ def mutate(result, payload, conn=None):
                 # Product identity is never waved through: a product of another kind (no main word
                 # of the request, other category) cannot be chosen by accepting its differences.
                 identity = [field for field, _ in blocking if field in IDENTITY_CHECK_FIELDS]
+                if isinstance(payload.get('page'), dict):
+                    # The selection page («Подбор товаров») compares the product with the request by itself and
+                    # the operator chose it there: the server's own diagnostics «category rules incomplete» /
+                    # «price list check» are not a reason to refuse. A different product type still is.
+                    identity = [field for field in identity if field not in {'Проверка категории', 'Проверка прайса'}]
                 if identity:
                     raise ValueError('Другой товар: не совпадает вид товара (' + ', '.join(dict.fromkeys(identity)) + '). Выбрать нельзя.')
                 blocking = [identifier for _, identifier in blocking]
@@ -705,6 +746,7 @@ def mutate(result, payload, conn=None):
                     state.setdefault('values', {}).update({identifier: 'accepted' for identifier in blocking})
                 state['value_workflow'] = True
             apply_value_selection(item,candidate,result)
+            check_page_price(item, payload.get('page'))
         elif action == "feature":
             identifier, decision = payload.get("feature"), payload.get("decision")
             if decision not in {"accepted", "rejected", "pending"} or not any(f["id"] == identifier for v in views for f in v["features"]):
