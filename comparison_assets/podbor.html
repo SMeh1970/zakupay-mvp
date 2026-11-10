@@ -110,6 +110,7 @@ details.near summary{color:var(--warn);font-weight:600}
 .offers td .anchorbtn{display:block;margin-top:4px;font-size:12px}
 .btn.anchorbtn.on{border-color:var(--accent);color:var(--accent);font-weight:600}
 .btn.chosen{border-color:var(--ok);color:var(--ok);font-weight:600}
+.sorth{border:0;background:transparent;padding:0;font:inherit;color:inherit;cursor:pointer;text-align:left}.sorth:hover{color:var(--accent)}
 /* Product actions as icon buttons in one row; the hint names the action. */
 .acts-row{display:flex;gap:4px;flex-wrap:nowrap}
 .ibtn{width:32px;height:32px;display:inline-grid;place-items:center;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--muted);cursor:pointer;padding:0}
@@ -900,6 +901,14 @@ function renderPosition(pos){
   const exact=ranked.filter(r=>r.dReq.length===0&&r.same.length>0);
   const near=ranked.filter(r=>!exact.includes(r)&&r.dReq.length<=2&&r.same.length>=2);
   const rest=ranked.filter(r=>!exact.includes(r)&&!near.includes(r));
+  // Sorting by price (header click): inside each group — suitable, close, the rest — so the cheapest of
+  // fifty equal offers is on top without mixing in products that do not fit.
+  const sortBy=state.sort?.[pos.id]||null; // {k:'unit'|'total', d:1|-1}
+  if(sortBy){const val=r=>sortBy.k==='unit'?r.p.unitPrice:r.p.total;
+    for(const g of [exact,near,rest])g.sort((a,b)=>(val(a)==null)-(val(b)==null)||sortBy.d*((val(a)??0)-(val(b)??0)));}
+  const sortHead=(k,label,cls)=>{const on=sortBy?.k===k, d=on?sortBy.d:0;
+    return el('th',{class:cls||'','aria-sort':on?(d>0?'ascending':'descending'):'none'},el('button',{type:'button',class:'sorth',title:on?(d>0?'По возрастанию · нажмите — по убыванию':'По убыванию · нажмите — без сортировки'):'Сортировать по возрастанию',
+      onclick:()=>{state.sort=state.sort||{};state.sort[pos.id]=!on?{k,d:1}:d>0?{k,d:-1}:null;save();render()}},label,on?(d>0?' ▲':' ▼'):' ↕'))};
   // ★ — the cheapest per request unit among products with every request value confirmed (none unknown);
   // if no product has them all, the cheapest of the suitable ones.
   const cheapest=list=>list.filter(r=>r.p.unitPrice!=null).sort((a,b)=>a.p.unitPrice-b.p.unitPrice)[0]?.p;
@@ -923,7 +932,7 @@ function renderPosition(pos){
     el('button',{class:'btn',onclick:()=>{delete state.anchor[pos.id];save();render()}},'Убрать эталон')));
   pp.append(el('p',{class:'hint'},best?`Лучшая цена за ${unit(pos.unit)}: ${money(best.unitPrice)} — на ${num(pos.qty)} ${pos.unit} нужно купить ${num(best.buy)} ${best.unit}, сумма ${money(best.total)}.`:'Товаров со всеми характеристиками заявки нет — смотрите близкие ниже.'));
   const head=[el('tr',{class:'group'},el('th',{colspan:2,class:'g-start'},'Данные заявки'),el('th',{colspan:6,class:'g-start g-end'},'Данные поставщика'),el('th',{})),
-    el('tr',{},el('th',{class:'g-start'},'Ед. изм.'),el('th',{},'Кол-во'),el('th',{class:'g-start'},'Товар'),el('th',{},'Ед. изм.'),el('th',{},'Кол-во'),el('th',{},'Цена'),el('th',{},'Цена за ед. заявки'),el('th',{class:'g-end'},'Сумма'),el('th',{},''))];
+    el('tr',{},el('th',{class:'g-start'},'Ед. изм.'),el('th',{},'Кол-во'),el('th',{class:'g-start'},'Товар'),el('th',{},'Ед. изм.'),el('th',{},'Кол-во'),el('th',{},'Цена'),sortHead('unit','Цена за ед. заявки'),sortHead('total','Сумма','g-end'),el('th',{},''))];
   // Table values: quick presses — 1 ✓ green, 2 + yellow, 3 ✕ red, 4 no mark; applied 0.35 s after the last.
   const BY_COUNT=['only','also','rejected','none'], SYM={only:'✓ ',also:'+ ',rejected:'✕ ',none:''};
   const STATE={only:'выбрано мной',also:'аналог / замена',rejected:'исключено',none:'не выбрано'};
