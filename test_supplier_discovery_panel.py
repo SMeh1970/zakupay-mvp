@@ -218,3 +218,40 @@ def test_default_budget_is_small(panel):
         os.environ.pop("WEB_SEARCH_PAGES_PER_CLICK", None)
         cfg = panel_module.settings()
     assert cfg["max_requests"] == 6 and cfg["pages_per_click"] == 2
+
+
+def test_yandex_keys_switch_the_default_engine_to_the_official_api(panel):
+    with patch.dict(os.environ, {"YANDEX_SEARCH_API_KEY": "YK", "YANDEX_FOLDER_ID": "folder"}):
+        assert panel_module.default_engines() == ["yandex_cloud"]
+    with patch.dict(os.environ, {"YANDEX_SEARCH_API_KEY": "YK", "YANDEX_FOLDER_ID": ""}):
+        assert panel_module.default_engines() == ["yandex", "google"]
+
+
+def test_yandex_deferred_click_waits_then_collects_without_a_second_charge(panel):
+    job = add_job(("Профиль 60х27",))
+    env = {"YANDEX_SEARCH_API_KEY": "YK-SECRET", "YANDEX_FOLDER_ID": "folder", "SERPAPI_API_KEY": ""}
+    calls = []
+    answers = iter(["wait", "wait", "ready"])
+
+    def search(engine, page, query, **kwargs):
+        calls.append((engine, page, kwargs["yandex_key"], kwargs["yandex_folder"]))
+        step = next(answers)
+        if step == "wait":
+            kwargs["operations"]["yandex_cloud:0"] = {"id": "op1234567", "started": "2026-11-13T10:00:00+00:00"}
+            kwargs["save"]()
+            raise sd.PendingOperation("2026-11-13T10:00:00+00:00")
+        kwargs["operations"].pop("yandex_cloud:0", None)   # как делает настоящая функция, когда результат забран
+        results = [{"url": u, "title": t, "description": "купить"} for u, t in PROFILE]
+        return {"results": results, "raw": results, "next": None, "notice": "", "diagnostics": {"raw": 2, "invalid": 0, "excluded": 0}}
+
+    with patch.dict(os.environ, env), patch.object(sd, "search_page", search):
+        first = post(panel, "/dashboard/web-suppliers/search", job, position=1)
+        assert "Запрос отправлен в Яндекс" in panel.get(first.headers["location"]).text
+        html = panel.get(f"/dashboard/web-suppliers?job_id={job}").text
+        assert "Забрать результат" in html and "YK-SECRET" not in html
+        post(panel, "/dashboard/web-suppliers/search", job, position=1)       # ещё не готово
+        post(panel, "/dashboard/web-suppliers/search", job, position=1)       # готово
+    state = panel_module.load_run(panel_module.run_key(job, 1, "Профиль 60х27"))[1]
+    assert state["requests"] == 1 and state["reason"] == "exhausted" and state["operations"] == {}
+    assert {sd.site_domain(s["url"]) for s in state["sites"]} == {"stroy-profil.ru", "gkl-shop.ru"}
+    assert all(c[:2] == ("yandex_cloud", 0) and c[2:] == ("YK-SECRET", "folder") for c in calls)

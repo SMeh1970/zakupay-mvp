@@ -7,10 +7,13 @@
 """
 from __future__ import annotations
 
+import base64
 import ipaddress
 import os
 import re
 import socket
+import xml.etree.ElementTree as ET
+from datetime import datetime, timedelta, timezone
 from html.parser import HTMLParser
 from urllib.parse import parse_qs, unquote, urljoin, urlsplit, urlunsplit, urlencode
 
@@ -19,6 +22,11 @@ import requests
 
 SERPAPI_URL = "https://serpapi.com/search.json"
 FIRECRAWL_SEARCH_URL = "https://api.firecrawl.dev/v2/search"
+YANDEX_SEARCH_URL = "https://searchapi.api.cloud.yandex.net/v2/web/searchAsync"
+YANDEX_OPERATION_URL = "https://operation.api.cloud.yandex.net/operations/"
+YANDEX_GROUPS_ON_PAGE = 100       # максимум для XML: по одному сайту (домену) на группу
+YANDEX_MAX_RESULTS = 250          # предел Яндекса на один поисковый запрос
+YANDEX_RETENTION = timedelta(hours=12)  # столько Яндекс хранит готовый результат
 USER_AGENT = "ZakupayMVP/1.0 (supplier research)"
 ENGINES = ("yandex", "google")
 ECONOMY = {"auto": True, "min_pages": 4, "new_domain_percent": 15, "low_page_count": 2}
@@ -39,6 +47,10 @@ _SECOND_LEVEL = {"com.ru", "net.ru", "org.ru", "spb.ru", "msk.ru", "pp.ru", "nov
 
 class ProviderError(Exception):
     """Ошибка внешнего сервиса; текст безопасен для показа (без ключей и ссылок)."""
+
+
+class PendingOperation(Exception):
+    """Отложенный запрос принят сервисом, результата ещё нет. Это не ошибка и не новый расход."""
 
 
 # ---------------------------------------------------------------- адреса и домены
@@ -208,7 +220,7 @@ def _next_serp_page(data: dict, engine: str, current: int) -> int | None:
     return min(pages) if pages else None
 
 
-def _json_request(method: str, url: str, *, service: str, secrets=(), timeout=90, session=requests, **kwargs) -> dict:
+def _json_request(method: str, url: str, *, service: str, secrets=(), timeout=90, session=requests, keep_error_body=False, **kwargs) -> dict:
     try:
         response = session.request(method, url, timeout=timeout, **kwargs)
     except requests.Timeout:
@@ -221,17 +233,141 @@ def _json_request(method: str, url: str, *, service: str, secrets=(), timeout=90
         data = None
     if not isinstance(data, dict):
         raise ProviderError(f"{service} (HTTP {response.status_code}): сервис вернул нечитаемый ответ. Повторите запрос позже.")
-    if response.ok and _empty_serp(data):
+    if response.ok and (_empty_serp(data) or keep_error_body):
         return data
     if not response.ok or data.get("success") is False or data.get("error"):
         raise ProviderError(provider_error(service, response.status_code, provider_detail(data, secrets)))
     return data
 
 
+def _shaped(raw: list, nxt, notice: str = "") -> dict:
+    """Общий отсев выдачи: недопустимые адреса, страницы-не-товары и маркетплейсы."""
+    counts = {"raw": len(raw), "invalid": 0, "excluded": 0}
+    results = []
+    for item in raw:
+        if not item["url"] or not is_public_url(item["url"]):
+            counts["invalid"] += 1
+        elif non_product_reason(item["url"], item["title"]) or excluded_by(item["url"], MARKETPLACES):
+            counts["excluded"] += 1
+        else:
+            results.append({"url": canonical_url(item["url"]), "title": re.sub(r"\s+", " ", item["title"]).strip()[:2000],
+                            "description": re.sub(r"\s+", " ", item["description"]).strip()[:4000]})
+    return {"results": results, "raw": raw, "next": nxt, "notice": notice, "diagnostics": counts}
+
+
+def parse_yandex_xml(xml_bytes: bytes) -> tuple[list, int]:
+    """Разбор XML-выдачи Яндекса: ([{url, title, description}], число групп на странице).
+
+    Код ошибки 15 («ничего не найдено») — пустая выдача, а не сбой. Неизвестный формат — ошибка,
+    а не молчаливая пустая выдача: иначе оператор решит, что сайтов нет.
+    """
+    if re.search(rb"<!(?:DOCTYPE|ENTITY)", xml_bytes, re.I):
+        raise ProviderError("Яндекс Search API: ответ содержит недопустимые объявления XML и отклонён.")
+    try:
+        root = ET.fromstring(xml_bytes)
+    except ET.ParseError:
+        raise ProviderError("Яндекс Search API: не удалось разобрать XML-ответ.") from None
+    for error in root.iter("error"):
+        code = (error.get("code") or "").strip()
+        if code == "15":
+            return [], 0
+        text = re.sub(r"\s+", " ", "".join(error.itertext())).strip()[:300]
+        raise ProviderError(f"Яндекс Search API: ошибка {code or '?'}" + (f": {text}" if text else "."))
+    if root.tag != "yandexsearch" and next(root.iter("response"), None) is None:
+        raise ProviderError("Яндекс Search API: формат ответа не распознан.")
+    docs = []
+    for doc in root.iter("doc"):
+        title = doc.find("title")
+        headline = doc.find("headline")
+        passages = [" ".join("".join(p.itertext()).split()) for p in doc.iter("passage")]
+        docs.append({"url": (doc.findtext("url") or "").strip(),
+                     "title": " ".join("".join(title.itertext()).split()) if title is not None else "",
+                     "description": " ".join("".join(headline.itertext()).split()) if headline is not None and "".join(headline.itertext()).strip()
+                     else " ".join(x for x in passages if x)})
+    if not docs and b"<url" in xml_bytes:
+        raise ProviderError("Яндекс Search API: формат ответа не распознан (адреса есть, документов не нашли).")
+    groups = len(list(root.iter("group"))) or len(docs)
+    return docs, groups
+
+
+def yandex_cloud_page(page: int, query: str, *, key: str, folder: str, operations: dict, save=None,
+                      session=requests, now=None) -> dict:
+    """Одна страница выдачи через отложенный запрос Yandex Search API.
+
+    Первый вызов создаёт операцию и сразу сохраняет её id (save): это единственный платный шаг.
+    Следующие вызовы только спрашивают готовность (бесплатно) и поднимают PendingOperation, пока Яндекс готовит ответ.
+    """
+    if not key.strip() or not folder.strip():
+        raise ProviderError("Для Яндекса нужны YANDEX_SEARCH_API_KEY и YANDEX_FOLDER_ID (настройки Render).")
+    service = "Яндекс Search API"
+    headers = {"Authorization": f"Api-Key {key.strip()}", "Content-Type": "application/json"}
+    secrets = [key, folder]
+    now = now or datetime.now(timezone.utc)
+    slot = f"yandex_cloud:{page}"
+    operation = operations.get(slot)
+    if not operation:
+        if len(query) >= 400 or len(query.split()) > 40:
+            raise ProviderError("Яндекс принимает запрос до 400 символов и 40 слов. Сократите название позиции.")
+        body = {"query": {"searchType": "SEARCH_TYPE_RU", "queryText": query, "page": str(page), "fixTypoMode": "FIX_TYPO_MODE_OFF"},
+                "groupSpec": {"groupMode": "GROUP_MODE_DEEP", "groupsOnPage": str(YANDEX_GROUPS_ON_PAGE), "docsInGroup": "1"},
+                "maxPassages": "2", "l10n": "LOCALIZATION_RU", "folderId": folder.strip(), "responseFormat": "FORMAT_XML"}
+        data = _json_request("POST", YANDEX_SEARCH_URL, service=service, secrets=secrets, session=session, headers=headers, json=body)
+        operation_id = data.get("id")
+        if not isinstance(operation_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{5,100}", operation_id):
+            raise ProviderError(f"{service}: сервис не вернул идентификатор операции.")
+        operations[slot] = {"id": operation_id, "started": now.isoformat()}
+        if save:
+            save()
+        raise PendingOperation(operations[slot]["started"])
+    try:
+        started = datetime.fromisoformat(operation["started"])
+    except (KeyError, ValueError):
+        started = now
+    try:
+        data = _json_request("GET", YANDEX_OPERATION_URL + operation["id"], service=service, secrets=secrets, session=session,
+                             headers={"Authorization": headers["Authorization"]}, keep_error_body=True)
+    except ProviderError as exc:
+        if "HTTP 404" in str(exc):
+            operations.pop(slot, None)
+            if save:
+                save()
+            raise ProviderError(f"{service}: операция не найдена (возможно, истёк срок хранения результата). Запустите поиск заново.") from None
+        raise
+    if not data.get("done"):
+        if now - started > YANDEX_RETENTION:
+            operations.pop(slot, None)
+            if save:
+                save()
+            raise ProviderError(f"{service}: результат не получен за 12 часов. Запустите поиск заново.")
+        raise PendingOperation(operation["started"])
+    operations.pop(slot, None)
+    if save:
+        save()
+    if data.get("error"):
+        raise ProviderError(provider_error(service, 200, provider_detail(data, secrets)))
+    encoded = (data.get("response") or {}).get("rawData")
+    if not isinstance(encoded, str) or not encoded:
+        raise ProviderError(f"{service}: в ответе нет данных выдачи.")
+    try:
+        xml_bytes = base64.b64decode(encoded, validate=False)
+    except ValueError:
+        raise ProviderError(f"{service}: данные выдачи не удалось декодировать.") from None
+    docs, groups = parse_yandex_xml(xml_bytes)
+    nxt = page + 1 if groups >= YANDEX_GROUPS_ON_PAGE and (page + 1) * YANDEX_GROUPS_ON_PAGE < YANDEX_MAX_RESULTS else None
+    shaped = _shaped(docs, nxt)
+    if not docs:
+        shaped["notice"] = "Следующих результатов в поисковой выдаче нет." if page else "Поисковик не нашёл сайтов по этой фразе."
+    return shaped
+
+
 def search_page(engine: str, page: int, query: str, *, serpapi_key: str = "", firecrawl_key: str = "",
-                limit: int = 100, exclude_domains=(), session=requests) -> dict:
+                limit: int = 100, exclude_domains=(), session=requests, yandex_key: str = "", yandex_folder: str = "",
+                operations: dict | None = None, save=None) -> dict:
     """Одна страница выдачи: {results, raw, next, notice, diagnostics}. Ключи берутся из окружения Render."""
     notice = ""
+    if engine == "yandex_cloud":
+        return yandex_cloud_page(page, query, key=yandex_key, folder=yandex_folder,
+                                 operations=operations if operations is not None else {}, save=save, session=session)
     if engine in ("google", "yandex"):
         if not serpapi_key.strip():
             raise ProviderError("Для Google и Яндекса нужен ключ SerpAPI (SERPAPI_API_KEY в настройках Render).")
@@ -261,34 +397,25 @@ def search_page(engine: str, page: int, query: str, *, serpapi_key: str = "", fi
         raw = [{"url": x.get("url") or "", "title": x.get("title") or "", "description": x.get("description") or ""} for x in found]
         nxt = page + 1 if raw else None
         notice = "Firecrawl: продолжение исключает уже найденные домены; это не пагинация Firecrawl."
-    counts = {"raw": len(raw), "invalid": 0, "excluded": 0}
-    results = []
-    for item in raw:
-        if not item["url"] or not is_public_url(item["url"]):
-            counts["invalid"] += 1
-        elif non_product_reason(item["url"], item["title"]) or excluded_by(item["url"], MARKETPLACES):
-            counts["excluded"] += 1
-        else:
-            results.append({"url": canonical_url(item["url"]), "title": re.sub(r"\s+", " ", item["title"]).strip()[:2000],
-                            "description": re.sub(r"\s+", " ", item["description"]).strip()[:4000]})
-    return {"results": results, "raw": raw, "next": nxt, "notice": notice, "diagnostics": counts}
+    return _shaped(raw, nxt, notice)
 
 
 # ---------------------------------------------------------------- сбор с бюджетом
 
 def new_state(query: str, engines) -> dict:
-    return {"version": 1, "query": query, "engines": [e for e in engines if e in ("google", "yandex", "firecrawl")],
+    return {"version": 1, "query": query, "engines": [e for e in engines if e in ("google", "yandex", "yandex_cloud", "firecrawl")],
             "cursors": {e: 0 for e in engines}, "completed": [], "sites": [], "raw_domains": [], "seen_domains": [],
             "requests": 0, "pages": 0, "duplicates": 0, "ignored": 0, "overflow": 0,
             "diagnostics": {"raw": 0, "invalid": 0, "excluded": 0}, "low_streaks": {}, "reason": "new",
-            "errors": [], "pending": None}
+            "errors": [], "pending": None, "operations": {}}
 
 
 STOP_LABELS = {
     "new": "Поиск ещё не запускался", "paused": "Выполнено запрошенное число страниц; можно продолжить",
-    "economy": "Две страницы подряд дали мало новых доменов", "credits": "Достигнут лимит запросов SerpAPI",
+    "economy": "Две страницы подряд дали мало новых доменов", "credits": "Достигнут лимит запросов на позицию",
     "limit": "Достигнут лимит уникальных сайтов", "exhausted": "Доступная выдача закончилась",
     "error": "Ошибка сервиса; найденные результаты сохранены", "stopped": "Остановлено",
+    "waiting": "Яндекс готовит результат: обычно от 5 минут. Нажмите «Забрать результат» позже",
 }
 
 
@@ -304,7 +431,7 @@ def collect_sites(fetch_page, state: dict, *, limit: int = 100, max_requests: in
     s["reason"], s["low_streaks"] = "paused", {}
     domains = {site_domain(x["url"]) for x in s["sites"]}
     raw_domains, seen_domains = set(s["raw_domains"]), set(s["seen_domains"])
-    paused, errors, done = set(), [], 0
+    paused, errors, done, waiting = set(), [], 0, set()
 
     def persist():
         s["raw_domains"], s["seen_domains"] = sorted(raw_domains), sorted(seen_domains)
@@ -331,6 +458,12 @@ def collect_sites(fetch_page, state: dict, *, limit: int = 100, max_requests: in
             persist()
             try:
                 data = fetch_page(engine, page, s["query"], sorted(seen_domains))
+            except PendingOperation:
+                # Запрос уже учтён и сохранён: ожидание не стоит ничего, повторный клик его не удваивает.
+                waiting.add(engine)
+                paused.add(engine)
+                persist()
+                continue
             except ProviderError as exc:
                 message = f"{engine}: {exc}"
                 errors.append(message)
@@ -383,6 +516,8 @@ def collect_sites(fetch_page, state: dict, *, limit: int = 100, max_requests: in
             break
     if len(s["sites"]) >= limit:
         s["reason"] = "limit"
+    elif waiting:
+        s["reason"] = "waiting"
     elif s["reason"] == "economy":
         pass
     elif errors and done == 0:
@@ -557,6 +692,10 @@ def read_domain_contacts(url: str, *, blocked=(), session=requests) -> dict:
         except ProviderError as exc:
             errors.append(str(exc))
     return {"contacts": contacts, "errors": errors, "url": final}
+
+
+def yandex_env() -> tuple[str, str]:
+    return os.getenv("YANDEX_SEARCH_API_KEY", "").strip(), os.getenv("YANDEX_FOLDER_ID", "").strip()
 
 
 def env_keys() -> tuple[str, str]:

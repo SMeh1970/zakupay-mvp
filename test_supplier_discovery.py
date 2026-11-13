@@ -277,3 +277,143 @@ def test_real_name_resolution_rejects_private_addresses(monkeypatch):
     monkeypatch.setattr(socket, "getaddrinfo", lambda host, port: [(2, 1, 6, "", (a, 0)) for a in answers[host]])
     assert sd.resolves_publicly("public.example") is True
     assert sd.resolves_publicly("mixed.example") is False and sd.resolves_publicly("meta.example") is False
+
+
+# ---------------------------------------------------------------- Яндекс Search API, отложенный запрос
+
+import base64
+import json as _json
+from datetime import datetime, timedelta, timezone
+
+
+def yandex_xml(*docs, groups=None, error=None):
+    """XML-выдача в формате Яндекса: yandexsearch/response/results/grouping/group/doc."""
+    if error is not None:
+        return f'<?xml version="1.0" encoding="utf-8"?><yandexsearch><response><error code="{error[0]}">{error[1]}</error></response></yandexsearch>'.encode()
+    body = "".join(
+        f"<group><doccount>1</doccount><doc><url>{u}</url><domain>d</domain><title>{t}</title>"
+        f"<headline>{h}</headline><passages><passage>{h}</passage></passages></doc></group>" for u, t, h in docs)
+    return ('<?xml version="1.0" encoding="utf-8"?><yandexsearch><request/><response><results><grouping>' + body +
+            "</grouping></results></response></yandexsearch>").encode()
+
+
+def done_reply(xml):
+    return Reply({"id": "op1234567", "done": True, "response": {"rawData": base64.b64encode(xml).decode()}})
+
+
+KEY, FOLDER = "AQVN-SECRET-KEY", "b1gfolder0000"
+
+
+def start(session, ops, **kw):
+    return sd.yandex_cloud_page(0, "профиль 60х27", key=KEY, folder=FOLDER, operations=ops, session=session, **kw)
+
+
+def test_yandex_first_call_creates_the_operation_and_saves_its_id_before_waiting():
+    ops, saved = {}, []
+    session = Session(Reply({"id": "op1234567", "done": False}))
+    with pytest.raises(sd.PendingOperation):
+        start(session, ops, save=lambda: saved.append(dict(ops)))
+    method, url, kwargs = session.calls[0]
+    assert (method, url) == ("POST", sd.YANDEX_SEARCH_URL)
+    assert kwargs["headers"]["Authorization"] == f"Api-Key {KEY}"
+    body = kwargs["json"]
+    assert body["folderId"] == FOLDER and body["query"]["queryText"] == "профиль 60х27" and body["responseFormat"] == "FORMAT_XML"
+    assert body["groupSpec"] == {"groupMode": "GROUP_MODE_DEEP", "groupsOnPage": "100", "docsInGroup": "1"}
+    assert ops["yandex_cloud:0"]["id"] == "op1234567" and saved and saved[0]["yandex_cloud:0"]["id"] == "op1234567"
+
+
+def test_yandex_waiting_polls_for_free_and_never_starts_a_second_operation():
+    ops = {"yandex_cloud:0": {"id": "op1234567", "started": datetime.now(timezone.utc).isoformat()}}
+    session = Session(Reply({"id": "op1234567", "done": False}), Reply({"id": "op1234567", "done": False}))
+    for _ in range(2):
+        with pytest.raises(sd.PendingOperation):
+            start(session, ops)
+    assert [c[0] for c in session.calls] == ["GET", "GET"] and session.calls[0][1] == sd.YANDEX_OPERATION_URL + "op1234567"
+    assert ops["yandex_cloud:0"]["id"] == "op1234567"
+
+
+def test_yandex_done_operation_is_parsed_and_removed():
+    ops = {"yandex_cloud:0": {"id": "op1234567", "started": datetime.now(timezone.utc).isoformat()}}
+    xml = yandex_xml(("https://stroy-profil.ru/catalog/", "Профили <hlword>60х27</hlword> — купить", "Купить профиль с доставкой"),
+                     ("https://ozon.ru/p/1", "Профиль на Ozon", "marketplace"),
+                     ("not a url", "мусор", ""))
+    page = start(Session(done_reply(xml)), ops)
+    assert ops == {}
+    assert [r["url"] for r in page["results"]] == ["https://stroy-profil.ru/catalog/"]
+    assert page["results"][0]["title"] == "Профили 60х27 — купить" and page["results"][0]["description"] == "Купить профиль с доставкой"
+    assert page["diagnostics"] == {"raw": 3, "invalid": 1, "excluded": 1} and page["next"] is None
+
+
+def test_yandex_full_page_has_a_next_page_until_the_250_result_limit():
+    docs = [(f"https://shop{i}.ru/", f"Магазин {i}", "купить") for i in range(100)]
+    for page_number, expected in ((0, 1), (1, 2), (2, None)):
+        ops = {f"yandex_cloud:{page_number}": {"id": "op1234567", "started": datetime.now(timezone.utc).isoformat()}}
+        page = sd.yandex_cloud_page(page_number, "q", key=KEY, folder=FOLDER, operations=ops, session=Session(done_reply(yandex_xml(*docs))))
+        assert page["next"] == expected
+
+
+def test_yandex_nothing_found_is_an_empty_page_not_an_error():
+    ops = {"yandex_cloud:0": {"id": "op1234567", "started": datetime.now(timezone.utc).isoformat()}}
+    page = start(Session(done_reply(yandex_xml(error=(15, "Искомая комбинация слов нигде не встречается")))), ops)
+    assert page["results"] == [] and page["next"] is None and "не нашёл" in page["notice"]
+
+
+@pytest.mark.parametrize("xml, text", [
+    (yandex_xml(error=(32, "Превышен дневной лимит")), "ошибка 32"),
+    (b"<html><body>captcha</body></html>", "формат ответа не распознан"),
+    (b"<yandexsearch><response><results><url>http://a.ru</url></results></response></yandexsearch>", "формат ответа не распознан"),
+    (b"<!DOCTYPE x [<!ENTITY a 'b'>]><yandexsearch/>", "недопустимые объявления"),
+    (b"<yandexsearch><response>", "не удалось разобрать"),
+])
+def test_yandex_unknown_or_broken_answer_is_an_error_never_a_silent_empty_result(xml, text):
+    ops = {"yandex_cloud:0": {"id": "op1234567", "started": datetime.now(timezone.utc).isoformat()}}
+    with pytest.raises(sd.ProviderError, match=text):
+        start(Session(done_reply(xml)), ops)
+
+
+def test_yandex_failed_operation_is_dropped_so_the_next_click_does_not_poll_it_forever():
+    ops = {"yandex_cloud:0": {"id": "op1234567", "started": datetime.now(timezone.utc).isoformat()}}
+    failed = Reply({"id": "op1234567", "done": True, "error": {"code": 13, "message": f"internal {KEY}"}})
+    with pytest.raises(sd.ProviderError) as caught:
+        start(Session(failed), ops)
+    assert ops == {} and KEY not in str(caught.value)
+
+
+def test_yandex_unknown_or_expired_operation_is_dropped():
+    old = (datetime.now(timezone.utc) - timedelta(hours=13)).isoformat()
+    ops = {"yandex_cloud:0": {"id": "op1234567", "started": old}}
+    with pytest.raises(sd.ProviderError, match="12 часов"):
+        start(Session(Reply({"id": "op1234567", "done": False})), ops)
+    assert ops == {}
+    ops = {"yandex_cloud:0": {"id": "op1234567", "started": datetime.now(timezone.utc).isoformat()}}
+    with pytest.raises(sd.ProviderError, match="не найдена"):
+        start(Session(Reply({"code": 5, "message": "not found"}, status=404)), ops)
+    assert ops == {}
+
+
+def test_yandex_needs_both_keys_and_a_short_query_and_hides_the_key_in_http_errors():
+    with pytest.raises(sd.ProviderError, match="YANDEX_SEARCH_API_KEY"):
+        sd.yandex_cloud_page(0, "q", key="", folder=FOLDER, operations={}, session=Session())
+    with pytest.raises(sd.ProviderError, match="40 слов"):
+        sd.yandex_cloud_page(0, " ".join(["слово"] * 41), key=KEY, folder=FOLDER, operations={}, session=Session())
+    with pytest.raises(sd.ProviderError) as caught:
+        start(Session(Reply({"code": 16, "message": f"bad key {KEY} at https://x.example/y"}, status=401)), {})
+    assert KEY not in str(caught.value) and "https://" not in str(caught.value)
+
+
+def test_collect_sites_waits_without_charging_twice_and_finishes_on_the_second_click():
+    ops_session = Session(Reply({"id": "op1234567", "done": False}), Reply({"id": "op1234567", "done": False}),
+                          done_reply(yandex_xml(("https://stroy-profil.ru/catalog/", "Профили — купить", "купить"))))
+    state = sd.new_state("профиль 60х27", ["yandex_cloud"])
+
+    def fetch(engine, page, query, seen):
+        return sd.search_page(engine, page, query, yandex_key=KEY, yandex_folder=FOLDER, operations=state["operations"], session=ops_session)
+
+    sd.collect_sites(fetch, state, max_requests=6, max_pages=2)
+    assert state["reason"] == "waiting" and state["requests"] == 1 and state["pending"] == {"engine": "yandex_cloud", "page": 0}
+    sd.collect_sites(fetch, state, max_requests=6, max_pages=2)           # ещё не готово
+    assert state["reason"] == "waiting" and state["requests"] == 1
+    sd.collect_sites(fetch, state, max_requests=6, max_pages=2)           # готово
+    assert state["requests"] == 1 and [s["url"] for s in state["sites"]] == ["https://stroy-profil.ru/catalog/"]
+    assert state["reason"] == "exhausted" and state["operations"] == {} and state["pending"] is None
+    assert [c[0] for c in ops_session.calls] == ["POST", "GET", "GET"]

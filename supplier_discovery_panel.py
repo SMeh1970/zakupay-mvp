@@ -174,14 +174,18 @@ def aggregate(job_id):
 def execute_search(key, job_id, position, item_name, query, engines):
     cfg = settings()
     serpapi_key, firecrawl_key = sd.env_keys()
+    yandex_key, yandex_folder = sd.yandex_env()
     blocked = excluded_domains()
     row, state = load_run(key)
     if not state or state["query"] != query or sorted(state["engines"]) != sorted(engines):
         state = sd.new_state(query, engines)
+    state.setdefault("operations", {})
 
     def fetch(engine, page_number, text, seen):
         return sd.search_page(engine, page_number, text, serpapi_key=serpapi_key, firecrawl_key=firecrawl_key,
-                              limit=cfg["max_sites"], exclude_domains=[*blocked, *seen])
+                              limit=cfg["max_sites"], exclude_domains=[*blocked, *seen],
+                              yandex_key=yandex_key, yandex_folder=yandex_folder, operations=state["operations"],
+                              save=lambda: save_run(key, job_id, position, item_name, state))
 
     sd.collect_sites(fetch, state, limit=cfg["max_sites"], max_requests=cfg["max_requests"], max_pages=cfg["pages_per_click"],
                      accept=lambda r: not sd.excluded_by(r["url"], blocked),
@@ -190,8 +194,24 @@ def execute_search(key, job_id, position, item_name, query, engines):
 
 
 def default_engines():
+    """Официальный Яндекс (отложенный запрос, в разы дешевле) важнее SerpAPI; без ключей остаётся Firecrawl."""
     serpapi_key, _ = sd.env_keys()
+    yandex_key, yandex_folder = sd.yandex_env()
+    if yandex_key and yandex_folder:
+        return ["yandex_cloud"]
     return ["yandex", "google"] if serpapi_key else ["firecrawl"]
+
+
+def waiting_note(state):
+    """«Запрос отправлен N мин назад» для ожидающей операции Яндекса."""
+    for operation in (state.get("operations") or {}).values():
+        try:
+            started = datetime.fromisoformat(operation["started"])
+        except (KeyError, ValueError):
+            continue
+        minutes = max(0, int((datetime.now(timezone.utc) - started).total_seconds() // 60))
+        return f"запрос отправлен {minutes} мин назад"
+    return ""
 
 
 # ------------------------------------------------------------------ страница
@@ -217,7 +237,9 @@ def render_page(request, job_id, message, show_all):
         runs, domains = aggregate(job_id)
     run_by_position = {r["position"]: r for r in runs}
     records = supplier_records()
-    keys_note = ("Google и Яндекс: ключ SerpAPI подключён." if serpapi_key else
+    yandex_key, yandex_folder = sd.yandex_env()
+    keys_note = ("Яндекс: официальный Search API, отложенный режим (результат через 5 минут и больше)." if yandex_key and yandex_folder else
+                 "Google и Яндекс: ключ SerpAPI подключён." if serpapi_key else
                  "Ключ SerpAPI не задан (SERPAPI_API_KEY): работает только Firecrawl" + (" с ключом." if firecrawl_key else " без ключа, в пределах бесплатного лимита сервиса."))
     notice = f"<div role='status' style='padding:14px;border:2px solid #1a73e8;border-radius:8px;margin:12px 0'><b>{esc(message)}</b></div>" if message else ""
     body = (f"<h1>Поставщики в интернете</h1>{notice}<section><p>Находит сайты профильных поставщиков по названию позиции. "
@@ -232,8 +254,10 @@ def render_page(request, job_id, message, show_all):
             status = (f"{len(state['sites'])} сайтов · запросов {state['requests']} из {cfg['max_requests']} · {esc(sd.STOP_LABELS.get(state['reason'], state['reason']))}"
                       if state else "Не искали")
             errors = f"<br><span class='error'>{esc(state['errors'][-1])}</span>" if state and state["errors"] else ""
-            can_continue = not state or state["reason"] in ("paused", "economy", "credits", "error")
-            label = "Найти" if not state else "Искать ещё"
+            can_continue = not state or state["reason"] in ("paused", "economy", "credits", "error", "waiting")
+            label = "Найти" if not state else "Забрать результат" if state["reason"] == "waiting" else "Искать ещё"
+            if state and state["reason"] == "waiting" and waiting_note(state):
+                status += f" ({esc(waiting_note(state))})"
             button = (form_start(request, "/dashboard/web-suppliers/search",
                                  f"<input type='hidden' name='job_id' value='{job_id}'><input type='hidden' name='position' value='{number}'>")
                       + f"<button>{label}</button></form>") if can_continue else ""
@@ -323,6 +347,9 @@ def install_supplier_discovery(app):
             with _running_lock:
                 _running.discard(key)
         message = f"Найдено сайтов: {len(state['sites'])}. {sd.STOP_LABELS.get(state['reason'], state['reason'])}."
+        if state["reason"] == "waiting":
+            message = ("Запрос отправлен в Яндекс. Результат обычно готов через 5 минут и больше: вернитесь на эту страницу и нажмите «Забрать результат». "
+                       "Повторные нажатия новых запросов не создают." + (f" Сейчас: {waiting_note(state)}." if waiting_note(state) else ""))
         if state["errors"] and state["reason"] == "error":
             message = state["errors"][-1]
         return back(job_id, message)
