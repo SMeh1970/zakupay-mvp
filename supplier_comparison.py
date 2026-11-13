@@ -184,6 +184,60 @@ def roll_length(name, supplied, requested):
     length = float(match[2].replace(',', '.'))
     return length if length > 0 else None
 
+_AMOUNT_UNITS = {"кг": ("масса", 1.0), "г": ("масса", .001), "т": ("масса", 1000.0),
+                 "л": ("объём", 1.0), "мл": ("объём", .001),
+                 "м": ("длина", 1.0), "мм": ("длина", .001), "см": ("длина", .01)}
+_AMOUNT_ALIASES = {"килограмм": "кг", "гр": "г", "грамм": "г", "тонн": "т", "тонна": "т", "литр": "л"}
+_PIECE_STEMS = ("шт", "уп", "мешок", "ведр", "банк", "туб", "бутыл", "канистр", "бочк", "пакет", "флакон", "баллон", "тюбик", "короб")
+# «20 кг», «(300мл)», «5,5 л»: not «кг/м²» (consumption), not «10 м²», not the «10» of «1,05x10 м».
+_AMOUNT = re.compile(r"(^|[^a-zа-я0-9.,])(\d+(?:[.,]\d+)?)\s*(килограмм[а-я]*|кг|грамм[а-я]*|гр|г|тонн[а-я]*|т|литр[а-я]*|мл|л|мм|см|м)(?![a-zа-я0-9/²³])")
+
+
+def _amounts(name):
+    text = " ".join(str(name or "").lower().replace("ё", "е").split())
+    found = []
+    for match in _AMOUNT.finditer(text):
+        raw, word = match[2], match[3]
+        for alias, base in _AMOUNT_ALIASES.items():
+            if word.startswith(alias):
+                word = base
+                break
+        value = number(raw)
+        if value is None or value <= 0 or (word == "г" and 1900 <= value <= 2100):
+            continue
+        found.append((word, value, raw.replace(".", ",") + " " + word))
+    return found
+
+
+def name_amount(name, supplied, requested):
+    """Mass or volume of one supplier unit written in the name: «(20кг)», «5 л» -> (factor, note, short).
+
+    Only for a request in kg/g/t/l/ml and a supplier unit that is a piece, pack, bag, pail, tube…
+    A different dimension («50 м», «300 мл» for kg) gives no factor, with the reason shown to the operator.
+    Must match podbor.html nameAmount().
+    """
+    if requested not in _AMOUNT_UNITS or _AMOUNT_UNITS[requested][0] not in {"масса", "объём"}:
+        return None
+    if not any(str(supplied or "").startswith(stem) for stem in _PIECE_STEMS):
+        return None
+    if "гвозд" in norm(name):
+        # Nails have their own stricter rule (nail_pack_mass): the supplier's own «Фасовка» may contradict the name.
+        return None
+    dimension, scale = _AMOUNT_UNITS[requested]
+    found = _amounts(name)
+    same = {}
+    for word, value, short in found:
+        if _AMOUNT_UNITS[word][0] == dimension:
+            same.setdefault(round(value * _AMOUNT_UNITS[word][1], 9), short)
+    if len(same) == 1:
+        base, short = next(iter(same.items()))
+        return round(base / scale, 6), f"{short} из наименования — проверьте", short
+    if len(same) > 1:
+        return None, f"Нет пересчёта: в названии несколько значений ({' и '.join(same.values())}) — задайте вручную", ""
+    if found:
+        return None, f"Нет пересчёта: в названии {found[0][2]}, заявка в «{requested}»", ""
+    return None
+
 
 def conversion(item, candidate):
     from automation_pipeline import _candidate_pack_size
@@ -212,6 +266,9 @@ def conversion(item, candidate):
     roll = roll_length(candidate.get('name'), supplied, requested)
     if roll:
         return roll, 'Длина рулона из наименования — проверьте'
+    amount = name_amount(candidate.get("name"), supplied, requested)
+    if amount:
+        return amount[0], amount[1]
     if requested == "шт" and str(supplied or "").startswith("упак"):
         # «Упаковка», «Упаковка 1 шт» (one pack): pieces from the supplier's data or the name.
         pack = supplier_pack_pieces(candidate) or _candidate_pack_size(candidate, source.get("unit") or "")
