@@ -365,6 +365,9 @@ function unit(u){
   const s=String(u||'').toLowerCase().replace(/[.\s]/g,'');
   if(['м','мп','погм','метр','метров'].includes(s))return 'м';
   if(['шт','штука','штуки','штук'].includes(s))return 'шт';
+  if(s==='килограмм')return 'кг';
+  if(s==='литр')return 'л';
+  if(s==='тонна'||s==='тонн')return 'т';
   if(s.startsWith('упак'))return 'упак';
   if(s.startsWith('рулон'))return 'рулон';
   return s;
@@ -383,6 +386,32 @@ function rollLength(name){
   const m=String(name).match(/(\d+(?:[.,]\d+)?)\s*[xх×*]\s*(\d+(?:[.,]\d+)?)\s*м(?![a-zа-яё0-9²])/i);
   return m?parseFloat(m[2].replace(',','.')):0;
 }
+// Mass or volume of one supplier unit from its name: «(20кг)», «5 л». Must match supplier_comparison.name_amount().
+const AMOUNT_UNITS={'кг':['масса',1],'г':['масса',.001],'т':['масса',1000],'л':['объём',1],'мл':['объём',.001],'м':['длина',1],'мм':['длина',.001],'см':['длина',.01]};
+const AMOUNT_ALIASES=[['килограмм','кг'],['гр','г'],['грамм','г'],['тонн','т'],['литр','л']];
+const PIECE_STEMS=['шт','уп','мешок','ведр','банк','туб','бутыл','канистр','бочк','пакет','флакон','баллон','тюбик','короб'];
+function nameAmount(name,sup,req){
+  if(!AMOUNT_UNITS[req]||!['масса','объём'].includes(AMOUNT_UNITS[req][0]))return null;
+  if(!PIECE_STEMS.some(x=>String(sup||'').startsWith(x)))return null;
+  if(/гвозд/i.test(String(name||'').replace(/ё/g,'е')))return null;
+  const [dim,scale]=AMOUNT_UNITS[req];
+  const text=String(name||'').toLowerCase().replace(/ё/g,'е').split(/\s+/).filter(Boolean).join(' ');
+  const re=/(^|[^a-zа-я0-9.,])(\d+(?:[.,]\d+)?)\s*(килограмм[а-я]*|кг|грамм[а-я]*|гр|г|тонн[а-я]*|т|литр[а-я]*|мл|л|мм|см|м)(?![a-zа-я0-9/²³])/g;
+  const found=[];
+  for(const m of text.matchAll(re)){
+    let word=m[3];
+    for(const [alias,base] of AMOUNT_ALIASES)if(word.startsWith(alias)){word=base;break}
+    const value=parseFloat(m[2].replace(',','.'));
+    if(!(value>0)||(word==='г'&&value>=1900&&value<=2100))continue;
+    found.push([word,value,m[2].replace('.',',')+' '+word]);
+  }
+  const same=new Map();
+  for(const [word,value,short] of found)if(AMOUNT_UNITS[word][0]===dim){const b=Math.round(value*AMOUNT_UNITS[word][1]*1e9)/1e9;if(!same.has(b))same.set(b,short)}
+  if(same.size===1){const [b,short]=[...same][0];return [Math.round(b/scale*1e6)/1e6,`${short} из наименования — проверьте`,short]}
+  if(same.size>1)return [null,`Нет пересчёта: в названии несколько значений (${[...same.values()].join(' и ')}) — задайте вручную`,''];
+  if(found.length)return [null,`Нет пересчёта: в названии ${found[0][2]}, заявка в «${req}»`,''];
+  return null;
+}
 const convKey=(pos,p)=>pos.products[p.i]?.[3]?.key||p.name;
 function conversion(pos,p){
   const req=unit(pos.unit), sup=unit(p.unit);
@@ -392,6 +421,7 @@ function conversion(pos,p){
   if(req==='шт'&&(sup==='шт'||sup==='упак')){const k=unitPieces(p.unit)||packPieces(p.name);if(k)return [k,`${k} шт`]}
   if(req===sup)return [1,''];
   if(req==='м'&&(sup==='шт'||sup==='рулон')){const l=rollLength(p.name);if(l)return [l,`${String(l).replace('.',',')} м`]}
+  {const a=nameAmount(p.name,sup,req);if(a)return a}
   // A pair is two pieces: a piece is half of a requested pair (and a pair is two requested pieces).
   if(req==='пара'&&sup==='шт')return [0.5,'2 шт = 1 пара'];
   if(req==='шт'&&sup==='пара')return [2,'пара = 2 шт'];
@@ -697,7 +727,7 @@ function model(pos){
     const bad=rej.filter(w=>p.words.has(w));
     p.reasons=bad.length?bad.map(w=>'Исключено: '+named(w)):[...groups.values()].filter(g=>![...g.main,...g.alt].some(w=>p.words.has(w))).map(g=>'Нет: '+[...g.main,...g.alt].map(named).join(' или '));
     p.analog=grade(current(),p)===2;
-    const [k,note]=conversion(pos,p); p.factor=k; p.note=note;
+    const [k,note,short]=conversion(pos,p); p.factor=k; p.note=note; p.short=short||'';
     p.unitPrice=k?p.price/k:null;
     p.buy=k?Math.ceil(pos.qty/k):null; p.total=k?p.buy*p.price:null;
   }
@@ -1026,8 +1056,9 @@ function renderPosition(pos){
   const unitCell=(pos,p)=>{
     const own=state.conv?.[pos.id]?.[convKey(pos,p)];
     const packed=!own&&p.factor&&p.factor>1&&['шт','упак'].includes(unit(p.unit))&&unit(pos.unit)==='шт';
-    const label=packed?`уп (${num(p.factor)} шт)`:p.unit+(p.factor&&p.factor!==1&&!own?` (${p.note})`:'');
-    const box=el('div',{class:'unitcell'},el('span',{title:p.factor?'':p.note},label));
+    const label=packed?`уп (${num(p.factor)} шт)`:p.unit+(p.factor&&p.factor!==1&&!own?` (${p.short||p.note})`:'');
+    const box=el('div',{class:'unitcell'},el('span',{title:p.short||!p.factor?p.note:''},label));
+    if(!p.factor&&!own&&/^Нет пересчёта: в названии/.test(p.note))box.append(el('span',{class:'note'},p.note));
     if(editingConv===pos.id+'|'+p.i){
       const input=el('input',{type:'number',min:'0',step:'any',value:p.factor||'',class:'convin','aria-label':`Сколько ${pos.unit} в 1 ${p.unit}`});
       const apply=()=>{const v=parseFloat(String(input.value).replace(',','.'));editingConv=null;
