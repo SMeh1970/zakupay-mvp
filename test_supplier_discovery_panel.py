@@ -209,3 +209,12 @@ def test_a_second_click_during_a_running_search_does_not_spend_the_budget_twice(
             call.assert_not_called()
     finally:
         panel_module._running.discard(key)
+
+
+def test_default_budget_is_small(panel):
+    """Без переменных окружения: до 6 запросов на позицию и 2 страницы выдачи за одно нажатие."""
+    with patch.dict(os.environ):
+        os.environ.pop("WEB_SEARCH_MAX_REQUESTS", None)
+        os.environ.pop("WEB_SEARCH_PAGES_PER_CLICK", None)
+        cfg = panel_module.settings()
+    assert cfg["max_requests"] == 6 and cfg["pages_per_click"] == 2

@@ -57,9 +57,9 @@ def settings():
             return min(high, max(low, int(os.getenv(name, default))))
         except ValueError:
             return default
-    return {"max_requests": number("WEB_SEARCH_MAX_REQUESTS", 20, 1, 200),
+    return {"max_requests": number("WEB_SEARCH_MAX_REQUESTS", 6, 1, 200),
             "max_sites": number("WEB_SEARCH_MAX_SITES", 100, 10, 200),
-            "pages_per_click": number("WEB_SEARCH_PAGES_PER_CLICK", 3, 1, 10)}
+            "pages_per_click": number("WEB_SEARCH_PAGES_PER_CLICK", 2, 1, 10)}
 
 
 # ------------------------------------------------------------------ защита форм
