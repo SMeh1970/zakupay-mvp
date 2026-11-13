@@ -1,210 +1,1402 @@
 <title>Стенд подбора В3</title>
-<meta name="claude:viewport-fit-sides" content="cover">
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
 <style>
-/* Layout: one working column — request card, selection bar, four levels (expandable), each level a list of groups; a group opens into a table of offers. Same palette and type as the stand В2. */
+/* Layout: working bench — position tabs on top, words (decisions) left, resulting products right; stacks on phones. */
 :root{
   --bg:#f3f4f1; --panel:#ffffff; --fg:#1d221f; --muted:#5f6a63; --line:#d7dcd6;
-  --ok:#2f6b3f; --ok-bg:#e2f1e5; --no:#9a3a2a; --no-bg:#f6e3dd; --accent:#3d5a80; --accent-bg:#e4ebf4; --warn:#7a5a12; --warn-bg:#fbf1d6;
-  --sans:"IBM Plex Sans",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --ok:#2f6b3f; --ok-bg:#e2f1e5; --no:#9a3a2a; --no-bg:#f6e3dd; --accent:#3d5a80; --accent-bg:#e4ebf4; --warn-bg:#fbf1d6; --warn:#7a5a12;
+  --sans:"IBM Plex Sans",system-ui,-apple-system,"Segoe UI",sans-serif; --mono:"IBM Plex Sans",system-ui,-apple-system,"Segoe UI",sans-serif; /* plain zeros: the monospace face drew 0 with a dot */
 }
 @media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
   --bg:#151916; --panel:#1d221f; --fg:#e7ebe6; --muted:#9aa59d; --line:#323a35;
-  --ok:#8fd19f; --ok-bg:#1f3a27; --no:#f0a493; --no-bg:#43231c; --accent:#9db8dc; --accent-bg:#22303f; --warn:#e8c76a; --warn-bg:#3b3118; color-scheme:dark}}
+  --ok:#8fd19f; --ok-bg:#1f3a27; --no:#f0a493; --no-bg:#43231c; --accent:#9db8dc; --accent-bg:#22303f; --warn-bg:#3b3118; --warn:#e8c76a; color-scheme:dark}}
 :root[data-theme="dark"]{
   --bg:#151916; --panel:#1d221f; --fg:#e7ebe6; --muted:#9aa59d; --line:#323a35;
-  --ok:#8fd19f; --ok-bg:#1f3a27; --no:#f0a493; --no-bg:#43231c; --accent:#9db8dc; --accent-bg:#22303f; --warn:#e8c76a; --warn-bg:#3b3118; color-scheme:dark}
-*{box-sizing:border-box}
+  --ok:#8fd19f; --ok-bg:#1f3a27; --no:#f0a493; --no-bg:#43231c; --accent:#9db8dc; --accent-bg:#22303f; --warn-bg:#3b3118; --warn:#e8c76a; color-scheme:dark}
 body{background:var(--bg);color:var(--fg);font:15px/1.5 var(--sans);font-variant-numeric:tabular-nums}
-.wrap{max-width:1180px;margin:0 auto;padding-block:16px 48px;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));display:grid;gap:12px}
+.wrap{max-width:1280px;margin:0 auto;padding-block:16px 40px;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));display:grid;gap:14px}
 h1{font-size:20px;font-weight:600;margin:0;text-wrap:balance}
-.sub{color:var(--muted);margin:2px 0 0;font-size:13px;max-width:78ch}
-.panel{background:var(--panel);border:1px solid var(--line);border-radius:8px;min-width:0}
-.req{padding:12px 14px;display:grid;gap:8px}
-.req .line{display:flex;flex-wrap:wrap;gap:6px 10px;align-items:baseline}
+.sub{color:var(--muted);margin:2px 0 0;font-size:13px}
+.tabs{display:flex;flex-wrap:wrap;gap:6px}
+.tab{border:1px solid var(--line);background:var(--panel);color:var(--fg);border-radius:6px;padding:6px 10px;cursor:pointer;font:inherit;font-size:14px}
+.tab[aria-selected="true"]{border-color:var(--accent);background:var(--accent-bg)}
+.tab.add{color:var(--accent)}
+.req{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:12px 14px;display:flex;flex-wrap:wrap;gap:6px 18px;align-items:baseline}
 .req b{font-size:17px}
-.muted{color:var(--muted);font-size:13px}
-.chip{display:inline-flex;align-items:center;border-radius:5px;padding:1px 8px;font-size:13px;background:var(--bg);border:1px solid var(--line);white-space:nowrap}
-.chip.ok{background:var(--ok-bg);color:var(--ok);border-color:transparent}
-.chip.no{background:var(--no-bg);color:var(--no);border-color:transparent}
-.chip.warn{background:var(--warn-bg);color:var(--warn);border-color:transparent}
-.chip.acc{background:var(--accent-bg);color:var(--accent);border-color:transparent}
-.bar{position:sticky;top:env(safe-area-inset-top,0px);z-index:5;padding:8px 14px;display:flex;flex-wrap:wrap;gap:6px 12px;align-items:center;border-color:var(--accent)}
-.bar .what{flex:1 1 280px;min-width:0;overflow-wrap:anywhere}
-.btn{border:1px solid var(--line);background:var(--panel);color:var(--fg);border-radius:6px;padding:5px 11px;font:inherit;font-size:13px;cursor:pointer}
+.req .meta{color:var(--muted);font-family:var(--mono);font-size:13px}
+.grid{display:grid;grid-template-columns:fit-content(250px) minmax(0,1fr);gap:14px;align-items:start}
+/* Half a screen still shows filters and table side by side; one column only on a phone. */
+@media (max-width:1100px){.grid{grid-template-columns:fit-content(200px) minmax(0,1fr);gap:10px}}
+@media (max-width:560px){.grid{grid-template-columns:minmax(0,1fr)}}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:12px 14px;min-width:0}
+.panel h2{font-size:15px;margin:0 0 6px;font-weight:600}
+.hint{color:var(--muted);font-size:13px;margin:0 0 8px}
+.chosen{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:0 0 10px;font-size:14px}
+.tag{display:inline-flex;align-items:center;gap:4px;border-radius:5px;padding:2px 4px 2px 8px;font-family:var(--mono);font-size:13px}
+.tag.acc{background:var(--ok-bg);color:var(--ok)} .tag.rej{background:var(--no-bg);color:var(--no)}
+.tag button{border:0;background:transparent;color:inherit;cursor:pointer;font-size:15px;padding:0 4px;line-height:1}
+.btn{border:1px solid var(--line);background:var(--panel);color:var(--fg);border-radius:6px;padding:4px 10px;font:inherit;font-size:13px;cursor:pointer}
 .btn:hover{border-color:var(--accent)}
-.btn:focus-visible,.gh:focus-visible,.lv>button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
-.btn.primary{background:var(--accent);border-color:var(--accent);color:var(--panel)}
-.lv{overflow:hidden}
-.lv>button{all:unset;box-sizing:border-box;display:grid;grid-template-columns:auto 1fr auto;gap:2px 10px;align-items:center;width:100%;padding:11px 14px;cursor:pointer}
-.lv>button:hover{background:var(--accent-bg)}
-.lv .ttl{font-weight:600;font-size:15px}
-.lv .note{grid-column:2/4;color:var(--muted);font-size:13px}
-.caret{color:var(--muted);width:14px;display:inline-block;transition:transform .15s}
-[aria-expanded="true"] .caret{transform:rotate(90deg)}
-.lv .body{border-top:1px solid var(--line)}
-.grp{border-bottom:1px solid var(--line)}
-.grp:last-child{border-bottom:0}
-.gh{display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px;padding:8px 14px;cursor:pointer}
-.gh:hover{background:var(--accent-bg)}
-.gh .t{flex:1 1 320px;min-width:0;display:flex;flex-wrap:wrap;gap:4px 6px;align-items:center}
-.gh .t .name{font-weight:500;margin-right:4px;overflow-wrap:anywhere}
-.gh .price{font-weight:600;white-space:nowrap}
-.gh .cnt{color:var(--muted);font-size:13px;white-space:nowrap;min-width:9ch;text-align:right}
-.grp.sel>.gh{background:var(--ok-bg)}
-.offers{padding:2px 14px 12px 38px;overflow-x:auto}
+.words{display:flex;flex-wrap:wrap;gap:5px}
+/* Filter list like a shop sidebar: one value per line, marks on the right. */
+.w{border-color:transparent;background:var(--bg)}
+/* Status fills, the same everywhere: filters, table values, close products, «Отбор». */
+.s-only{background:var(--ok-bg)!important;color:var(--ok)!important}
+.s-also{background:var(--warn-bg)!important;color:var(--warn)!important}
+.s-rejected{background:var(--no-bg)!important;color:var(--no)!important}
+/* A frame only on your own marks, in the colour of the mark. */
+/* Fill — the value matches the request (and is applied); frame — your own mark: ✓ green, + yellow, ✕ red. */
+/* The frame is drawn inside the value, so marking never changes its width (no jump to the next line). */
+.mk.mk-only{box-shadow:inset 0 0 0 1px var(--ok)!important} .mk.mk-also{box-shadow:inset 0 0 0 1px var(--warn)!important} .mk.mk-rejected{box-shadow:inset 0 0 0 1px var(--no)!important}
+.framed{border-width:2px!important;border-style:solid!important}
+.framed.s-only{border-color:var(--ok)!important} .framed.s-also{border-color:var(--warn)!important} .framed.s-rejected{border-color:var(--no)!important}
+.cmp{border:1px solid transparent;background:var(--bg)}
+.cmp.same{color:var(--fg)}
+.rubric .words{flex-direction:column;flex-wrap:nowrap;gap:3px}
+.rubric .words .w{display:flex;width:100%;box-sizing:border-box;overflow-wrap:anywhere;padding-left:6px}
+.rubric .words .w button{width:20px}
+.rubric .words .w .n{margin-right:auto}
+.more{border:0;background:transparent;color:var(--accent);cursor:pointer;font:inherit;font-size:13px;padding:2px 0;text-align:left}
+.w{display:inline-flex;align-items:center;gap:2px;border:1px solid var(--line);border-radius:6px;padding:2px 2px 2px 7px;font-family:var(--mono);font-size:13px;background:var(--panel)}
+.w .n{color:var(--muted);margin-left:3px}
+.w button{border:0;background:transparent;color:var(--muted);cursor:pointer;font-size:14px;width:24px;height:24px;border-radius:4px}
+.w button:hover{background:var(--accent-bg)}
+.w.req{border-color:var(--ok)}
+.w.fill{background:var(--ok-bg);color:var(--ok)}
+.w.user{border-width:2px;border-color:var(--ok);font-weight:600}
+.w.user.rej{border-color:var(--no);background:var(--no-bg);color:var(--no)}
+.w button.bk{color:var(--ok)} .w button.ba{color:var(--warn);font-weight:700} .w button.bx{color:var(--no)}
+.w button[aria-pressed="true"]{font-weight:700}
+.w button.bk[aria-pressed="true"]{background:var(--ok-bg)} .w button.ba[aria-pressed="true"]{background:var(--warn-bg)}
+.w.user.also{border-color:var(--warn);background:var(--warn-bg);color:var(--warn)}
+.w button.bx[aria-pressed="true"]{color:var(--no);background:var(--no-bg)}
+.w.auto-rej{opacity:.5;text-decoration:line-through} .w.dim{opacity:.55}
+.tag.also{background:var(--warn-bg);color:var(--warn)}
+.tag.framed.acc{box-shadow:none;border-width:1px!important;border-color:var(--ok)!important} .tag.framed.also{box-shadow:inset 0 0 0 2px var(--warn)} .tag.framed.rej{box-shadow:inset 0 0 0 2px var(--no)}
+.summary{font-size:14px;margin:0 0 8px}
+.totals{margin:0;font-size:15px}
+.summary-table{background:var(--panel);border:1px solid var(--line);border-radius:8px}
+.summary-table .sumrow{cursor:pointer}
+.summary-table .sumrow:hover td,.summary-table .sumrow.open td{background:var(--accent-bg)}
+.summary-table .workrow>td{padding:12px;background:var(--bg)}
+.caret{color:var(--muted)}
+.pill{display:inline-block;padding:1px 8px;border-radius:10px;font-size:12px;white-space:nowrap;border:1px solid currentColor}
+.pill.done{color:var(--ok)} .pill.todo{color:var(--warn)} .pill.miss{color:var(--no)} .pill.none{color:var(--muted)}
+.aipanel{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:10px 14px}
+.aipanel summary{cursor:pointer;font-weight:600}
+.aipick{margin-bottom:14px}
+.ask{display:grid;gap:6px;margin:8px 0}
+.ask-msg{white-space:pre-wrap;padding:6px 10px;border-radius:8px;font-size:14px;max-width:90ch}
+.ask-msg.q{background:var(--accent-bg);justify-self:end}
+.ask-msg.a{background:var(--bg);border:1px solid var(--line)}
+.ask-row{display:flex;gap:6px;align-items:flex-start;flex-wrap:wrap}
+.ask-row textarea{flex:1 1 300px;font:inherit;font-size:14px;padding:6px 8px;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--fg)}
+.posnav{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:0 0 10px}
+.analog{display:inline-block;margin-top:2px;font-size:12px;color:var(--warn);border:1px solid currentColor;border-radius:4px;padding:0 5px}
+.offers tr.sep td{background:var(--bg);font-weight:600;color:var(--warn);border-top:2px solid var(--muted)}
+.neardiff{font-size:12px;color:var(--warn);margin-top:2px}
+details.near summary{color:var(--warn);font-weight:600}
+.cmprow{display:flex;flex-wrap:wrap;gap:3px;margin-top:3px}
+.cmp{font-size:12px;border-radius:4px;padding:0 5px;border:1px solid transparent}
+.cmp.diff{color:var(--no);display:inline-flex;align-items:center;gap:4px}
+/* The difference itself is a light red label; the two crosses stand out from it. */
+.cmp.diff{background:var(--no-bg);border-color:transparent;padding:1px 2px 1px 6px}
+/* «✕ этот» — red, «✕ у всех» — black. */
+.xbtn{border:0;background:transparent;color:var(--no);font:inherit;font-size:15px;font-weight:700;line-height:1;padding:0 3px;cursor:pointer}
+.xbtn.all{color:var(--fg)}
+.xbtn:hover{filter:brightness(.92)}
+.anchormark{font-size:12px;font-weight:600;color:var(--accent)}
+.offers td .anchorbtn{display:block;margin-top:4px;font-size:12px}
+.btn.anchorbtn.on{border-color:var(--accent);color:var(--accent);font-weight:600}
+.btn.chosen{border-color:var(--ok);color:var(--ok);font-weight:600}
+.unitcell{display:grid;gap:2px}.convedit{border:0;background:transparent;color:#2b5fb4;cursor:pointer;font:inherit;font-size:12px;padding:0;text-align:left}
+.convrow{display:flex;gap:4px;align-items:center;font-size:12px;flex-wrap:wrap}.convin{width:64px;font:inherit;font-size:13px;padding:2px 4px;border:1px solid var(--line);border-radius:4px}
+.sorth{border:0;background:transparent;padding:0;font:inherit;color:inherit;cursor:pointer;text-align:left}.sorth:hover{color:var(--accent)}
+/* Product actions as icon buttons in one row; the hint names the action. */
+.acts-row{display:flex;gap:4px;flex-wrap:nowrap}
+.ibtn{width:32px;height:32px;display:inline-grid;place-items:center;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--muted);cursor:pointer;padding:0}
+.ibtn:hover{border-color:var(--accent);color:var(--accent)}
+.ibtn.i-cart.on{background:var(--ok-bg);border-color:var(--ok);color:var(--ok)}
+.ibtn.i-pin.on{background:var(--accent-bg);border-color:var(--accent);color:var(--accent)}
+.ibtn.i-cmp.on{background:#fbe1c6;border-color:var(--cmp);color:#8a4508}
+.btn:disabled{opacity:.4;cursor:default}
+.rubric{border-top:1px solid var(--line);padding-top:10px;margin-top:10px;display:grid;gap:6px}
+.assign{display:flex;flex-wrap:wrap;gap:6px;align-items:center;font-size:14px;padding:6px 8px;background:var(--accent-bg);border-radius:6px}
+.assign select,.assign input{font:inherit;font-size:14px;padding:3px 6px;border:1px solid var(--line);border-radius:5px;background:var(--panel);color:var(--fg)}
+.legend{display:grid;gap:6px;margin:6px 0 10px}
+.legend{grid-template-columns:max-content minmax(0,1fr);column-gap:10px}
+.legend-row{display:contents;font-size:13px;color:var(--muted)}
+.legend-row>span:last-child{font-size:13px;color:var(--muted);align-self:center}
+.legend-row .w{pointer-events:none;white-space:nowrap;justify-self:start}
+.panel-head{display:flex;align-items:flex-start;justify-content:space-between;gap:8px}
+.help{flex:0 0 auto}
+.help summary{list-style:none;cursor:pointer;width:24px;height:24px;border-radius:50%;border:1px solid var(--line);display:grid;place-items:center;font-weight:600;color:var(--muted);font-size:14px}
+.help summary::-webkit-details-marker{display:none}
+.help[open] summary{border-color:var(--accent);color:var(--accent)}
+.help-body{position:absolute;z-index:20;left:0;top:44px;width:min(480px,calc(100vw - 48px));background:var(--panel);border:1px solid var(--line);border-radius:8px;box-shadow:0 8px 24px rgb(0 0 0 / .18);padding:12px 14px}
+.help-close{position:absolute;top:6px;right:8px;border:0;background:transparent;color:var(--muted);font-size:18px;cursor:pointer}
+.panel{position:relative}
+.w.head{padding:0;background:transparent;border:0;box-shadow:none}
+.rubric-head{display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px}
+.summary b{font-family:var(--mono)}
+.tablewrap{overflow-x:auto}
 table{border-collapse:collapse;width:100%;font-size:14px}
-th,td{text-align:left;padding:6px 10px 6px 0;border-bottom:1px solid var(--line);vertical-align:top}
-th{font-weight:500;color:var(--muted);font-size:12.5px}
-td.num,th.num{text-align:right;white-space:nowrap;padding-right:14px}
-tr.best td{background:var(--ok-bg)}
-tr.picked td{outline:0;background:var(--ok-bg);font-weight:500}
-.star{color:var(--ok);font-weight:600;font-size:12.5px;white-space:nowrap}
-.legend{padding:10px 14px;display:flex;flex-wrap:wrap;gap:6px 16px;font-size:13px;color:var(--muted)}
-.mock{padding:10px 14px;background:var(--warn-bg);color:var(--warn);border-radius:8px;font-size:13px}
-@media (max-width:640px){.gh .cnt{text-align:left}.offers{padding-left:14px}}
-@media (prefers-reduced-motion:reduce){.caret{transition:none}}
+th,td{text-align:left;padding:7px 8px;border-bottom:1px solid var(--line);vertical-align:top}
+th{font-weight:700;color:var(--muted);font-size:11px;line-height:1.25}
+.offers tr.group th{text-align:center;color:var(--fg);border-bottom:1px solid var(--line)}
+/* Groups are framed by rules, not by fills. */
+.offers .g-start{border-left:2px solid var(--muted)} .offers .g-end{border-right:2px solid var(--muted)}
+.offers tr.group th{border-top:2px solid var(--muted);border-bottom:2px solid var(--muted)}
+.offers tbody tr:last-child td{border-bottom:2px solid var(--muted)}
+td.num{font-family:var(--mono);font-variant-numeric:tabular-nums;white-space:nowrap;text-align:right}
+/* Rows: green — has the ✓ values, yellow — shown thanks to + (analog). */
+.offers tr.main td{background:color-mix(in srgb,var(--ok-bg) 60%,transparent)}
+.offers tr.alt td{background:color-mix(in srgb,var(--warn-bg) 70%,transparent)}
+/* The name as filters: parts are plain text with a dotted underline until marked. */
+/* Every clickable part of the name is blue, like a link; your mark adds a thin coloured frame. */
+/* The same blue for values in the filter column and under the name: what is blue can be clicked. */
+.rubric .words .w,.rowvals .w.cyc{color:#2b5fb4}
+.pname .w.cyc.inl{display:inline;font:inherit;font-size:inherit;padding:0 2px;border:0;border-radius:3px;background:transparent;color:#2b5fb4;line-height:inherit;box-shadow:inset 0 0 0 1px #c9d0ca}
+.pname .w.cyc.inl:hover{background:var(--accent-bg)}
+.pname .pgroup{display:inline;white-space:nowrap} /* one designation stays on one line; no box around it */
+
+/* Comparing products side by side: what differs among the ticked products is outlined in orange
+   (an outline, so the status fill of the value stays as it is). */
+:root{--cmp:#d9730d}
+.w.cmp-diff{background:#fbe1c6!important;color:#8a4508!important}
+.cmp-miss{display:inline-block;font-size:12px;color:var(--cmp);border:1px dashed var(--cmp);border-radius:4px;padding:0 5px}
+.offers tr.compared td:nth-child(3){box-shadow:inset 3px 0 0 var(--cmp)}
+.cmpbox{display:flex;align-items:center;gap:4px;margin-top:4px;font-size:12px;color:var(--muted);cursor:pointer;white-space:nowrap}
+.cmpbar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;font-size:13px;color:var(--cmp);margin:0 0 8px}
+.bestmark{display:inline-block;margin-left:4px;font-size:12px;color:var(--ok);font-weight:600}
+.rowvals{display:flex;flex-wrap:wrap;gap:3px;margin-top:4px}
+.rowvals .w{font-size:12px;padding:0 0 0 5px}
+.rowvals .w.cyc{padding:1px 7px;cursor:pointer;font:inherit;font-size:12px;color:var(--fg)}
+.rowvals .w.cyc:hover{border-color:var(--accent)}
+.rowvals .w.m-only{background:var(--ok-bg);border-color:var(--ok);color:var(--ok)}
+.rowvals .w.m-also{background:var(--warn-bg);border-color:var(--warn);color:var(--warn)}
+.rowvals .w.m-rej{background:var(--no-bg);border-color:var(--no);color:var(--no)}
+.conv{display:block;font-size:12px;color:var(--warn);background:var(--warn-bg);border-radius:4px;padding:1px 6px;margin-top:3px;width:fit-content}
+.why{font-size:12px;color:var(--no)}
+details.out{margin-top:12px}
+details.out summary{cursor:pointer;color:var(--muted);font-size:14px}
+tr.out td{color:var(--muted)}
+form.add{display:grid;gap:8px}
+form.add label{display:grid;gap:3px;font-size:13px;color:var(--muted)}
+form.add input,form.add textarea{font:inherit;font-size:14px;padding:6px 8px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--fg)}
+form.add textarea{min-height:180px;font-family:var(--mono);font-size:13px}
+.row{display:flex;flex-wrap:wrap;gap:8px}
+.row>label{flex:1 1 140px}
+.note{font-size:12px;color:var(--muted)}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+@media (prefers-reduced-motion: reduce){*{transition:none!important}}
+/* APP: строка ссылок и сообщения о сохранении; поставщик и фото под названием товара */
+.supplier-line{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:4px;font-size:12px;color:var(--muted)}
+.photo-btn{font:inherit;font-size:12px;padding:1px 8px;border:1px solid var(--line);border-radius:4px;background:var(--panel);color:var(--fg);cursor:pointer}
+.supplier-line img.photo{display:block;max-width:240px;max-height:240px;margin:6px 0;border:1px solid var(--line);border-radius:6px;background:#fff}
+.appnav{display:flex;gap:14px;flex-wrap:wrap;font-size:14px;margin:0 0 6px}.appnav a{color:var(--accent)}
+.app-status{font-size:13px;color:var(--muted);min-height:1em;margin:4px 0 0}.app-status.error{color:var(--no)}
+.offers tr.grpmore td{background:var(--bg);padding:3px 8px;border-top:0}
+.offers tr.ingroup td:first-child{box-shadow:inset 4px 0 0 var(--accent)}
+.offers tr.ingroup td{background:var(--accent-bg)}
+.offers tr.lvl td{background:var(--bg);font-weight:600;color:var(--fg);border-top:2px solid var(--muted)}
+.offers tr.lvl td .note{font-weight:400;color:var(--muted)}
 </style>
 
 <div class="wrap">
   <header>
-    <h1>Подбор: группы по характеристикам</h1>
-    <p class="sub">Макет на реальных строках прайса Сатурна от 12.11.2026. Поиск и уровни посчитаны кодом приложения (ветка fix/search-types-sizes-groups), группировка и вид — только здесь.</p>
+    <p class="appnav" id="app-nav"></p>
+    <h1 id="app-title">Подбор товаров</h1>
+    <p class="sub">Сводка по позициям заявки, нажатие на строку открывает отбор. Отметки применяются сразу; «Выбрать» переносит товар в счёт.</p>
+    <p class="app-status" id="app-status" role="status"></p>
   </header>
-
-  <div class="mock" id="mock"></div>
-
-  <section class="panel req" aria-label="Заявка">
-    <div class="line"><span class="muted">Заявка</span><b>профиль 60*27</b><span class="muted">количество и единица: не заданы в макете, цены даны за штуку, как в прайсе</span></div>
-    <div class="line" id="recognised"></div>
-  </section>
-
-  <section class="panel bar" id="bar" aria-live="polite"></section>
-
-  <div id="levels" style="display:grid;gap:12px"></div>
-
-  <section class="panel legend" aria-label="Пояснения">
-    <span><b>Уровень 1</b> — тип совпал и подтверждены все значения заявки.</span>
-    <span><b>Уровень 2</b> — ничего не противоречит, но что-то в названии не указано.</span>
-    <span><b>Уровень 3</b> — одно отличие (здесь — размер).</span>
-    <span><b>Уровень 4</b> — совпал только тип; в этих данных таких нет.</span>
-    <span>Группы внутри уровня идут от дешёвой к дорогой; уровни между собой по цене не сортируются.</span>
-  </section>
+  <nav class="tabs" id="tabs" role="tablist" aria-label="Позиции"></nav>
+  <section id="main"></section>
 </div>
 
-<script>
-const DATA = {"query": "профиль 60*27", "groups": [{"level": 1, "title": "Профиль потолочный ПП", "size": ["60х27"], "length": "3 м", "thick": "0,4", "thick_unknown": false, "offers": [{"supplier": "Сатурн", "name": "Профиль потолочный ПП 60х27 3м (0,4мм)", "article": "тов-014157", "unit": "шт", "price": 141.8, "date": "2026-11-12", "brand": null, "conflicts": []}]}, {"level": 1, "title": "Профиль потолочный ПП", "size": ["60х27"], "length": "3 м", "thick": "0,45", "thick_unknown": false, "offers": [{"supplier": "Сатурн", "name": "Профиль потолочный ПП 60х27 3м (0,45мм)", "article": "тов-157829", "unit": "шт", "price": 149.28, "date": "2026-11-12", "brand": null, "conflicts": []}]}, {"level": 1, "title": "Профиль потолочный ПП", "size": ["60х27"], "length": "3 м", "thick": "0,5", "thick_unknown": false, "offers": [{"supplier": "Сатурн", "name": "Профиль потолочный ПП 60х27 3м (0,5мм)", "article": "тов-123944", "unit": "шт", "price": 162.15, "date": "2026-11-12", "brand": null, "conflicts": []}]}, {"level": 1, "title": "Профиль потолочный ПП", "size": ["60х27"], "length": "3 м", "thick": "0,6", "thick_unknown": false, "offers": [{"supplier": "Сатурн", "name": "Профиль потолочный ПП 60х27 3м (0,6мм)", "article": "тов-161077", "unit": "шт", "price": 187.34, "date": "2026-11-12", "brand": null, "conflicts": []}]}, {"level": 1, "title": "Профиль потолочный ПП", "size": ["60х27"], "length": "4 м", "thick": "0,5", "thick_unknown": false, "offers": [{"supplier": "Сатурн", "name": "Профиль потолочный ПП 60х27 4м (0,5мм)", "article": "тов-123945", "unit": "шт", "price": 216.2, "date": "2026-11-12", "brand": null, "conflicts": []}]}, {"level": 1, "title": "Профиль потолочный ПП", "size": ["60х27"], "length": "4 м", "thick": "0,6", "thick_unknown": false, "offers": [{"supplier": "Сатурн", "name": "Профиль потолочный ПП 60х27 4м (0,6мм)", "article": "тов-157910", "unit": "шт", "price": 249.78, "date": "2026-11-12", "brand": null, "conflicts": []}]}, {"level": 1, "title": "Профиль потолочный ПП", "size": ["60х27"], "length": "3 м", "thick": null, "thick_unknown": true, "offers": [{"supplier": "Сатурн", "name": "КНАУФ Профиль потолочный ПП 60х27 (3м)", "article": "тов-007559", "unit": "шт", "price": 317.2, "date": "2026-11-12", "brand": "КНАУФ", "conflicts": []}]}, {"level": 1, "title": "Профиль потолочный ПП", "size": ["60х27"], "length": "4 м", "thick": null, "thick_unknown": true, "offers": [{"supplier": "Сатурн", "name": "КНАУФ Профиль потолочный ПП 60х27 (4м)", "article": "тов-033940", "unit": "шт", "price": 458.86, "date": "2026-11-12", "brand": "КНАУФ", "conflicts": []}]}, {"level": 2, "title": "Профиль для подвесного потолка Т-профиль 24 белый Стандарт", "size": [], "length": "0,6 м", "thick": null, "thick_unknown": false, "offers": [{"supplier": "Сатурн", "name": "Профиль для подвесного потолка (Т-профиль 24) белый (0,6м) Стандарт", "article": "тов-166079", "unit": "шт", "price": 23.47, "date": "2026-11-12", "brand": null, "conflicts": []}]}, {"level": 2, "title": "Профиль маячковый ПВХ 6мм", "size": [], "length": "3 м", "thick": null, "thick_unknown": false, "offers": [{"supplier": "Сатурн", "name": "Профиль маячковый ПВХ 6мм 3м", "article": "тов-170720", "unit": "шт", "price": 26.53, "date": "2026-11-12", "brand": null, "conflicts": []}]}, {"level": 2, "title": "Профиль маячковый 6мм", "size": [], "length": "3 м", "thick": null, "thick_unknown": true, "offers": [{"supplier": "Сатурн", "name": "Профиль маячковый 6мм 3м", "article": "тов-079842", "unit": "шт", "price": 30.21, "date": "2026-11-12", "brand": null, "conflicts": []}]}, {"level": 2, "title": "Профиль маячковый ПВХ 10мм", "size": [], "length": "3 м", "thick": null, "thick_unknown": false, "offers": [{"supplier": "Сатурн", "name": "Профиль маячковый ПВХ 10мм 3м", "article": "тов-170719", "unit": "шт", "price": 31.01, "date": "2026-11-12", "brand": null, "conflicts": []}]}, {"level": 2, "title": "Профиль маячковый 6мм", "size": [], "length": "3 м", "thick": "0,3", "thick_unknown": false, "offers": [{"supplier": "Сатурн", "name": "Профиль маячковый 6мм 3м (0,3мм)", "article": "тов-014140", "unit": "шт", "price": 31.55, "date": "2026-11-12", "brand": null, "conflicts": []}]}, {"level": 2, "title": "Профиль маячковый 10мм", "size": [], "length": "3 м", "thick": null, "thick_unknown": true, "offers": [{"supplier": "Сатурн", "name": "Профиль маячковый 10мм 3м", "article": "тов-079841", "unit": "шт", "price": 35.77, "date": "2026-11-12", "brand": null, "conflicts": []}]}, {"level": 2, "title": "Профиль для подвесного потолка Т-профиль 24 белый GL", "size": [], "length": "0,6 м", "thick": null, "thick_unknown": false, "offers": [{"supplier": "Сатурн", "name": "Профиль для подвесного потолка (Т-профиль 24) белый (0,6м) GL", "article": "тов-184789", "unit": "шт", "price": 36.16, "date": "2026-11-12", "brand": null, "conflicts": []}]}, {"level": 2, "title": "Профиль для подвесного потолка Т-профиль 15 черный GL", "size": [], "length": "0,6 м", "thick": null, "thick_unknown": false, "offers": [{"supplier": "Сатурн", "name": "Профиль для подвесного потолка (Т-профиль 15) черный (0,6м) GL", "article": "тов-185387", "unit": "шт", "price": 36.41, "date": "2026-11-12", "brand": null, "conflicts": []}]}, {"level": 2, "title": "Профиль для подвесного потолка Т-профиль 15 белый GL", "size": [], "length": "0,6 м", "thick": null, "thick_unknown": false, "offers": [{"supplier": "Сатурн", "name": "Профиль для подвесного потолка (Т-профиль 15) белый (0,6м) GL", "article": "тов-203923", "unit": "шт", "price": 36.6, "date": "2026-11-12", "brand": null, "conflicts": []}]}, {"level": 2, "title": "Профиль маячковый 6мм", "size": [], "length": "3 м", "thick": "0,4", "thick_unknown": false, "offers": [{"supplier": "Сатурн", "name": "Профиль маячковый 6мм 3м (0,4мм)", "article": "тов-163105", "unit": "шт", "price": 37.86, "date": "2026-11-12", "brand": null, "conflicts": []}]}, {"level": 2, "title": "Профиль маячковый 10мм", "size": [], "length": "3 м", "thick": "0,3", "thick_unknown": false, "offers": [{"supplier": "Сатурн", "name": "Профиль маячковый 10мм 3м (0,3мм)", "article": "тов-014138", "unit": "шт", "price": 41.55, "date": "2026-11-12", "brand": null, "conflicts": []}]}, {"level": 2, "title": "Профиль для подвесного потолка Т-профиль 24 белый Стандарт", "size": [], "length": "1,2 м", "thick": null, "thick_unknown": false, "offers": [{"supplier": "Сатурн", "name": "Профиль для подвесного потолка (Т-профиль 24) белый (1,2м) Стандарт", "article": "тов-098078", "unit": "шт", "price": 46.94, "date": "2026-11-12", "brand": null, "conflicts": []}]}, {"level": 2, "title": "Профиль маячковый 10мм", "size": [], "length": "3 м", "thick": "0,4", "thick_unknown": false, "offers": [{"supplier": "Сатурн", "name": "Профиль маячковый 10мм 3м (0,4мм)", "article": "тов-163104", "unit": "шт", "price": 47.06, "date": "2026-11-12", "brand": null, "conflicts": []}]}, {"level": 2, "title": "Профиль для подвесного потолка Т24", "size": [], "length": "0,6 м", "thick": null, "thick_unknown": false, "offers": [{"supplier": "Сатурн", "name": "КНАУФ Профиль для подвесного потолка Т24 (0,6м) 834395", "article": "тов-225902", "unit": "шт", "price": 49.6, "date": "2026-11-12", "brand": "КНАУФ", "conflicts": []}]}, {"level": 2, "title": "Профиль для подвесного потолка Т-профиль 24 белый GL", "size": [], "length": "1,2 м", "thick": null, "thick_unknown": false, "offers": [{"supplier": "Сатурн", "name": "Профиль для подвесного потолка (Т-профиль 24) белый (1,2м) GL", "article": "тов-184790", "unit": "шт", "price": 71.68, "date": "2026-11-12", "brand": null, "conflicts": []}]}, {"level": 2, "title": "Профиль для подвесного потолка Т-профиль 15 белый GL", "size": [], "length": "1,2 м", "thick": null, "thick_unknown": false, "offers": [{"supplier": "Сатурн", "name": "Профиль для подвесного потолка (Т-профиль 15) белый (1,2м) GL", "article": "тов-203924", "unit": "шт", "price": 72.59, "date": "2026-11-12", "brand": null, "conflicts": []}]}, {"level": 2, "title": "Профиль для подвесного потолка Т-профиль 15 черный GL", "size": [], "length": "1,2 м", "thick": null, "thick_unknown": false, "offers": [{"supplier": "Сатурн", "name": "Профиль для подвесного потолка (Т-профиль 15) черный (1,2м) GL", "article": "тов-185388", "unit": "шт", "price": 72.82, "date": "2026-11-12", "brand": null, "conflicts": []}]}, {"level": 2, "title": "Профиль ПВХ L-образный окантовочный для ГКЛ 12 5мм", "size": [], "length": "3 м", "thick": null, "thick_unknown": false, "offers": [{"supplier": "Сатурн", "name": "Профиль ПВХ L-образный окантовочный для ГКЛ, 12,5мм (3м)", "article": "тов-158219", "unit": "шт", "price": 83.51, "date": "2026-11-12", "brand": null, "conflicts": []}]}, {"level": 2, "title": "Профиль для подвесного потолка Т24", "size": [], "length": "1,2 м", "thick": null, "thick_unknown": false, "offers": [{"supplier": "Сатурн", "name": "КНАУФ Профиль для подвесного потолка Т24 (1,2м) 834394", "article": "тов-225901", "unit": "шт", "price": 99.2, "date": "2026-11-12", "brand": "КНАУФ", "conflicts": []}]}, {"level": 2, "title": "Профиль для подвесного потолка Т-профиль 24 белый Стандарт", "size": [], "length": "3,6 м", "thick": null, "thick_unknown": false, "offers": [{"supplier": "Сатурн", "name": "Профиль для подвесного потолка (Т-профиль 24) белый (3,6м) Стандарт", "article": "тов-166080", "unit": "шт", "price": 139.56, "date": "2026-11-12", "brand": null, "conflicts": []}]}, {"level": 2, "title": "Профиль маячковый 6мм", "size": [], "length": "3 м", "thick": "0,6", "thick_unknown": false, "offers": [{"supplier": "Сатурн", "name": "КНАУФ Профиль маячковый 6мм 3м (0,6мм)", "article": "тов-192024", "unit": "шт", "price": 167.75, "date": "2026-11-12", "brand": "КНАУФ", "conflicts": []}]}, {"level": 2, "title": "Профиль маячковый 10мм", "size": [], "length": "3 м", "thick": "0,6", "thick_unknown": false, "offers": [{"supplier": "Сатурн", "name": "КНАУФ Профиль маячковый 10мм 3м (0,6мм)", "article": "тов-192023", "unit": "шт", "price": 180.8, "date": "2026-11-12", "brand": "КНАУФ", "conflicts": []}]}, {"level": 2, "title": "Профиль для подвесного потолка Т-профиль 24 белый GL", "size": [], "length": "3,6 м", "thick": null, "thick_unknown": false, "offers": [{"supplier": "Сатурн", "name": "Профиль для подвесного потолка (Т-профиль 24) белый (3,6м) GL", "article": "тов-184788", "unit": "шт", "price": 213.77, "date": "2026-11-12", "brand": null, "conflicts": []}]}, {"level": 2, "title": "Профиль для подвесного потолка Т-профиль 15 белый GL", "size": [], "length": "3,6 м", "thick": null, "thick_unknown": false, "offers": [{"supplier": "Сатурн", "name": "Профиль для подвесного потолка (Т-профиль 15) белый (3,6м) GL", "article": "тов-203925", "unit": "шт", "price": 217.77, "date": "2026-11-12", "brand": null, "conflicts": []}]}, {"level": 2, "title": "Профиль для подвесного потолка Т-профиль 15 черный GL", "size": [], "length": "3,6 м", "thick": null, "thick_unknown": false, "offers": [{"supplier": "Сатурн", "name": "Профиль для подвесного потолка (Т-профиль 15) черный (3,6м) GL", "article": "тов-185389", "unit": "шт", "price": 218.45, "date": "2026-11-12", "brand": null, "conflicts": []}]}, {"level": 2, "title": "Профиль для подвесного потолка Т24", "size": [], "length": "3,7 м", "thick": null, "thick_unknown": false, "offers": [{"supplier": "Сатурн", "name": "КНАУФ Профиль для подвесного потолка Т24 (3,7м) 834393", "article": "тов-225900", "unit": "шт", "price": 305.86, "date": "2026-11-12", "brand": "КНАУФ", "conflicts": []}]}, {"level": 2, "title": "Профиль соединительный неразъемный для поликарбоната 6-8ммх6000мм б/цв.", "size": [], "length": null, "thick": null, "thick_unknown": false, "offers": [{"supplier": "Сатурн", "name": "Профиль соединительный неразъемный для поликарбоната 6-8ммх6000мм б/цв.", "article": "тов-183820", "unit": "шт", "price": 603.28, "date": "2026-11-12", "brand": null, "conflicts": []}]}, {"level": 2, "title": "Профиль для плитки и керамогранита анодир. алюм. 9мм золото", "size": [], "length": "2,7 м", "thick": null, "thick_unknown": false, "offers": [{"supplier": "Сатурн", "name": "Профиль для плитки и керамогранита анодир. алюм. 9мм, 2,7м золото (ПК 01-2700-02л)", "article": "тов-166764", "unit": "шт", "price": 613.3, "date": "2026-11-12", "brand": null, "conflicts": []}]}, {"level": 2, "title": "Профиль для плитки и керамогранита анодир. алюм. 9мм серебро", "size": [], "length": "2,7 м", "thick": null, "thick_unknown": false, "offers": [{"supplier": "Сатурн", "name": "Профиль для плитки и керамогранита анодир. алюм. 9мм, 2,7м серебро (ПК 01-2700-01л)", "article": "тов-166763", "unit": "шт", "price": 613.3, "date": "2026-11-12", "brand": null, "conflicts": []}]}, {"level": 2, "title": "Профиль для установки зеркал анодир. алюм. 5 5мм серебро", "size": [], "length": "2,7 м", "thick": null, "thick_unknown": false, "offers": [{"supplier": "Сатурн", "name": "Профиль для установки зеркал анодир. алюм. 5,5мм 2,7м серебро (ПК 05-2-2700-01л)", "article": "тов-163331", "unit": "шт", "price": 717.97, "date": "2026-11-12", "brand": null, "conflicts": []}]}, {"level": 2, "title": "Профиль для установки зеркал анодир. алюм. 5 5мм бронза", "size": [], "length": "2,7 м", "thick": null, "thick_unknown": false, "offers": [{"supplier": "Сатурн", "name": "Профиль для установки зеркал анодир. алюм. 5,5мм 2,7м бронза (ПК 05-2-2700-04л)", "article": "тов-163332", "unit": "шт", "price": 724.69, "date": "2026-11-12", "brand": null, "conflicts": []}]}, {"level": 2, "title": "Профиль соединит. для плитки и керамогранита анодир. алюм. 10мм серебро", "size": [], "length": "2,7 м", "thick": null, "thick_unknown": false, "offers": [{"supplier": "Сатурн", "name": "Профиль соединит. для плитки и керамогранита анодир. алюм. 10мм, 2,7м серебро (ПК 11-10-2700-01л)", "article": "тов-166197", "unit": "шт", "price": 897.15, "date": "2026-11-12", "brand": null, "conflicts": []}]}, {"level": 2, "title": "Профиль стыковочный гнущийся анодир. алюм. 10мм золото", "size": [], "length": "2,7 м", "thick": null, "thick_unknown": false, "offers": [{"supplier": "Сатурн", "name": "Профиль стыковочный гнущийся анодир. алюм. 10мм 2,7м золото (ЛК 15-2700-02л)", "article": "тов-183395", "unit": "шт", "price": 985.04, "date": "2026-11-12", "brand": null, "conflicts": []}]}, {"level": 2, "title": "Профиль стыковочный гнущийся анодир. алюм. 10мм серебро", "size": [], "length": "2,7 м", "thick": null, "thick_unknown": false, "offers": [{"supplier": "Сатурн", "name": "Профиль стыковочный гнущийся анодир. алюм. 10мм 2,7м серебро (ЛК 15-2700-01л)", "article": "тов-183396", "unit": "шт", "price": 985.04, "date": "2026-11-12", "brand": null, "conflicts": []}]}, {"level": 2, "title": "Профиль для плитки и керамогранита нерж. сталь 9мм К-10НС-2700-001", "size": [], "length": "2,7 м", "thick": null, "thick_unknown": false, "offers": [{"supplier": "Сатурн", "name": "Профиль для плитки и керамогранита нерж. сталь 9мм, 2,7м (К-10НС-2700-001)", "article": "тов-182863", "unit": "шт", "price": 1099.19, "date": "2026-11-12", "brand": null, "conflicts": []}]}, {"level": 2, "title": "Профиль соединит. для плитки и керамогранита нерж.сталь 10мм ПК-11-10НС-2700-001", "size": [], "length": "2,7 м", "thick": null, "thick_unknown": false, "offers": [{"supplier": "Сатурн", "name": "Профиль соединит. для плитки и керамогранита нерж.сталь 10мм, 2,7м (ПК-11-10НС-2700-001)", "article": "тов-182864", "unit": "шт", "price": 1137.07, "date": "2026-11-12", "brand": null, "conflicts": []}]}, {"level": 3, "title": "Грильято профиль h=40мм белый", "size": ["50х50"], "length": "0,6 м", "thick": null, "thick_unknown": false, "offers": [{"supplier": "Сатурн", "name": "Грильято 50х50мм профиль L=600мм, h=40мм, белый", "article": "тов-219017", "unit": "шт", "price": 41.0, "date": "2026-11-12", "brand": null, "conflicts": ["не совпадает размер: 60х27"]}]}, {"level": 3, "title": "Грильято профиль h=40мм белый", "size": ["100х100"], "length": "0,6 м", "thick": null, "thick_unknown": false, "offers": [{"supplier": "Сатурн", "name": "Грильято 100х100мм профиль L=600мм, h=40мм, белый", "article": "тов-219005", "unit": "шт", "price": 41.0, "date": "2026-11-12", "brand": null, "conflicts": ["не совпадает размер: 60х27"]}]}, {"level": 3, "title": "Грильято профиль \"мама\" h=40мм белый", "size": ["50х50"], "length": "0,6 м", "thick": null, "thick_unknown": false, "offers": [{"supplier": "Сатурн", "name": "Грильято 50х50мм профиль \"мама\" L=600мм, h=40мм, белый", "article": "тов-219020", "unit": "шт", "price": 41.0, "date": "2026-11-12", "brand": null, "conflicts": ["не совпадает размер: 60х27"]}]}, {"level": 3, "title": "Грильято профиль \"папа\" h=40мм белый", "size": ["50х50"], "length": "0,6 м", "thick": null, "thick_unknown": false, "offers": [{"supplier": "Сатурн", "name": "Грильято 50х50мм профиль \"папа\" L=600мм, h=40мм, белый", "article": "тов-219023", "unit": "шт", "price": 41.0, "date": "2026-11-12", "brand": null, "conflicts": ["не совпадает размер: 60х27"]}]}, {"level": 3, "title": "Грильято профиль \"мама\" h=40мм белый", "size": ["100х100"], "length": "0,6 м", "thick": null, "thick_unknown": false, "offers": [{"supplier": "Сатурн", "name": "Грильято 100х100мм профиль \"мама\" L=600мм, h=40мм, белый", "article": "тов-219008", "unit": "шт", "price": 41.0, "date": "2026-11-12", "brand": null, "conflicts": ["не совпадает размер: 60х27"]}]}, {"level": 3, "title": "Грильято профиль \"папа\" h=40мм белый", "size": ["100х100"], "length": "0,6 м", "thick": null, "thick_unknown": false, "offers": [{"supplier": "Сатурн", "name": "Грильято 100х100мм профиль \"папа\" L=600мм, h=40мм, белый", "article": "тов-219011", "unit": "шт", "price": 41.0, "date": "2026-11-12", "brand": null, "conflicts": ["не совпадает размер: 60х27"]}]}, {"level": 3, "title": "Профиль углозащитный оцинкованный", "size": ["20х20"], "length": "3 м", "thick": null, "thick_unknown": false, "offers": [{"supplier": "Сатурн", "name": "Профиль углозащитный оцинкованный 20х20мм 3м", "article": "тов-014172", "unit": "шт", "price": 42.05, "date": "2026-11-12", "brand": null, "conflicts": ["не совпадает размер: 60х27"]}]}, {"level": 3, "title": "Грильято профиль h=40мм черный", "size": ["50х50"], "length": "0,6 м", "thick": null, "thick_unknown": false, "offers": [{"supplier": "Сатурн", "name": "Грильято 50х50мм профиль L=600мм, h=40мм, черный", "article": "тов-219019", "unit": "шт", "price": 44.66, "date": "2026-11-12", "brand": null, "conflicts": ["не совпадает размер: 60х27"]}]}, {"level": 3, "title": "Грильято профиль h=40мм черный", "size": ["100х100"], "length": "0,6 м", "thick": null, "thick_unknown": false, "offers": [{"supplier": "Сатурн", "name": "Грильято 100х100мм профиль L=600мм, h=40мм, черный", "article": "тов-219007", "unit": "шт", "price": 44.66, "date": "2026-11-12", "brand": null, "conflicts": ["не совпадает размер: 60х27"]}]}, {"level": 3, "title": "Грильято профиль \"мама\" h=40мм черный", "size": ["50х50"], "length": "0,6 м", "thick": null, "thick_unknown": false, "offers": [{"supplier": "Сатурн", "name": "Грильято 50х50мм профиль \"мама\" L=600мм, h=40мм, черный", "article": "тов-219022", "unit": "шт", "price": 44.66, "date": "2026-11-12", "brand": null, "conflicts": ["не совпадает размер: 60х27"]}]}, {"level": 3, "title": "Грильято профиль \"папа\" h=40мм черный", "size": ["50х50"], "length": "0,6 м", "thick": null, "thick_unknown": false, "offers": [{"supplier": "Сатурн", "name": "Грильято 50х50мм профиль \"папа\" L=600мм, h=40мм, черный", "article": "тов-219025", "unit": "шт", "price": 44.66, "date": "2026-11-12", "brand": null, "conflicts": ["не совпадает размер: 60х27"]}]}, {"level": 3, "title": "Грильято профиль \"мама\" h=40мм черный", "size": ["100х100"], "length": "0,6 м", "thick": null, "thick_unknown": false, "offers": [{"supplier": "Сатурн", "name": "Грильято 100х100мм профиль \"мама\" L=600мм, h=40мм, черный", "article": "тов-219010", "unit": "шт", "price": 44.66, "date": "2026-11-12", "brand": null, "conflicts": ["не совпадает размер: 60х27"]}]}, {"level": 3, "title": "Грильято профиль \"папа\" h=40мм черный", "size": ["100х100"], "length": "0,6 м", "thick": null, "thick_unknown": false, "offers": [{"supplier": "Сатурн", "name": "Грильято 100х100мм профиль \"папа\" L=600мм, h=40мм, черный", "article": "тов-219013", "unit": "шт", "price": 44.66, "date": "2026-11-12", "brand": null, "conflicts": ["не совпадает размер: 60х27"]}]}, {"level": 3, "title": "Профиль углозащитный алюминиевый", "size": ["20х20"], "length": "3 м", "thick": null, "thick_unknown": false, "offers": [{"supplier": "Сатурн", "name": "Профиль углозащитный алюминиевый 20х20мм 3м", "article": "тов-014170", "unit": "шт", "price": 50.03, "date": "2026-11-12", "brand": null, "conflicts": ["не совпадает размер: 60х27"]}]}, {"level": 3, "title": "Профиль углозащитный оцинкованный сетчатый", "size": ["35х35"], "length": "3 м", "thick": null, "thick_unknown": false, "offers": [{"supplier": "Сатурн", "name": "Профиль углозащитный оцинкованный сетчатый 35х35мм (3м)", "article": "тов-089079", "unit": "шт", "price": 51.15, "date": "2026-11-12", "brand": null, "conflicts": ["не совпадает размер: 60х27"]}]}, {"level": 3, "title": "Профиль углозащитный оцинкованный", "size": ["25х25"], "length": "3 м", "thick": null, "thick_unknown": false, "offers": [{"supplier": "Сатурн", "name": "Профиль углозащитный оцинкованный 25х25мм 3м", "article": "тов-089081", "unit": "шт", "price": 53.75, "date": "2026-11-12", "brand": null, "conflicts": ["не совпадает размер: 60х27"]}]}, {"level": 3, "title": "Профиль углозащитный алюминиевый", "size": ["25х25"], "length": "3 м", "thick": null, "thick_unknown": false, "offers": [{"supplier": "Сатурн", "name": "Профиль углозащитный алюминиевый 25х25мм 3м", "article": "тов-089076", "unit": "шт", "price": 63.72, "date": "2026-11-12", "brand": null, "conflicts": ["не совпадает размер: 60х27"]}]}, {"level": 3, "title": "Профиль торцевой для поликарбоната б/цв.", "size": ["4х2100"], "length": null, "thick": null, "thick_unknown": false, "offers": [{"supplier": "Сатурн", "name": "Профиль торцевой для поликарбоната 4х2100мм б/цв.", "article": "тов-114812", "unit": "шт", "price": 68.41, "date": "2026-11-12", "brand": null, "conflicts": ["не совпадает размер: 60х27"]}]}, {"level": 3, "title": "Профиль углозащитный оцинкованный", "size": ["31х31"], "length": "3 м", "thick": null, "thick_unknown": false, "offers": [{"supplier": "Сатурн", "name": "Профиль углозащитный оцинкованный 31х31мм (3м)", "article": "тов-089085", "unit": "шт", "price": 71.2, "date": "2026-11-12", "brand": null, "conflicts": ["не совпадает размер: 60х27"]}]}, {"level": 3, "title": "Профиль торцевой для поликарбоната б/цв.", "size": ["6х2100"], "length": null, "thick": null, "thick_unknown": false, "offers": [{"supplier": "Сатурн", "name": "Профиль торцевой для поликарбоната 6х2100мм б/цв.", "article": "тов-114813", "unit": "шт", "price": 80.58, "date": "2026-11-12", "brand": null, "conflicts": ["не совпадает размер: 60х27"]}]}, {"level": 3, "title": "Грильято профиль h=40мм белый", "size": ["100х100"], "length": "1,2 м", "thick": null, "thick_unknown": false, "offers": [{"supplier": "Сатурн", "name": "Грильято 100х100мм профиль L=1200мм, h=40мм, белый", "article": "тов-218999", "unit": "шт", "price": 82.0, "date": "2026-11-12", "brand": null, "conflicts": ["не совпадает размер: 60х27"]}]}, {"level": 3, "title": "Профиль торцевой для поликарбоната б/цв.", "size": ["8х2100"], "length": null, "thick": null, "thick_unknown": false, "offers": [{"supplier": "Сатурн", "name": "Профиль торцевой для поликарбоната 8х2100мм б/цв.", "article": "тов-114815", "unit": "шт", "price": 86.68, "date": "2026-11-12", "brand": null, "conflicts": ["не совпадает размер: 60х27"]}]}, {"level": 3, "title": "Профиль потолочный направляющий ППН", "size": ["28х27"], "length": "3 м", "thick": "0,4", "thick_unknown": false, "offers": [{"supplier": "Сатурн", "name": "Профиль потолочный направляющий ППН 28х27 3м (0,4мм)", "article": "тов-014156", "unit": "шт", "price": 89.01, "date": "2026-11-12", "brand": null, "conflicts": ["не совпадает размер: 60х27"]}]}, {"level": 3, "title": "Грильято профиль h=40мм черный", "size": ["100х100"], "length": "1,2 м", "thick": null, "thick_unknown": false, "offers": [{"supplier": "Сатурн", "name": "Грильято 100х100мм профиль L=1200мм, h=40мм, черный", "article": "тов-219001", "unit": "шт", "price": 89.33, "date": "2026-11-12", "brand": null, "conflicts": ["не совпадает размер: 60х27"]}]}, {"level": 3, "title": "Профиль торцевой для поликарбоната б/цв.", "size": ["10х2100"], "length": null, "thick": null, "thick_unknown": false, "offers": [{"supplier": "Сатурн", "name": "Профиль торцевой для поликарбоната 10х2100мм б/цв.", "article": "тов-166167", "unit": "шт", "price": 92.77, "date": "2026-11-12", "brand": null, "conflicts": ["не совпадает размер: 60х27"]}]}, {"level": 3, "title": "Профиль потолочный направляющий ППН", "size": ["28х27"], "length": "3 м", "thick": "0,45", "thick_unknown": false, "offers": [{"supplier": "Сатурн", "name": "Профиль потолочный направляющий ППН 28х27 3м (0,45мм)", "article": "тов-157828", "unit": "шт", "price": 93.75, "date": "2026-11-12", "brand": null, "conflicts": ["не совпадает размер: 60х27"]}]}, {"level": 3, "title": "Профиль потолочный направляющий ППН", "size": ["28х27"], "length": "3 м", "thick": "0,5", "thick_unknown": false, "offers": [{"supplier": "Сатурн", "name": "Профиль потолочный направляющий ППН 28х27 3м (0,5мм)", "article": "тов-123943", "unit": "шт", "price": 101.74, "date": "2026-11-12", "brand": null, "conflicts": ["не совпадает размер: 60х27"]}]}, {"level": 3, "title": "Профиль потолочный направляющий ППН", "size": ["28х27"], "length": "3 м", "thick": "0,6", "thick_unknown": false, "offers": [{"supplier": "Сатурн", "name": "Профиль потолочный направляющий ППН 28х27 3м (0,6мм)", "article": "тов-157911", "unit": "шт", "price": 117.44, "date": "2026-11-12", "brand": null, "conflicts": ["не совпадает размер: 60х27"]}]}, {"level": 3, "title": "Профиль ПВХ примыкающий оконный с армирующей сеткой стандарт 6мм", "size": [], "length": "2,4 м", "thick": null, "thick_unknown": false, "offers": [{"supplier": "Сатурн", "name": "Профиль ПВХ примыкающий оконный с армирующей сеткой, стандарт, 6мм (2,4м)", "article": "тов-163766", "unit": "шт", "price": 131.15, "date": "2026-11-12", "brand": null, "conflicts": []}]}, {"level": 3, "title": "Профиль ПВХ примыкающий оконный с армирующей сеткой стандарт 9мм", "size": [], "length": "2,4 м", "thick": null, "thick_unknown": false, "offers": [{"supplier": "Сатурн", "name": "Профиль ПВХ примыкающий оконный с армирующей сеткой, стандарт, 9мм (2,4м)", "article": "тов-163767", "unit": "шт", "price": 140.91, "date": "2026-11-12", "brand": null, "conflicts": []}]}, {"level": 3, "title": "Профиль направляющий ПН-2", "size": ["50х40"], "length": "3 м", "thick": "0,4", "thick_unknown": false, "offers": [{"supplier": "Сатурн", "name": "Профиль направляющий ПН-2 50х40 3м (0,4мм)", "article": "тов-014142", "unit": "шт", "price": 145.94, "date": "2026-11-12", "brand": null, "conflicts": ["не совпадает размер: 60х27"]}]}, {"level": 3, "title": "Профиль направляющий ПН-2", "size": ["50х40"], "length": "3 м", "thick": "0,45", "thick_unknown": false, "offers": [{"supplier": "Сатурн", "name": "Профиль направляющий ПН-2 50х40 3м (0,45мм)", "article": "тов-157825", "unit": "шт", "price": 155.64, "date": "2026-11-12", "brand": null, "conflicts": ["не совпадает размер: 60х27"]}]}, {"level": 3, "title": "Грильято профиль h=40мм белый", "size": ["50х50"], "length": "2,4 м", "thick": null, "thick_unknown": false, "offers": [{"supplier": "Сатурн", "name": "Грильято 50х50мм профиль L=2400мм, h=40мм, белый", "article": "тов-219014", "unit": "шт", "price": 164.01, "date": "2026-11-12", "brand": null, "conflicts": ["не совпадает размер: 60х27"]}]}, {"level": 3, "title": "Грильято профиль h=40мм белый", "size": ["100х100"], "length": "2,4 м", "thick": null, "thick_unknown": false, "offers": [{"supplier": "Сатурн", "name": "Грильято 100х100мм профиль L=2400мм, h=40мм, белый", "article": "тов-219002", "unit": "шт", "price": 164.01, "date": "2026-11-12", "brand": null, "conflicts": ["не совпадает размер: 60х27"]}]}, {"level": 3, "title": "Профиль направляющий ПН-2", "size": ["50х40"], "length": "3 м", "thick": "0,5", "thick_unknown": false, "offers": [{"supplier": "Сатурн", "name": "Профиль направляющий ПН-2 50х40 3м (0,5мм)", "article": "тов-123938", "unit": "шт", "price": 168.88, "date": "2026-11-12", "brand": null, "conflicts": ["не совпадает размер: 60х27"]}]}, {"level": 3, "title": "Грильято профиль h=40мм черный", "size": ["50х50"], "length": "2,4 м", "thick": null, "thick_unknown": false, "offers": [{"supplier": "Сатурн", "name": "Грильято 50х50мм профиль L=2400мм, h=40мм, черный", "article": "тов-219016", "unit": "шт", "price": 178.65, "date": "2026-11-12", "brand": null, "conflicts": ["не совпадает размер: 60х27"]}]}, {"level": 3, "title": "Грильято профиль h=40мм черный", "size": ["100х100"], "length": "2,4 м", "thick": null, "thick_unknown": false, "offers": [{"supplier": "Сатурн", "name": "Грильято 100х100мм профиль L=2400мм, h=40мм, черный", "article": "тов-219004", "unit": "шт", "price": 178.65, "date": "2026-11-12", "brand": null, "conflicts": ["не совпадает размер: 60х27"]}]}, {"level": 3, "title": "Профиль направляющий ПН-4", "size": ["75х40"], "length": "3 м", "thick": "0,4", "thick_unknown": false, "offers": [{"supplier": "Сатурн", "name": "Профиль направляющий ПН-4 75х40 3м (0,4мм)", "article": "тов-014143", "unit": "шт", "price": 178.95, "date": "2026-11-12", "brand": null, "conflicts": ["не совпадает размер: 60х27"]}]}, {"level": 3, "title": "Профиль стоечный ПС-2", "size": ["50х50"], "length": "3 м", "thick": "0,4", "thick_unknown": false, "offers": [{"supplier": "Сатурн", "name": "Профиль стоечный ПС-2 50х50 3м (0,4мм)", "article": "тов-014160", "unit": "шт", "price": 180.37, "date": "2026-11-12", "brand": null, "conflicts": ["не совпадает размер: 60х27"]}]}, {"level": 3, "title": "Профиль направляющий ПН-4", "size": ["75х40"], "length": "3 м", "thick": "0,45", "thick_unknown": false, "offers": [{"supplier": "Сатурн", "name": "Профиль направляющий ПН-4 75х40 3м (0,45мм)", "article": "тов-157826", "unit": "шт", "price": 188.73, "date": "2026-11-12", "brand": null, "conflicts": ["не совпадает размер: 60х27"]}]}, {"level": 3, "title": "Профиль стоечный ПС-2", "size": ["50х50"], "length": "3 м", "thick": "0,45", "thick_unknown": false, "offers": [{"supplier": "Сатурн", "name": "Профиль стоечный ПС-2 50х50 3м (0,45мм)", "article": "тов-157830", "unit": "шт", "price": 193.98, "date": "2026-11-12", "brand": null, "conflicts": ["не совпадает размер: 60х27"]}]}, {"level": 3, "title": "Профиль направляющий ПН-2", "size": ["50х40"], "length": "3 м", "thick": "0,6", "thick_unknown": false, "offers": [{"supplier": "Сатурн", "name": "Профиль направляющий ПН-2 50х40 3м (0,6мм)", "article": "тов-160994", "unit": "шт", "price": 195.53, "date": "2026-11-12", "brand": null, "conflicts": ["не совпадает размер: 60х27"]}]}, {"level": 3, "title": "Профиль направляющий ПН-4", "size": ["75х40"], "length": "3 м", "thick": "0,5", "thick_unknown": false, "offers": [{"supplier": "Сатурн", "name": "Профиль направляющий ПН-4 75х40 3м (0,5мм)", "article": "тов-123940", "unit": "шт", "price": 203.15, "date": "2026-11-12", "brand": null, "conflicts": ["не совпадает размер: 60х27"]}]}, {"level": 3, "title": "Профиль стоечный ПС-2", "size": ["50х50"], "length": "3 м", "thick": "0,5", "thick_unknown": false, "offers": [{"supplier": "Сатурн", "name": "Профиль стоечный ПС-2 50х50 3м (0,5мм)", "article": "тов-123950", "unit": "шт", "price": 205.24, "date": "2026-11-12", "brand": null, "conflicts": ["не совпадает размер: 60х27"]}]}, {"level": 3, "title": "Профиль стоечный ПС-4", "size": ["75х50"], "length": "3 м", "thick": "0,4", "thick_unknown": false, "offers": [{"supplier": "Сатурн", "name": "Профиль стоечный ПС-4 75х50 3м (0,4мм)", "article": "тов-014162", "unit": "шт", "price": 210.21, "date": "2026-11-12", "brand": null, "conflicts": ["не совпадает размер: 60х27"]}]}, {"level": 3, "title": "Профиль направляющий ПН-6", "size": ["100х40"], "length": "3 м", "thick": "0,45", "thick_unknown": false, "offers": [{"supplier": "Сатурн", "name": "Профиль направляющий ПН-6 100х40 3м (0,45мм)", "article": "тов-157827", "unit": "шт", "price": 220.57, "date": "2026-11-12", "brand": null, "conflicts": ["не совпадает размер: 60х27"]}]}, {"level": 3, "title": "Профиль потолочный направляющий ППН", "size": ["28х27"], "length": "3 м", "thick": null, "thick_unknown": true, "offers": [{"supplier": "Сатурн", "name": "КНАУФ Профиль потолочный направляющий ППН 28х27 (3м)", "article": "тов-007558", "unit": "шт", "price": 223.87, "date": "2026-11-12", "brand": "КНАУФ", "conflicts": ["не совпадает размер: 60х27"]}]}, {"level": 3, "title": "Профиль стоечный ПС-4", "size": ["75х50"], "length": "3 м", "thick": "0,45", "thick_unknown": false, "offers": [{"supplier": "Сатурн", "name": "Профиль стоечный ПС-4 75х50 3м (0,45мм)", "article": "тов-157831", "unit": "шт", "price": 225.78, "date": "2026-11-12", "brand": null, "conflicts": ["не совпадает размер: 60х27"]}]}, {"level": 3, "title": "Профиль направляющий ПН-4", "size": ["75х40"], "length": "3 м", "thick": "0,6", "thick_unknown": false, "offers": [{"supplier": "Сатурн", "name": "Профиль направляющий ПН-4 75х40 3м (0,6мм)", "article": "тов-160995", "unit": "шт", "price": 235.41, "date": "2026-11-12", "brand": null, "conflicts": ["не совпадает размер: 60х27"]}]}, {"level": 3, "title": "Профиль направляющий ПН-6", "size": ["100х40"], "length": "3 м", "thick": "0,5", "thick_unknown": false, "offers": [{"supplier": "Сатурн", "name": "Профиль направляющий ПН-6 100х40 3м (0,5мм)", "article": "тов-123941", "unit": "шт", "price": 237.42, "date": "2026-11-12", "brand": null, "conflicts": ["не совпадает размер: 60х27"]}]}, {"level": 3, "title": "Профиль стоечный ПС-4", "size": ["75х50"], "length": "3 м", "thick": "0,5", "thick_unknown": false, "offers": [{"supplier": "Сатурн", "name": "Профиль стоечный ПС-4 75х50 3м (0,5мм)", "article": "тов-123954", "unit": "шт", "price": 238.9, "date": "2026-11-12", "brand": null, "conflicts": ["не совпадает размер: 60х27"]}]}, {"level": 3, "title": "Профиль стоечный ПС-2", "size": ["50х50"], "length": "3 м", "thick": "0,6", "thick_unknown": false, "offers": [{"supplier": "Сатурн", "name": "Профиль стоечный ПС-2 50х50 3м (0,6мм)", "article": "тов-161078", "unit": "шт", "price": 241.79, "date": "2026-11-12", "brand": null, "conflicts": ["не совпадает размер: 60х27"]}]}, {"level": 3, "title": "86155 Гвоздодер шестигранный профиль обрезин. рукоятка", "size": ["12х300", "12х48"], "length": null, "thick": null, "thick_unknown": false, "offers": [{"supplier": "Сатурн", "name": "БИБЕР 86155 Гвоздодер шестигранный профиль обрезин. рукоятка 12х300мм (12/48)", "article": "тов-077197", "unit": "шт", "price": 249.26, "date": "2026-11-12", "brand": "БИБЕР", "conflicts": ["не совпадает размер: 60х27"]}]}, {"level": 3, "title": "Профиль стоечный ПС-6", "size": ["100х50"], "length": "3 м", "thick": "0,45", "thick_unknown": false, "offers": [{"supplier": "Сатурн", "name": "Профиль стоечный ПС-6 100х50 3м (0,45мм)", "article": "тов-157832", "unit": "шт", "price": 256.32, "date": "2026-11-12", "brand": null, "conflicts": ["не совпадает размер: 60х27"]}]}, {"level": 3, "title": "Профиль-капельник ПВХ с армир.сеткой с защ.лентой Польша", "size": [], "length": "2,5 м", "thick": null, "thick_unknown": false, "offers": [{"supplier": "Сатурн", "name": "Профиль-капельник ПВХ с армир.сеткой с защ.лентой (2,5м) Польша", "article": "тов-163770", "unit": "шт", "price": 267.79, "date": "2026-11-12", "brand": null, "conflicts": []}]}, {"level": 3, "title": "Профиль стоечный ПС-6", "size": ["100х50"], "length": "3 м", "thick": "0,5", "thick_unknown": false, "offers": [{"supplier": "Сатурн", "name": "Профиль стоечный ПС-6 100х50 3м (0,5мм)", "article": "тов-123956", "unit": "шт", "price": 271.19, "date": "2026-11-12", "brand": null, "conflicts": ["не совпадает размер: 60х27"]}]}, {"level": 3, "title": "Профиль направляющий ПН-6", "size": ["100х40"], "length": "3 м", "thick": "0,6", "thick_unknown": false, "offers": [{"supplier": "Сатурн", "name": "Профиль направляющий ПН-6 100х40 3м (0,6мм)", "article": "тов-160992", "unit": "шт", "price": 275.23, "date": "2026-11-12", "brand": null, "conflicts": ["не совпадает размер: 60х27"]}]}, {"level": 3, "title": "Профиль стоечный ПС-4", "size": ["75х50"], "length": "3 м", "thick": "0,6", "thick_unknown": false, "offers": [{"supplier": "Сатурн", "name": "Профиль стоечный ПС-4 75х50 3м (0,6мм)", "article": "тов-161079", "unit": "шт", "price": 281.66, "date": "2026-11-12", "brand": null, "conflicts": ["не совпадает размер: 60х27"]}]}, {"level": 3, "title": "Профиль стоечный ПС-4", "size": ["75х50"], "length": "4 м", "thick": "0,45", "thick_unknown": false, "offers": [{"supplier": "Сатурн", "name": "Профиль стоечный ПС-4 75х50 4м (0,45мм)", "article": "тов-159840", "unit": "шт", "price": 301.05, "date": "2026-11-12", "brand": null, "conflicts": ["не совпадает размер: 60х27"]}]}, {"level": 3, "title": "Профиль стоечный ПС-6", "size": ["100х50"], "length": "3 м", "thick": "0,6", "thick_unknown": false, "offers": [{"supplier": "Сатурн", "name": "Профиль стоечный ПС-6 100х50 3м (0,6мм)", "article": "тов-160993", "unit": "шт", "price": 321.52, "date": "2026-11-12", "brand": null, "conflicts": ["не совпадает размер: 60х27"]}]}, {"level": 3, "title": "86151 Гвоздодер шестигранный профиль 30", "size": ["15х400"], "length": null, "thick": null, "thick_unknown": false, "offers": [{"supplier": "Сатурн", "name": "БИБЕР 86151 Гвоздодер, шестигранный профиль 15х400мм (30)", "article": "тов-077195", "unit": "шт", "price": 321.82, "date": "2026-11-12", "brand": "БИБЕР", "conflicts": ["не совпадает размер: 60х27"]}]}, {"level": 3, "title": "Профиль стоечный ПС-2", "size": ["50х50"], "length": "4 м", "thick": "0,6", "thick_unknown": false, "offers": [{"supplier": "Сатурн", "name": "Профиль стоечный ПС-2 50х50 4м (0,6мм)", "article": "тов-178153", "unit": "шт", "price": 322.39, "date": "2026-11-12", "brand": null, "conflicts": ["не совпадает размер: 60х27"]}]}, {"level": 3, "title": "Профиль соединительный неразъемный для поликарбоната б/цв.", "size": ["4х6000"], "length": null, "thick": null, "thick_unknown": false, "offers": [{"supplier": "Сатурн", "name": "Профиль соединительный неразъемный для поликарбоната 4х6000мм б/цв.", "article": "тов-110993", "unit": "шт", "price": 357.49, "date": "2026-11-12", "brand": null, "conflicts": ["не совпадает размер: 60х27"]}]}, {"level": 3, "title": "Профиль стоечный ПС-4", "size": ["75х50"], "length": "4 м", "thick": "0,6", "thick_unknown": false, "offers": [{"supplier": "Сатурн", "name": "Профиль стоечный ПС-4 75х50 4м (0,6мм)", "article": "тов-175049", "unit": "шт", "price": 375.52, "date": "2026-11-12", "brand": null, "conflicts": ["не совпадает размер: 60х27"]}]}, {"level": 3, "title": "Профиль направляющий ПН-2", "size": ["50х40"], "length": "3 м", "thick": null, "thick_unknown": true, "offers": [{"supplier": "Сатурн", "name": "КНАУФ Профиль направляющий ПН-2 50х40 (3м)", "article": "тов-007556", "unit": "шт", "price": 377.91, "date": "2026-11-12", "brand": "КНАУФ", "conflicts": ["не совпадает размер: 60х27"]}]}, {"level": 3, "title": "Профиль стоечный ПС-2", "size": ["50х50"], "length": "3 м", "thick": null, "thick_unknown": true, "offers": [{"supplier": "Сатурн", "name": "КНАУФ Профиль стоечный ПС-2 50х50 (3м)", "article": "тов-007560", "unit": "шт", "price": 401.42, "date": "2026-11-12", "brand": "КНАУФ", "conflicts": ["не совпадает размер: 60х27"]}]}, {"level": 3, "title": "86152 Гвоздодер шестигранный профиль 24", "size": ["15х600"], "length": null, "thick": null, "thick_unknown": false, "offers": [{"supplier": "Сатурн", "name": "БИБЕР 86152 Гвоздодер, шестигранный профиль 15х600мм (24)", "article": "тов-077203", "unit": "шт", "price": 423.34, "date": "2026-11-12", "brand": "БИБЕР", "conflicts": ["не совпадает размер: 60х27"]}]}, {"level": 3, "title": "Профиль стоечный ПС-6", "size": ["100х50"], "length": "4 м", "thick": "0,6", "thick_unknown": false, "offers": [{"supplier": "Сатурн", "name": "Профиль стоечный ПС-6 100х50 4м (0,6мм)", "article": "тов-165884", "unit": "шт", "price": 428.66, "date": "2026-11-12", "brand": null, "conflicts": ["не совпадает размер: 60х27"]}]}, {"level": 3, "title": "Профиль направляющий ПН-4", "size": ["75х40"], "length": "3 м", "thick": null, "thick_unknown": true, "offers": [{"supplier": "Сатурн", "name": "КНАУФ Профиль направляющий ПН-4 75х40 (3м)", "article": "тов-007557", "unit": "шт", "price": 447.11, "date": "2026-11-12", "brand": "КНАУФ", "conflicts": ["не совпадает размер: 60х27"]}]}, {"level": 3, "title": "Профиль стоечный ПС-4", "size": ["75х50"], "length": "3 м", "thick": null, "thick_unknown": true, "offers": [{"supplier": "Сатурн", "name": "КНАУФ Профиль стоечный ПС-4 75х50 (3м)", "article": "тов-007561", "unit": "шт", "price": 461.45, "date": "2026-11-12", "brand": "КНАУФ", "conflicts": ["не совпадает размер: 60х27"]}]}, {"level": 3, "title": "Профиль направляющий ПН-6", "size": ["100х40"], "length": "3 м", "thick": null, "thick_unknown": true, "offers": [{"supplier": "Сатурн", "name": "КНАУФ Профиль направляющий ПН-6 100х40 (3м)", "article": "тов-033388", "unit": "шт", "price": 539.8, "date": "2026-11-12", "brand": "КНАУФ", "conflicts": ["не совпадает размер: 60х27"]}]}, {"level": 3, "title": "Профиль стоечный ПС-6", "size": ["100х50"], "length": "3 м", "thick": null, "thick_unknown": true, "offers": [{"supplier": "Сатурн", "name": "КНАУФ Профиль стоечный ПС-6 100х50 (3м)", "article": "тов-007562", "unit": "шт", "price": 548.91, "date": "2026-11-12", "brand": "КНАУФ", "conflicts": ["не совпадает размер: 60х27"]}]}, {"level": 3, "title": "Профиль стоечный ПС-2", "size": ["50х50"], "length": "4 м", "thick": null, "thick_unknown": true, "offers": [{"supplier": "Сатурн", "name": "КНАУФ Профиль стоечный ПС-2 50х50 (4м)", "article": "тов-039252", "unit": "шт", "price": 569.82, "date": "2026-11-12", "brand": "КНАУФ", "conflicts": ["не совпадает размер: 60х27"]}]}, {"level": 3, "title": "Профиль стоечный ПС-4", "size": ["75х50"], "length": "4 м", "thick": null, "thick_unknown": true, "offers": [{"supplier": "Сатурн", "name": "КНАУФ Профиль стоечный ПС-4 75х50 (4м)", "article": "тов-039253", "unit": "шт", "price": 667.07, "date": "2026-11-12", "brand": "КНАУФ", "conflicts": ["не совпадает размер: 60х27"]}]}, {"level": 3, "title": "Профиль соединительный неразъемный для поликарбоната б/цв.", "size": ["10х6000"], "length": null, "thick": null, "thick_unknown": false, "offers": [{"supplier": "Сатурн", "name": "Профиль соединительный неразъемный для поликарбоната 10х6000мм б/цв.", "article": "тов-166168", "unit": "шт", "price": 727.1, "date": "2026-11-12", "brand": null, "conflicts": ["не совпадает размер: 60х27"]}]}, {"level": 3, "title": "Профиль стоечный ПС-6", "size": ["100х50"], "length": "4 м", "thick": null, "thick_unknown": true, "offers": [{"supplier": "Сатурн", "name": "КНАУФ Профиль стоечный ПС-6 100х50 (4м)", "article": "тов-038234", "unit": "шт", "price": 794.31, "date": "2026-11-12", "brand": "КНАУФ", "conflicts": ["не совпадает размер: 60х27"]}]}, {"level": 3, "title": "Профиль угловой для поликарбоната 4- б/цв.", "size": ["6х6000"], "length": null, "thick": null, "thick_unknown": false, "offers": [{"supplier": "Сатурн", "name": "Профиль угловой для поликарбоната 4-6х6000мм б/цв.", "article": "тов-114808", "unit": "шт", "price": 864.98, "date": "2026-11-12", "brand": null, "conflicts": ["не совпадает размер: 60х27"]}]}, {"level": 3, "title": "Профиль угловой для поликарбоната 8- б/цв.", "size": ["10х6000"], "length": null, "thick": null, "thick_unknown": false, "offers": [{"supplier": "Сатурн", "name": "Профиль угловой для поликарбоната 8-10х6000мм б/цв.", "article": "тов-162197", "unit": "шт", "price": 927.81, "date": "2026-11-12", "brand": null, "conflicts": ["не совпадает размер: 60х27"]}]}, {"level": 3, "title": "Профиль коньковый для поликарбоната 04- б/цв.", "size": ["6х6000"], "length": null, "thick": null, "thick_unknown": false, "offers": [{"supplier": "Сатурн", "name": "Профиль коньковый для поликарбоната 04-06х6000мм б/цв.", "article": "тов-114810", "unit": "шт", "price": 1051.64, "date": "2026-11-12", "brand": null, "conflicts": ["не совпадает размер: 60х27"]}]}, {"level": 3, "title": "Профиль коньковый для поликарбоната 8- б/цв.", "size": ["10х6000"], "length": null, "thick": null, "thick_unknown": false, "offers": [{"supplier": "Сатурн", "name": "Профиль коньковый для поликарбоната 8-10х6000мм б/цв.", "article": "тов-161664", "unit": "шт", "price": 1187.67, "date": "2026-11-12", "brand": null, "conflicts": ["не совпадает размер: 60х27"]}]}, {"level": 3, "title": "Профиль UA", "size": ["50х40"], "length": "3 м", "thick": null, "thick_unknown": false, "offers": [{"supplier": "Сатурн", "name": "КНАУФ Профиль UA 50х40 (3м)", "article": "тов-178142", "unit": "шт", "price": 1394.43, "date": "2026-11-12", "brand": "КНАУФ", "conflicts": ["не совпадает размер: 60х27"]}]}, {"level": 3, "title": "Профиль UA", "size": ["75х40"], "length": "3 м", "thick": null, "thick_unknown": false, "offers": [{"supplier": "Сатурн", "name": "КНАУФ Профиль UA 75х40мм (3м)", "article": "тов-157276", "unit": "шт", "price": 1622.6, "date": "2026-11-12", "brand": "КНАУФ", "conflicts": ["не совпадает размер: 60х27"]}]}, {"level": 3, "title": "Профиль UA", "size": ["50х40"], "length": "4 м", "thick": null, "thick_unknown": false, "offers": [{"supplier": "Сатурн", "name": "КНАУФ Профиль UA 50х40мм (4м)", "article": "тов-173787", "unit": "шт", "price": 1859.25, "date": "2026-11-12", "brand": "КНАУФ", "conflicts": ["не совпадает размер: 60х27"]}]}, {"level": 3, "title": "Профиль UA", "size": ["100х40"], "length": "3 м", "thick": null, "thick_unknown": false, "offers": [{"supplier": "Сатурн", "name": "КНАУФ Профиль UA 100х40 (3м)", "article": "тов-190071", "unit": "шт", "price": 1906.83, "date": "2026-11-12", "brand": "КНАУФ", "conflicts": ["не совпадает размер: 60х27"]}]}, {"level": 3, "title": "Профиль UA", "size": ["75х40"], "length": "4 м", "thick": null, "thick_unknown": false, "offers": [{"supplier": "Сатурн", "name": "КНАУФ Профиль UA 75х40мм (4м)", "article": "тов-181778", "unit": "шт", "price": 2163.65, "date": "2026-11-12", "brand": "КНАУФ", "conflicts": ["не совпадает размер: 60х27"]}]}, {"level": 3, "title": "Профиль UA", "size": ["100х40"], "length": "4 м", "thick": null, "thick_unknown": false, "offers": [{"supplier": "Сатурн", "name": "КНАУФ Профиль UA 100х40 (4м)", "article": "тов-174524", "unit": "шт", "price": 2541.97, "date": "2026-11-12", "brand": "КНАУФ", "conflicts": ["не совпадает размер: 60х27"]}]}], "accessories": [{"supplier": "Сатурн", "name": "Подвес с зажимом 60х27 (пружинный, анкерный)", "article": "тов-013843", "unit": "шт", "price": 12.15, "date": "2026-11-12"}, {"supplier": "Сатурн", "name": "КНАУФ Подвес с зажимом 60х27 100х58х42мм", "article": "тов-041723", "unit": "шт", "price": 22.62, "date": "2026-11-12"}, {"supplier": "Сатурн", "name": "СаундГард Подвес прямой виброизоляционный Вибро М, 60х27, 1мм", "article": "тов-237235", "unit": "шт", "price": 207.5, "date": "2026-11-12"}], "total": 130};
-const LEVELS = [
-  {n:1, ttl:"Подходящие", note:"Всё совпадает: профиль, размер 60х27. Остальные характеристики (длина, толщина) отличают группы друг от друга.", open:true, cls:"ok"},
-  {n:2, ttl:"Не всё указано", note:"Тип профиль, но размера в названии нет: подтвердить нечем.", open:false, cls:"warn"},
-  {n:3, ttl:"Одно отличие", note:"Тип профиль, размер другой (не 60х27).", open:false, cls:"no"}
-];
-const fmt = v => v.toLocaleString("ru-RU",{minimumFractionDigits:2,maximumFractionDigits:2}) + " ₽";
-const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
-let picked = null; // {g, o}
+<script type="application/json" id="podbor-data">{"local": true, "title": "Стенд подбора В3", "positions": [{"id": "p1", "name": "профиль 60*27", "qty": 10, "unit": "шт", "example": "Макет на реальном прайсе Сатурна от 12.11.2026 · строки «условный пример» добавлены только для показа группы", "products": [["Профиль потолочный ПП 60х27 3м (0,4мм)", 141.8, "шт", {"key": "sat:тов-014157", "supplier": "Сатурн"}], ["Профиль потолочный ПП 60х27 3м (0,45мм)", 149.28, "шт", {"key": "sat:тов-157829", "supplier": "Сатурн"}], ["Профиль потолочный ПП 60х27 3м (0,5мм)", 162.15, "шт", {"key": "sat:тов-123944", "supplier": "Сатурн"}], ["Профиль потолочный ПП 60х27 3м (0,6мм)", 187.34, "шт", {"key": "sat:тов-161077", "supplier": "Сатурн"}], ["Профиль потолочный ПП 60х27 4м (0,5мм)", 216.2, "шт", {"key": "sat:тов-123945", "supplier": "Сатурн"}], ["Профиль потолочный ПП 60х27 4м (0,6мм)", 249.78, "шт", {"key": "sat:тов-157910", "supplier": "Сатурн"}], ["КНАУФ Профиль потолочный ПП 60х27 (3м)", 317.2, "шт", {"key": "sat:тов-007559", "supplier": "Сатурн"}], ["КНАУФ Профиль потолочный ПП 60х27 (4м)", 458.86, "шт", {"key": "sat:тов-033940", "supplier": "Сатурн"}], ["Профиль для подвесного потолка (Т-профиль 24) белый (0,6м) Стандарт", 23.47, "шт", {"key": "sat:тов-166079", "supplier": "Сатурн"}], ["Профиль маячковый ПВХ 6мм 3м", 26.53, "шт", {"key": "sat:тов-170720", "supplier": "Сатурн"}], ["Профиль маячковый 6мм 3м", 30.21, "шт", {"key": "sat:тов-079842", "supplier": "Сатурн"}], ["Профиль маячковый ПВХ 10мм 3м", 31.01, "шт", {"key": "sat:тов-170719", "supplier": "Сатурн"}], ["Профиль маячковый 6мм 3м (0,3мм)", 31.55, "шт", {"key": "sat:тов-014140", "supplier": "Сатурн"}], ["Профиль маячковый 10мм 3м", 35.77, "шт", {"key": "sat:тов-079841", "supplier": "Сатурн"}], ["Профиль для подвесного потолка (Т-профиль 24) белый (0,6м) GL", 36.16, "шт", {"key": "sat:тов-184789", "supplier": "Сатурн"}], ["Профиль для подвесного потолка (Т-профиль 15) черный (0,6м) GL", 36.41, "шт", {"key": "sat:тов-185387", "supplier": "Сатурн"}], ["Профиль для подвесного потолка (Т-профиль 15) белый (0,6м) GL", 36.6, "шт", {"key": "sat:тов-203923", "supplier": "Сатурн"}], ["Профиль маячковый 6мм 3м (0,4мм)", 37.86, "шт", {"key": "sat:тов-163105", "supplier": "Сатурн"}], ["Профиль маячковый 10мм 3м (0,3мм)", 41.55, "шт", {"key": "sat:тов-014138", "supplier": "Сатурн"}], ["Профиль для подвесного потолка (Т-профиль 24) белый (1,2м) Стандарт", 46.94, "шт", {"key": "sat:тов-098078", "supplier": "Сатурн"}], ["Профиль маячковый 10мм 3м (0,4мм)", 47.06, "шт", {"key": "sat:тов-163104", "supplier": "Сатурн"}], ["КНАУФ Профиль для подвесного потолка Т24 (0,6м) 834395", 49.6, "шт", {"key": "sat:тов-225902", "supplier": "Сатурн"}], ["Профиль для подвесного потолка (Т-профиль 24) белый (1,2м) GL", 71.68, "шт", {"key": "sat:тов-184790", "supplier": "Сатурн"}], ["Профиль для подвесного потолка (Т-профиль 15) белый (1,2м) GL", 72.59, "шт", {"key": "sat:тов-203924", "supplier": "Сатурн"}], ["Профиль для подвесного потолка (Т-профиль 15) черный (1,2м) GL", 72.82, "шт", {"key": "sat:тов-185388", "supplier": "Сатурн"}], ["Профиль ПВХ L-образный окантовочный для ГКЛ, 12,5мм (3м)", 83.51, "шт", {"key": "sat:тов-158219", "supplier": "Сатурн"}], ["КНАУФ Профиль для подвесного потолка Т24 (1,2м) 834394", 99.2, "шт", {"key": "sat:тов-225901", "supplier": "Сатурн"}], ["Профиль для подвесного потолка (Т-профиль 24) белый (3,6м) Стандарт", 139.56, "шт", {"key": "sat:тов-166080", "supplier": "Сатурн"}], ["КНАУФ Профиль маячковый 6мм 3м (0,6мм)", 167.75, "шт", {"key": "sat:тов-192024", "supplier": "Сатурн"}], ["КНАУФ Профиль маячковый 10мм 3м (0,6мм)", 180.8, "шт", {"key": "sat:тов-192023", "supplier": "Сатурн"}], ["Профиль для подвесного потолка (Т-профиль 24) белый (3,6м) GL", 213.77, "шт", {"key": "sat:тов-184788", "supplier": "Сатурн"}], ["Профиль для подвесного потолка (Т-профиль 15) белый (3,6м) GL", 217.77, "шт", {"key": "sat:тов-203925", "supplier": "Сатурн"}], ["Профиль для подвесного потолка (Т-профиль 15) черный (3,6м) GL", 218.45, "шт", {"key": "sat:тов-185389", "supplier": "Сатурн"}], ["КНАУФ Профиль для подвесного потолка Т24 (3,7м) 834393", 305.86, "шт", {"key": "sat:тов-225900", "supplier": "Сатурн"}], ["Профиль соединительный неразъемный для поликарбоната 6-8ммх6000мм б/цв.", 603.28, "шт", {"key": "sat:тов-183820", "supplier": "Сатурн"}], ["Профиль для плитки и керамогранита анодир. алюм. 9мм, 2,7м золото (ПК 01-2700-02л)", 613.3, "шт", {"key": "sat:тов-166764", "supplier": "Сатурн"}], ["Профиль для плитки и керамогранита анодир. алюм. 9мм, 2,7м серебро (ПК 01-2700-01л)", 613.3, "шт", {"key": "sat:тов-166763", "supplier": "Сатурн"}], ["Профиль для установки зеркал анодир. алюм. 5,5мм 2,7м серебро (ПК 05-2-2700-01л)", 717.97, "шт", {"key": "sat:тов-163331", "supplier": "Сатурн"}], ["Профиль для установки зеркал анодир. алюм. 5,5мм 2,7м бронза (ПК 05-2-2700-04л)", 724.69, "шт", {"key": "sat:тов-163332", "supplier": "Сатурн"}], ["Профиль соединит. для плитки и керамогранита анодир. алюм. 10мм, 2,7м серебро (ПК 11-10-2700-01л)", 897.15, "шт", {"key": "sat:тов-166197", "supplier": "Сатурн"}], ["Профиль стыковочный гнущийся анодир. алюм. 10мм 2,7м золото (ЛК 15-2700-02л)", 985.04, "шт", {"key": "sat:тов-183395", "supplier": "Сатурн"}], ["Профиль стыковочный гнущийся анодир. алюм. 10мм 2,7м серебро (ЛК 15-2700-01л)", 985.04, "шт", {"key": "sat:тов-183396", "supplier": "Сатурн"}], ["Профиль для плитки и керамогранита нерж. сталь 9мм, 2,7м (К-10НС-2700-001)", 1099.19, "шт", {"key": "sat:тов-182863", "supplier": "Сатурн"}], ["Профиль соединит. для плитки и керамогранита нерж.сталь 10мм, 2,7м (ПК-11-10НС-2700-001)", 1137.07, "шт", {"key": "sat:тов-182864", "supplier": "Сатурн"}], ["Грильято 50х50мм профиль L=600мм, h=40мм, белый", 41.0, "шт", {"key": "sat:тов-219017", "supplier": "Сатурн"}], ["Грильято 100х100мм профиль L=600мм, h=40мм, белый", 41.0, "шт", {"key": "sat:тов-219005", "supplier": "Сатурн"}], ["Грильято 50х50мм профиль \"мама\" L=600мм, h=40мм, белый", 41.0, "шт", {"key": "sat:тов-219020", "supplier": "Сатурн"}], ["Грильято 50х50мм профиль \"папа\" L=600мм, h=40мм, белый", 41.0, "шт", {"key": "sat:тов-219023", "supplier": "Сатурн"}], ["Грильято 100х100мм профиль \"мама\" L=600мм, h=40мм, белый", 41.0, "шт", {"key": "sat:тов-219008", "supplier": "Сатурн"}], ["Грильято 100х100мм профиль \"папа\" L=600мм, h=40мм, белый", 41.0, "шт", {"key": "sat:тов-219011", "supplier": "Сатурн"}], ["Профиль углозащитный оцинкованный 20х20мм 3м", 42.05, "шт", {"key": "sat:тов-014172", "supplier": "Сатурн"}], ["Грильято 50х50мм профиль L=600мм, h=40мм, черный", 44.66, "шт", {"key": "sat:тов-219019", "supplier": "Сатурн"}], ["Грильято 100х100мм профиль L=600мм, h=40мм, черный", 44.66, "шт", {"key": "sat:тов-219007", "supplier": "Сатурн"}], ["Грильято 50х50мм профиль \"мама\" L=600мм, h=40мм, черный", 44.66, "шт", {"key": "sat:тов-219022", "supplier": "Сатурн"}], ["Грильято 50х50мм профиль \"папа\" L=600мм, h=40мм, черный", 44.66, "шт", {"key": "sat:тов-219025", "supplier": "Сатурн"}], ["Грильято 100х100мм профиль \"мама\" L=600мм, h=40мм, черный", 44.66, "шт", {"key": "sat:тов-219010", "supplier": "Сатурн"}], ["Грильято 100х100мм профиль \"папа\" L=600мм, h=40мм, черный", 44.66, "шт", {"key": "sat:тов-219013", "supplier": "Сатурн"}], ["Профиль углозащитный алюминиевый 20х20мм 3м", 50.03, "шт", {"key": "sat:тов-014170", "supplier": "Сатурн"}], ["Профиль углозащитный оцинкованный сетчатый 35х35мм (3м)", 51.15, "шт", {"key": "sat:тов-089079", "supplier": "Сатурн"}], ["Профиль углозащитный оцинкованный 25х25мм 3м", 53.75, "шт", {"key": "sat:тов-089081", "supplier": "Сатурн"}], ["Профиль углозащитный алюминиевый 25х25мм 3м", 63.72, "шт", {"key": "sat:тов-089076", "supplier": "Сатурн"}], ["Профиль торцевой для поликарбоната 4х2100мм б/цв.", 68.41, "шт", {"key": "sat:тов-114812", "supplier": "Сатурн"}], ["Профиль углозащитный оцинкованный 31х31мм (3м)", 71.2, "шт", {"key": "sat:тов-089085", "supplier": "Сатурн"}], ["Профиль торцевой для поликарбоната 6х2100мм б/цв.", 80.58, "шт", {"key": "sat:тов-114813", "supplier": "Сатурн"}], ["Грильято 100х100мм профиль L=1200мм, h=40мм, белый", 82.0, "шт", {"key": "sat:тов-218999", "supplier": "Сатурн"}], ["Профиль торцевой для поликарбоната 8х2100мм б/цв.", 86.68, "шт", {"key": "sat:тов-114815", "supplier": "Сатурн"}], ["Профиль потолочный направляющий ППН 28х27 3м (0,4мм)", 89.01, "шт", {"key": "sat:тов-014156", "supplier": "Сатурн"}], ["Грильято 100х100мм профиль L=1200мм, h=40мм, черный", 89.33, "шт", {"key": "sat:тов-219001", "supplier": "Сатурн"}], ["Профиль торцевой для поликарбоната 10х2100мм б/цв.", 92.77, "шт", {"key": "sat:тов-166167", "supplier": "Сатурн"}], ["Профиль потолочный направляющий ППН 28х27 3м (0,45мм)", 93.75, "шт", {"key": "sat:тов-157828", "supplier": "Сатурн"}], ["Профиль потолочный направляющий ППН 28х27 3м (0,5мм)", 101.74, "шт", {"key": "sat:тов-123943", "supplier": "Сатурн"}], ["Профиль потолочный направляющий ППН 28х27 3м (0,6мм)", 117.44, "шт", {"key": "sat:тов-157911", "supplier": "Сатурн"}], ["Профиль ПВХ примыкающий оконный с армирующей сеткой, стандарт, 6мм (2,4м)", 131.15, "шт", {"key": "sat:тов-163766", "supplier": "Сатурн"}], ["Профиль ПВХ примыкающий оконный с армирующей сеткой, стандарт, 9мм (2,4м)", 140.91, "шт", {"key": "sat:тов-163767", "supplier": "Сатурн"}], ["Профиль направляющий ПН-2 50х40 3м (0,4мм)", 145.94, "шт", {"key": "sat:тов-014142", "supplier": "Сатурн"}], ["Профиль направляющий ПН-2 50х40 3м (0,45мм)", 155.64, "шт", {"key": "sat:тов-157825", "supplier": "Сатурн"}], ["Грильято 50х50мм профиль L=2400мм, h=40мм, белый", 164.01, "шт", {"key": "sat:тов-219014", "supplier": "Сатурн"}], ["Грильято 100х100мм профиль L=2400мм, h=40мм, белый", 164.01, "шт", {"key": "sat:тов-219002", "supplier": "Сатурн"}], ["Профиль направляющий ПН-2 50х40 3м (0,5мм)", 168.88, "шт", {"key": "sat:тов-123938", "supplier": "Сатурн"}], ["Грильято 50х50мм профиль L=2400мм, h=40мм, черный", 178.65, "шт", {"key": "sat:тов-219016", "supplier": "Сатурн"}], ["Грильято 100х100мм профиль L=2400мм, h=40мм, черный", 178.65, "шт", {"key": "sat:тов-219004", "supplier": "Сатурн"}], ["Профиль направляющий ПН-4 75х40 3м (0,4мм)", 178.95, "шт", {"key": "sat:тов-014143", "supplier": "Сатурн"}], ["Профиль стоечный ПС-2 50х50 3м (0,4мм)", 180.37, "шт", {"key": "sat:тов-014160", "supplier": "Сатурн"}], ["Профиль направляющий ПН-4 75х40 3м (0,45мм)", 188.73, "шт", {"key": "sat:тов-157826", "supplier": "Сатурн"}], ["Профиль стоечный ПС-2 50х50 3м (0,45мм)", 193.98, "шт", {"key": "sat:тов-157830", "supplier": "Сатурн"}], ["Профиль направляющий ПН-2 50х40 3м (0,6мм)", 195.53, "шт", {"key": "sat:тов-160994", "supplier": "Сатурн"}], ["Профиль направляющий ПН-4 75х40 3м (0,5мм)", 203.15, "шт", {"key": "sat:тов-123940", "supplier": "Сатурн"}], ["Профиль стоечный ПС-2 50х50 3м (0,5мм)", 205.24, "шт", {"key": "sat:тов-123950", "supplier": "Сатурн"}], ["Профиль стоечный ПС-4 75х50 3м (0,4мм)", 210.21, "шт", {"key": "sat:тов-014162", "supplier": "Сатурн"}], ["Профиль направляющий ПН-6 100х40 3м (0,45мм)", 220.57, "шт", {"key": "sat:тов-157827", "supplier": "Сатурн"}], ["КНАУФ Профиль потолочный направляющий ППН 28х27 (3м)", 223.87, "шт", {"key": "sat:тов-007558", "supplier": "Сатурн"}], ["Профиль стоечный ПС-4 75х50 3м (0,45мм)", 225.78, "шт", {"key": "sat:тов-157831", "supplier": "Сатурн"}], ["Профиль направляющий ПН-4 75х40 3м (0,6мм)", 235.41, "шт", {"key": "sat:тов-160995", "supplier": "Сатурн"}], ["Профиль направляющий ПН-6 100х40 3м (0,5мм)", 237.42, "шт", {"key": "sat:тов-123941", "supplier": "Сатурн"}], ["Профиль стоечный ПС-4 75х50 3м (0,5мм)", 238.9, "шт", {"key": "sat:тов-123954", "supplier": "Сатурн"}], ["Профиль стоечный ПС-2 50х50 3м (0,6мм)", 241.79, "шт", {"key": "sat:тов-161078", "supplier": "Сатурн"}], ["БИБЕР 86155 Гвоздодер шестигранный профиль обрезин. рукоятка 12х300мм (12/48)", 249.26, "шт", {"key": "sat:тов-077197", "supplier": "Сатурн"}], ["Профиль стоечный ПС-6 100х50 3м (0,45мм)", 256.32, "шт", {"key": "sat:тов-157832", "supplier": "Сатурн"}], ["Профиль-капельник ПВХ с армир.сеткой с защ.лентой (2,5м) Польша", 267.79, "шт", {"key": "sat:тов-163770", "supplier": "Сатурн"}], ["Профиль стоечный ПС-6 100х50 3м (0,5мм)", 271.19, "шт", {"key": "sat:тов-123956", "supplier": "Сатурн"}], ["Профиль направляющий ПН-6 100х40 3м (0,6мм)", 275.23, "шт", {"key": "sat:тов-160992", "supplier": "Сатурн"}], ["Профиль стоечный ПС-4 75х50 3м (0,6мм)", 281.66, "шт", {"key": "sat:тов-161079", "supplier": "Сатурн"}], ["Профиль стоечный ПС-4 75х50 4м (0,45мм)", 301.05, "шт", {"key": "sat:тов-159840", "supplier": "Сатурн"}], ["Профиль стоечный ПС-6 100х50 3м (0,6мм)", 321.52, "шт", {"key": "sat:тов-160993", "supplier": "Сатурн"}], ["БИБЕР 86151 Гвоздодер, шестигранный профиль 15х400мм (30)", 321.82, "шт", {"key": "sat:тов-077195", "supplier": "Сатурн"}], ["Профиль стоечный ПС-2 50х50 4м (0,6мм)", 322.39, "шт", {"key": "sat:тов-178153", "supplier": "Сатурн"}], ["Профиль соединительный неразъемный для поликарбоната 4х6000мм б/цв.", 357.49, "шт", {"key": "sat:тов-110993", "supplier": "Сатурн"}], ["Профиль стоечный ПС-4 75х50 4м (0,6мм)", 375.52, "шт", {"key": "sat:тов-175049", "supplier": "Сатурн"}], ["КНАУФ Профиль направляющий ПН-2 50х40 (3м)", 377.91, "шт", {"key": "sat:тов-007556", "supplier": "Сатурн"}], ["КНАУФ Профиль стоечный ПС-2 50х50 (3м)", 401.42, "шт", {"key": "sat:тов-007560", "supplier": "Сатурн"}], ["БИБЕР 86152 Гвоздодер, шестигранный профиль 15х600мм (24)", 423.34, "шт", {"key": "sat:тов-077203", "supplier": "Сатурн"}], ["Профиль стоечный ПС-6 100х50 4м (0,6мм)", 428.66, "шт", {"key": "sat:тов-165884", "supplier": "Сатурн"}], ["КНАУФ Профиль направляющий ПН-4 75х40 (3м)", 447.11, "шт", {"key": "sat:тов-007557", "supplier": "Сатурн"}], ["КНАУФ Профиль стоечный ПС-4 75х50 (3м)", 461.45, "шт", {"key": "sat:тов-007561", "supplier": "Сатурн"}], ["КНАУФ Профиль направляющий ПН-6 100х40 (3м)", 539.8, "шт", {"key": "sat:тов-033388", "supplier": "Сатурн"}], ["КНАУФ Профиль стоечный ПС-6 100х50 (3м)", 548.91, "шт", {"key": "sat:тов-007562", "supplier": "Сатурн"}], ["КНАУФ Профиль стоечный ПС-2 50х50 (4м)", 569.82, "шт", {"key": "sat:тов-039252", "supplier": "Сатурн"}], ["КНАУФ Профиль стоечный ПС-4 75х50 (4м)", 667.07, "шт", {"key": "sat:тов-039253", "supplier": "Сатурн"}], ["Профиль соединительный неразъемный для поликарбоната 10х6000мм б/цв.", 727.1, "шт", {"key": "sat:тов-166168", "supplier": "Сатурн"}], ["КНАУФ Профиль стоечный ПС-6 100х50 (4м)", 794.31, "шт", {"key": "sat:тов-038234", "supplier": "Сатурн"}], ["Профиль угловой для поликарбоната 4-6х6000мм б/цв.", 864.98, "шт", {"key": "sat:тов-114808", "supplier": "Сатурн"}], ["Профиль угловой для поликарбоната 8-10х6000мм б/цв.", 927.81, "шт", {"key": "sat:тов-162197", "supplier": "Сатурн"}], ["Профиль коньковый для поликарбоната 04-06х6000мм б/цв.", 1051.64, "шт", {"key": "sat:тов-114810", "supplier": "Сатурн"}], ["Профиль коньковый для поликарбоната 8-10х6000мм б/цв.", 1187.67, "шт", {"key": "sat:тов-161664", "supplier": "Сатурн"}], ["КНАУФ Профиль UA 50х40 (3м)", 1394.43, "шт", {"key": "sat:тов-178142", "supplier": "Сатурн"}], ["КНАУФ Профиль UA 75х40мм (3м)", 1622.6, "шт", {"key": "sat:тов-157276", "supplier": "Сатурн"}], ["КНАУФ Профиль UA 50х40мм (4м)", 1859.25, "шт", {"key": "sat:тов-173787", "supplier": "Сатурн"}], ["КНАУФ Профиль UA 100х40 (3м)", 1906.83, "шт", {"key": "sat:тов-190071", "supplier": "Сатурн"}], ["КНАУФ Профиль UA 75х40мм (4м)", 2163.65, "шт", {"key": "sat:тов-181778", "supplier": "Сатурн"}], ["КНАУФ Профиль UA 100х40 (4м)", 2541.97, "шт", {"key": "sat:тов-174524", "supplier": "Сатурн"}], ["Профиль ПП потолочный 60х27 3м (0,5мм)", 158.0, "шт", {"key": "demo:Профиль ПП потолочный 60х27 3м (0,5мм)Поставщик 2 (условный пример)", "supplier": "Поставщик 2 (условный пример)"}], ["Профиль потолочный ПП 60х27 3 м (0,5мм)", 171.5, "шт", {"key": "demo:Профиль потолочный ПП 60х27 3 м (0,5мм)Поставщик 3 (условный пример)", "supplier": "Поставщик 3 (условный пример)"}], ["Профиль ПП потолочный 60х27 4м (0,5мм)", 221.0, "шт", {"key": "demo:Профиль ПП потолочный 60х27 4м (0,5мм)Поставщик 2 (условный пример)", "supplier": "Поставщик 2 (условный пример)"}]]}], "chosen": {}, "chosenKey": {}, "state": null, "links": []}</script><script>
+(() => {
+/* APP: позиции заявки и сохранённые решения приходят из приложения (вместо примеров стенда). */
+const APP=JSON.parse(document.getElementById('podbor-data').textContent);
+const EXAMPLES=APP.positions;
 
-const groups = DATA.groups;
-const byLevel = n => groups.filter(g => g.level === n);
-
-document.getElementById("mock").textContent =
-  "В этом файле один поставщик, поэтому в каждой группе по одному предложению. Когда загружены прайсы многих поставщиков, одинаковые по характеристикам товары собираются в одну группу: сверху её минимальная цена, по нажатию раскрывается таблица предложений.";
-document.getElementById("recognised").innerHTML =
-  '<span class="muted">Программа поняла</span>' +
-  '<span class="chip acc">тип: профиль</span>' +
-  '<span class="chip acc">размер: 60х27</span>' +
-  '<span class="muted">60*27, 60×27, 60x27, 60х27 и 60/27 для поиска один и тот же размер</span>' +
-  '<span class="muted">· получено всё: ' + DATA.total + ' позиций в ' + groups.length + ' группах, лимита 8 нет</span>';
-
-function chips(g){
-  const out = [];
-  if (g.level === 2) out.push('<span class="chip warn">размер не указан</span>');
-  g.size.forEach(s => out.push('<span class="chip ' + (g.level === 3 ? 'no' : 'ok') + '">' + esc(s) + '</span>'));
-  if (g.length) out.push('<span class="chip">длина ' + esc(g.length) + '</span>');
-  if (g.thick) out.push('<span class="chip">толщина ' + esc(g.thick) + ' мм</span>');
-  else if (g.thick_unknown) out.push('<span class="chip warn">толщина не указана</span>');
-  return out.join("");
+/* ---------- Storage (per viewer convenience) ---------- */
+/* APP: решения хранятся в приложении, а не в браузере. Позиции заявки берутся свежими из приложения,
+   свои позиции и отметки — из сохранённого состояния; «Выбрано» по позициям заявки — то, что сейчас в счёте. */
+/* APP.local — the claude.ai stand built from this same file (scripts/build_podbor_stand.py):
+   decisions stay in the browser, nothing is sent anywhere. */
+const LOCAL_KEY='podbor-stand-v2';
+if(APP.local){try{APP.state=JSON.parse(localStorage.getItem(LOCAL_KEY)||'null')}catch(e){APP.state=null}}
+const load=()=>{
+  const s=APP.state&&typeof APP.state==='object'?APP.state:{};
+  const appIds=new Set(APP.positions.map(p=>p.id));
+  const own=(s.positions||[]).filter(p=>p&&!appIds.has(p.id)&&!p.app);
+  const chosen={};
+  for(const[k,v]of Object.entries(s.chosen||{}))if(APP.local||!appIds.has(k))chosen[k]=v;
+  Object.assign(chosen,APP.chosen||{});
+  const chosenKey={};
+  for(const[k,v]of Object.entries(s.chosenKey||{}))if(APP.local||!appIds.has(k))chosenKey[k]=v;
+  Object.assign(chosenKey,APP.chosenKey||{});
+  const positions=[...APP.positions,...own];
+  const active=positions.some(p=>p.id===s.active)?s.active:null;
+  return {...s,version:5,positions,chosen,chosenKey,active,marks:s.marks||{}};
+};
+let saveTimer=null, synced={...(APP.chosen||{})}, syncedKey={...(APP.chosenKey||{})}, revision=APP.revision, syncing=Promise.resolve();
+const appStatus=(text,error)=>{const n=document.getElementById('app-status');if(n){n.textContent=text||'';n.className=error?'app-status error':'app-status'}};
+const post=async(url,body)=>{
+  const r=await fetch(url,{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json','X-Requested-With':'podbor'},body:JSON.stringify(body)});
+  const d=await r.json().catch(()=>({}));
+  if(!r.ok)throw new Error(d.detail||('Ошибка '+r.status));
+  return d;
+};
+// «Выбрать» по позиции заявки идёт в счёт приложения: то же действие, что выбор товара в сравнении.
+// What the page shows for the product: the server checks the invoice gets the same numbers.
+function pagePrice(pos,product){
+  if(!product)return null;
+  const mp=modelOf(pos).products.find(p=>p.i===pos.products.indexOf(product));
+  return mp?{unit_price:mp.unitPrice,buy:mp.buy,total:mp.total}:null;
 }
-
-function offerRows(g, gi){
-  const min = g.offers[0].price;
-  return g.offers.map((o, oi) =>
-    '<tr class="' + (g.offers.length > 1 && o.price === min ? 'best ' : '') + (picked && picked.g === gi && picked.o === oi ? 'picked' : '') + '">' +
-    '<td>' + esc(o.supplier) + '</td><td>' + esc(o.name) + '</td><td>' + esc(o.article) + '</td><td>' + esc(o.unit) + '</td>' +
-    '<td class="num">' + fmt(o.price) + (g.offers.length > 1 && o.price === min ? ' <span class="star">★ мин.</span>' : '') + '</td><td>' + esc(o.date) + '</td>' +
-    '<td><button class="btn" data-pick="' + gi + ':' + oi + '">Выбрать</button></td></tr>').join("");
+// A conversion set in the table goes to the app too, so the invoice counts the same way.
+function sendConversion(pos,p,factor){
+  if(APP.local||!pos.position)return;
+  const key=pos.products[p.i]?.[3]?.key; if(!key)return;
+  syncing=syncing.then(async()=>{
+    try{const d=await post(APP.action_url,{action:'conversion',position:pos.position,key,factor,csrf:APP.csrf,revision});revision=d.revision;appStatus('Пересчёт единиц сохранён.')}
+    catch(e){appStatus('Пересчёт не сохранён: '+e.message,true)}
+  });
 }
-
-function groupHtml(g){
-  const gi = groups.indexOf(g);
-  const isSel = picked && picked.g === gi;
-  const n = g.offers.length;
-  return '<article class="grp' + (isSel ? ' sel' : '') + '" data-g="' + gi + '">' +
-    '<div class="gh" tabindex="0" role="button" aria-expanded="false" data-toggle="' + gi + '">' +
-    '<span class="caret">▸</span><div class="t"><span class="name">' + esc(g.title) + '</span>' + chips(g) + '</div>' +
-    '<span class="price">от ' + fmt(g.offers[0].price) + '</span>' +
-    '<span class="cnt">' + n + ' ' + (n === 1 ? 'предложение' : 'предложения') + '</span>' +
-    '<button class="btn" data-cheapest="' + gi + '">Выбрать самое дешёвое</button></div>' +
-    '<div class="offers" hidden><table><thead><tr><th>Поставщик</th><th>Наименование в прайсе</th><th>Артикул</th><th>Ед.</th><th class="num">Цена за шт</th><th>Дата прайса</th><th></th></tr></thead><tbody>' +
-    offerRows(g, gi) + '</tbody></table></div></article>';
-}
-
-function accessoriesHtml(){
-  const rows = DATA.accessories.map(a =>
-    '<tr><td>' + esc(a.supplier) + '</td><td>' + esc(a.name) + '</td><td>' + esc(a.article) + '</td><td>' + esc(a.unit) + '</td><td class="num">' + fmt(a.price) + '</td><td>' + esc(a.date) + '</td></tr>').join("");
-  return '<div class="offers" style="padding-left:14px"><p class="muted" style="margin:10px 0 6px">Это не профили, а детали к ним: название начинается с другого типа товара («Подвес…», «Соединитель…»). В поиске профилей их нет; свёрнутой группой они показаны для решения.</p><table><thead><tr><th>Поставщик</th><th>Наименование в прайсе</th><th>Артикул</th><th>Ед.</th><th class="num">Цена за шт</th><th>Дата прайса</th></tr></thead><tbody>' + rows + '</tbody></table></div>';
-}
-
-function levelHtml(L){
-  const gs = byLevel(L.n);
-  const items = gs.reduce((s, g) => s + g.offers.length, 0);
-  return '<section class="panel lv" data-level="' + L.n + '"><button aria-expanded="' + L.open + '" data-lv="' + L.n + '">' +
-    '<span class="caret">▸</span><span class="ttl">Уровень ' + L.n + ' · ' + L.ttl + '</span>' +
-    '<span class="chip ' + L.cls + '">' + gs.length + ' ' + (gs.length === 1 ? 'группа' : (gs.length < 5 ? 'группы' : 'групп')) + ' · от ' + fmt(gs[0].offers[0].price) + '</span>' +
-    '<span class="note">' + L.note + '</span></button>' +
-    '<div class="body"' + (L.open ? '' : ' hidden') + '>' + gs.map(groupHtml).join("") + '</div></section>';
-}
-
-function render(){
-  const open = {};
-  document.querySelectorAll("[data-lv]").forEach(b => open["l" + b.dataset.lv] = b.getAttribute("aria-expanded") === "true");
-  const openG = [...document.querySelectorAll("[data-toggle][aria-expanded='true']")].map(e => e.dataset.toggle);
-  const acc = document.querySelector("[data-acc]");
-  const accOpen = acc ? acc.getAttribute("aria-expanded") === "true" : false;
-  LEVELS.forEach(L => { if (("l" + L.n) in open) L.open = open["l" + L.n]; });
-  document.getElementById("levels").innerHTML = LEVELS.map(levelHtml).join("") +
-    '<section class="panel lv"><button data-acc aria-expanded="' + accOpen + '"><span class="caret">▸</span><span class="ttl">Принадлежности · подвесы, соединители</span>' +
-    '<span class="chip">' + DATA.accessories.length + ' поз.</span><span class="note">Свёрнуто по умолчанию. Решение, показывать ли их, ещё не принято.</span></button><div class="body"' + (accOpen ? '' : ' hidden') + '>' + accessoriesHtml() + '</div></section>';
-  openG.forEach(i => setGroup(i, true));
-  const bar = document.getElementById("bar");
-  if (picked){
-    const o = groups[picked.g].offers[picked.o];
-    bar.innerHTML = '<span class="chip ok">Выбрано</span><span class="what">' + esc(o.name) + ' · ' + esc(o.supplier) + ' · <b>' + fmt(o.price) + '</b> за шт</span><button class="btn" id="clear">Снять выбор</button>';
-  } else {
-    bar.innerHTML = '<span class="chip">Выбор не сделан</span><span class="what muted">Откройте группу, чтобы увидеть предложения, или нажмите «Выбрать самое дешёвое» у группы.</span>';
+function syncChosen(){
+  if(APP.local)return; // on the stand «Выбрать» only marks the product
+  for(const pos of APP.positions){
+    const cur=state.chosen?.[pos.id]??null, prev=synced[pos.id]??null;
+    if(cur===prev)continue;
+    synced[pos.id]=cur;
+    syncing=syncing.then(async()=>{
+      const wanted=state.chosenKey?.[pos.id], product=cur==null?null:(pos.products.find(p=>p[0]===cur&&p[3]?.key===wanted)||pos.products.find(p=>p[0]===cur));
+      try{
+        appStatus(cur==null?'Убираю товар из счёта…':'Переношу выбор в счёт…');
+        const d=await post(APP.action_url,cur==null
+          ?{action:'value_unselect',position:pos.position,csrf:APP.csrf,revision}
+          :{action:'value_accept_select',position:pos.position,key:product?.[3]?.key,csrf:APP.csrf,revision,page:pagePrice(pos,product)});
+        revision=d.revision;syncedKey[pos.id]=cur==null?undefined:product?.[3]?.key;
+        appStatus(cur==null?'Товар убран из счёта.':'Выбор сохранён в счёте.');
+      }catch(e){
+        synced[pos.id]=prev;if(state.chosenKey){if(syncedKey[pos.id]==null)delete state.chosenKey[pos.id];else state.chosenKey[pos.id]=syncedKey[pos.id]}
+        if(prev==null)delete state.chosen[pos.id];else state.chosen[pos.id]=prev;
+        appStatus('Позиция «'+pos.name+'»: '+e.message,true);
+        storeState();render();
+      }
+    });
   }
 }
-function setGroup(i, on){
-  const art = document.querySelector('[data-g="' + i + '"]');
-  if (!art) return;
-  art.querySelector("[data-toggle]").setAttribute("aria-expanded", on);
-  art.querySelector(".offers").hidden = !on;
-  art.querySelector(".caret").style.transform = on ? "rotate(90deg)" : "";
+function storeState(){
+  if(APP.local){try{localStorage.setItem(LOCAL_KEY,JSON.stringify(state))}catch(e){}return}
+  clearTimeout(saveTimer);
+  saveTimer=setTimeout(async()=>{
+    const appIds=new Set(APP.positions.map(p=>p.id));
+    const body={...state,positions:state.positions.filter(p=>!appIds.has(p.id))};
+    try{await post(APP.state_url,{state:body})}catch(e){appStatus('Решения не сохранены: '+e.message,true)}
+  },600);
 }
-document.addEventListener("click", e => {
-  const t = e.target;
-  if (t.closest("#clear")) { picked = null; render(); return; }
-  const cheap = t.closest("[data-cheapest]");
-  if (cheap) { picked = {g: +cheap.dataset.cheapest, o: 0}; render(); return; }
-  const pick = t.closest("[data-pick]");
-  if (pick) { const [g, o] = pick.dataset.pick.split(":").map(Number); picked = {g, o}; render(); setGroup(g, true); return; }
-  const lv = t.closest("[data-lv],[data-acc]");
-  if (lv) { const on = lv.getAttribute("aria-expanded") !== "true"; lv.setAttribute("aria-expanded", on); lv.nextElementSibling.hidden = !on; return; }
-  const tg = t.closest("[data-toggle]");
-  if (tg) { setGroup(tg.dataset.toggle, tg.getAttribute("aria-expanded") !== "true"); }
-});
-document.addEventListener("keydown", e => {
-  if ((e.key === "Enter" || e.key === " ") && e.target.matches("[data-toggle]")) { e.preventDefault(); e.target.click(); }
-});
+const save=()=>{storeState();syncChosen()};
+/* APP: товар определяется не только названием — у разных поставщиков названия могут совпадать. */
+const metaOf=(pos,p)=>pos.products[p.i]?.[3]||{};
+const isChosen=(pos,p)=>{if(state.chosen?.[pos.id]!==p.name)return false;const k=state.chosenKey?.[pos.id];return !k||!metaOf(pos,p).key||metaOf(pos,p).key===k};
+function chooseToggle(pos,p){
+  state.chosen=state.chosen||{};state.chosenKey=state.chosenKey||{};
+  if(isChosen(pos,p)){state.chosen[pos.id]=undefined;delete state.chosenKey[pos.id]}
+  else{state.chosen[pos.id]=p.name;state.chosenKey[pos.id]=metaOf(pos,p).key}
+  if(state.chosenKey[pos.id]!==syncedKey[pos.id]&&state.chosen[pos.id]!=null)synced[pos.id]=undefined; // другой товар с тем же названием
+  save();render();
+}
+// Поставщик мелкой строкой и фото по нажатию: картинка грузится с сайта поставщика только после нажатия.
+function productMeta(pos,p){
+  const m=metaOf(pos,p);
+  if(!m.supplier&&!m.image_url)return null;
+  const box=el('div',{class:'supplier-line'},m.supplier?el('span',{},m.supplier):null);
+  if(m.image_url){
+    const holder=el('div',{});
+    const btn=el('button',{type:'button',class:'photo-btn','aria-expanded':'false',title:'Показать фото товара (загружается с сайта поставщика)',onclick:()=>{
+      if(holder.firstChild){holder.replaceChildren();btn.setAttribute('aria-expanded','false');return}
+      const img=el('img',{alt:'Фото: '+p.name,src:m.image_url,referrerpolicy:'no-referrer',class:'photo'});
+      img.onerror=()=>holder.replaceChildren(el('span',{class:'note'},'Фото не загрузилось'));
+      holder.append(img);btn.setAttribute('aria-expanded','true');
+    }},'Фото');
+    box.append(btn,holder);
+  }
+  return box;
+}
+let state=load()||{positions:EXAMPLES,active:'ex1',marks:{}};
+state.positions=(state.positions||[]).filter(Boolean);
+if(state.version!==5){state.marks={};state.chosen={};state.positions=EXAMPLES;state.active=null;state.version=5;}
+if(!state.positions?.length){state.positions=EXAMPLES;state.active='ex1'}
+
+/* ---------- Logic (ported from characteristic_comparison.py / supplier_comparison.py) ---------- */
+const WORD=/[0-9a-zа-яё]+(?:[.,/×xх-][0-9a-zа-яё]+)*/gi;
+const CYR='асеорхкмтвн', LAT='aceopxkmtbh';
+// Words of a name, each once; in words with digits Cyrillic look-alikes become Latin («М8х1000» = «M8x1000»).
+function nameWords(name){
+  const out=new Set();
+  for(const raw of String(name||'').match(WORD)||[]){
+    let w=raw.toLowerCase().replaceAll('ё','е');
+    if(/\d/.test(w))w=[...w].map(c=>{const i=CYR.indexOf(c);return i<0?c:LAT[i]}).join('');
+    out.add(w);
+    // Parts of compound designations are words too: «m12x1000» -> m12, 1000; «креп-комп» -> креп, комп.
+    const size=w.match(/^([a-zа-я]*\d+(?:[.,]\d+)?)[xх×*](\d+(?:[.,]\d+)?)$/);
+    if(size){out.add(size[1]);out.add(size[2]);}
+    if(w.includes('-'))for(const part of w.split('-'))if(part.length>1)out.add(part);
+  }
+  return out;
+}
+// Russian word forms are one word: «шпилька», «шпильки», «шпилькой» -> шпильк.
+const ENDINGS=['ыми','ими','ого','его','ому','ему','ами','ями','ой','ей','ий','ый','ая','яя','ое','ее','ые','ие','ых','их','ым','им','ую','юю','ом','ем','ах','ях','ов','ев','а','я','ы','и','у','ю','е','о','ь','й'];
+function stem(w){
+  if(!/^[а-яе]+$/.test(w)||w.length<5)return w;
+  for(const e of ENDINGS)if(w.endsWith(e)&&w.length-e.length>=4)return w.slice(0,-e.length);
+  return w;
+}
+function close(a,b){ // one letter added, dropped or changed: «двуслойн» / «двухслойн»
+  if(Math.abs(a.length-b.length)>1||Math.min(a.length,b.length)<7)return false;
+  let i=0,j=0,diff=0;
+  while(i<a.length&&j<b.length){
+    if(a[i]===b[j]){i++;j++;continue}
+    if(++diff>1)return false;
+    if(a.length>b.length)i++; else if(b.length>a.length)j++; else {i++;j++}
+  }
+  return diff+(a.length-i)+(b.length-j)<=1;
+}
+function unit(u){
+  const s=String(u||'').toLowerCase().replace(/[.\s]/g,'');
+  if(['м','мп','погм','метр','метров'].includes(s))return 'м';
+  if(['шт','штука','штуки','штук'].includes(s))return 'шт';
+  if(s.startsWith('упак'))return 'упак';
+  if(s.startsWith('рулон'))return 'рулон';
+  return s;
+}
+// Pieces in one supplier unit: «(50 шт.)», «, 5 шт.», «(2шт)».
+// Pieces in one supplier unit: «(50 шт.)», «, 5 шт.», «(2шт)», «(уп/250шт.)», «уп. 100 шт».
+function packPieces(name){
+  const m=String(name).match(/(?:[(,/]|уп[а-яё]*\.?)\s*(\d{1,5})\s*(?:шт\.?|штук[а-яё]*)(?=[\s).,]|$)/i);
+  return m&&+m[1]>1?+m[1]:0;
+}
+// The supplier's unit may carry the count itself: «Упаковка 2600 шт».
+function unitPieces(u){const m=String(u||'').match(/(\d{1,6})\s*шт/i);return m&&+m[1]>1?+m[1]:0}
+// Metres in a roll sold per piece: «в рулоне 1,05x10 м» -> 10.
+function rollLength(name){
+  if(!/рулон/i.test(name))return 0;
+  const m=String(name).match(/(\d+(?:[.,]\d+)?)\s*[xх×*]\s*(\d+(?:[.,]\d+)?)\s*м(?![a-zа-яё0-9²])/i);
+  return m?parseFloat(m[2].replace(',','.')):0;
+}
+const convKey=(pos,p)=>pos.products[p.i]?.[3]?.key||p.name;
+function conversion(pos,p){
+  const req=unit(pos.unit), sup=unit(p.unit);
+  // Set by hand in the table: how many request units are in one supplier unit.
+  const own=state.conv?.[pos.id]?.[convKey(pos,p)];
+  if(own>0)return [own,`задано: 1 ${p.unit} = ${String(own).replace('.',',')} ${pos.unit}`];
+  if(req==='шт'&&(sup==='шт'||sup==='упак')){const k=unitPieces(p.unit)||packPieces(p.name);if(k)return [k,`${k} шт`]}
+  if(req===sup)return [1,''];
+  if(req==='м'&&(sup==='шт'||sup==='рулон')){const l=rollLength(p.name);if(l)return [l,`${String(l).replace('.',',')} м`]}
+  // A pair is two pieces: a piece is half of a requested pair (and a pair is two requested pieces).
+  if(req==='пара'&&sup==='шт')return [0.5,'2 шт = 1 пара'];
+  if(req==='шт'&&sup==='пара')return [2,'пара = 2 шт'];
+  return [null,`Нет пересчёта: заявка в «${pos.unit}», поставщик в «${p.unit}»`];
+}
+
+/* ---------- Characteristics from a name ---------- */
+function tokens(name){
+  return (String(name||'').match(WORD)||[]).map(raw=>{
+    let w=raw.toLowerCase().replaceAll('ё','е');
+    if(/\d/.test(w))w=[...w].map(c=>{const i=CYR.indexOf(c);return i<0?c:LAT[i]}).join('');
+    return w;
+  });
+}
+const FIELDS=['Тип товара','Резьба','Условный проход','Давление','Длина','Ширина','Толщина','Диаметр','Посадка','Конструкция','Размеры','Размер','Сечение','Напряжение','Мощность','Ток','Объём','Масса','Температура','Защита IP','Обороты','Момент','Площадь','Зернистость','Угол','Угол резьбы','Класс прочности','Марка стали','Стандарт','Материал','Покрытие','Цвет','Фасовка','Бренд','Код / артикул'];
+const BRANDS=new Set(['starfix','aurafort','креп-комп','опм','messer','мастак','rtp','ремоколор','mw','zitar','fischer','sormat','mungo','hilti','зубр','makita','bosch','gp','askaynak','alfamag','valtti','руссиз','tikkurila','knauf','ceresit','tytan','penosil','dewalt','metabo','интерскол']);
+const CLASSES=new Set(['4.6','4.8','5.6','5.8','6.8','8.8','10.9','12.9']);
+const NUM=/^\d+(?:[.,]\d+)?$/, numv=s=>parseFloat(String(s).replace(',','.'));
+const fmt=n=>String(+(+n).toFixed(3)).replace('.',',');
+const len=v=>v>=1000?fmt(v/1000)+' м':fmt(v)+' мм'; // one label for one value
+// Words that name a characteristic by themselves (matched by stem, so «стальная» = «стальной»).
+const WORD_DICT={
+  'Цвет':['red','blue','green','yellow','black','white','orange','grey','gray','белый','черный','чёрный','серый','зеленый','синий','красный','желтый','бурый','коричневый','прозрачный','бежевый','оранжевый','голубой','фиолетовый','графитовый','хромированный'],
+  'Материал':['стальной','сталь','нержавеющий','латунный','латунь','медный','медь','алюминиевый','алюминий','чугунный','чугун','пвх','пнд','полипропилен','полипропиленовый','полиэтилен','полиэтиленовый','резиновый','резина','деревянный','пластиковый','пластик','поликарбонат','поликарбонатный','стекло','стеклянный','картон','бумажный','текстильный','силиконовый','полиуретановый','керамический','бетонный','фанерный','монолитный','a2','a4'],
+  'Покрытие':['оцинкованный','оцинк','цинк','zn','никелированный','окрашенный','порошковый','омедненный','омеднённый','фосфатированный','черненый','анодированный'],
+};
+const NN='(\\d+(?:[.,]\\d+)?)', NA='(?![a-zа-яё0-9])', NB='(?<![a-zа-яё0-9.,])';
+const R=(src)=>new RegExp(src,'gi');
+// Rules over the whole name; each takes its text out of the words heap.
+// One spelling for one size: «50*40», «50x40 мм», «50×40» -> «50×40 мм»; «2,0» = «2». Sizes without a unit are millimetres.
+const dims=(ns,u)=>{const k=u&&u.toLowerCase()==='см'?10:1;const v=ns.map(x=>numv(x)*k);return [v.map(fmt).join('×')+' мм',v[0]]};
+function dims3(m){
+  const k=m[4]&&m[4].toLowerCase()==='см'?10:1, v=[m[1],m[2],m[3]].map(x=>numv(x)*k), sorted=[...v].sort((a,b)=>a-b);
+  const big=v.findIndex(x=>x===sorted[2]), small=v.findIndex(x=>x===sorted[0]);
+  if(sorted[2]>=500&&sorted[2]>=10*sorted[1]){const rest=v.filter((_,i)=>i!==big);return {multi:[['Размеры',...dims(rest)],['Длина',len(v[big]),v[big]]]}}
+  if(sorted[0]*10<=sorted[1]){const rest=v.filter((_,i)=>i!==small);return {multi:[['Размеры',...dims(rest)],['Толщина',fmt(v[small])+' мм',v[small]]]}}
+  return dims(v);
+}
+/* Rubric schemes by kind of product (first noun of the name). slots — rubrics of the kind with the usual
+   range in mm: a generic «N мм» goes to the free rubric it fits; a bare number goes there by elimination and
+   is a guess (shown with «?», not used to drop products). dims — rubrics of «A×B» for this kind, in order. */
+// Different words for one kind of product: «переноска» is an extension cord («удлинитель»).
+const TYPE_SYNONYMS={'переноск':'удлинитель'};
+// Icons of the product actions (simple outline drawings, 18 px).
+const ICONS={
+  cart:'<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="9" cy="20" r="1.4"/><circle cx="18" cy="20" r="1.4"/><path d="M2 3h3l2.6 12.2a2 2 0 0 0 2 1.6h8.2a2 2 0 0 0 2-1.5L21.5 7H6"/></svg>',
+  pin:'<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 17v5"/><path d="M8 3h8l-1 6 3 3v2H6v-2l3-3z"/></svg>',
+  scales:'<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v18M7 21h10M5 7h14M12 5l-7 2M12 5l7 2"/><path d="M5 7l-3 7a3 3 0 0 0 6 0z"/><path d="M19 7l-3 7a3 3 0 0 0 6 0z"/></svg>',
+  eyeoff:'<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 3l18 18"/><path d="M10.6 5.1A9.8 9.8 0 0 1 12 5c6 0 9.5 7 9.5 7a17 17 0 0 1-3 3.9M6.6 6.6C3.9 8.4 2.5 12 2.5 12s3.5 7 9.5 7a9.4 9.4 0 0 0 4.3-1"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/></svg>'
+};
+const SCHEMES=[
+  {re:/^(профил|швеллер|уголок|уголк|балк)/, slots:[['Длина',1000,12000],['Толщина',0.3,6]]},
+  {re:/^труб/, slots:[['Диаметр',6,1600],['Толщина',0.5,20],['Длина',1000,12000]], dims:['Диаметр','Толщина']},
+  {re:/^(лист|плит|панел)/, slots:[['Толщина',0.3,100]]},
+  {re:/^фанер/, slots:[['Толщина',3,40]]},
+  {re:/^поликарбонат/, slots:[['Толщина',2,32]]},
+  {re:/^дюбел/, slots:[['Диаметр',4,20],['Длина',20,300]], dims:['Диаметр','Длина']},
+  {re:/^(болт|винт|шпильк|штанг|анкер|шуруп|саморез|заклепк)/, slots:[['Длина',4,3000],['Диаметр',2,36]]},
+  {re:/^(гайк|шайб)/, slots:[]},
+  {re:/^электрод/, slots:[['Диаметр',1.5,6.5],['Длина',200,500]], dims:['Диаметр','Длина']},
+  {re:/^проволок/, slots:[['Диаметр',0.3,6]]},
+  {re:/^(круг|диск)/, slots:[['Диаметр',50,500],['Толщина',0.5,10],['Посадка',10,32]], dims:['Диаметр','Посадка']},
+  {re:/^сверл/, slots:[['Диаметр',0.5,60],['Длина',20,600]], dims:['Диаметр','Длина']},
+  {re:/^трос/, slots:[['Диаметр',0.5,40]], dims:'Конструкция'},
+];
+// Kinds of plastic: a request for «пластиковый» is met by any of them.
+const PLASTICS=new Set(['пластиковый','пвх','пнд','полипропиленовый','полиэтиленовый','поликарбонатный','полиамид','нейлон','полиуретановый']);
+const slotLabel=(f,v)=>f==='Длина'?len(v):fmt(v)+' мм';
+// Where the numbers of a value stand in the name, between s and e: «50×40» of «50x40x3000 мм».
+function numSpan(text,s,e,value){
+  const want=(String(value).match(/\d+(?:,\d+)?/g)||[]).map(x=>numv(x));
+  const got=[...text.slice(s,e).matchAll(/\d+(?:[.,]\d+)?/g)].map(m=>({v:numv(m[0]),s:s+m.index,e:s+m.index+m[0].length}));
+  const hit=got.filter(g=>want.some(w=>[1,10,1000].some(k=>Math.abs(w-g.v*k)<1e-9||Math.abs(w*k-g.v)<1e-9)));
+  if(!hit.length)return {s,e};
+  let a=Math.min(...hit.map(h=>h.s));
+  while(a>s&&/[a-zа-яё]/i.test(text[a-1])&&!/[xх×*]/i.test(text[a-1]))a--; // «М10»: the letter belongs to the number
+  return {s:a,e:Math.max(...hit.map(h=>h.e))};
+}
+function applyScheme(found,t,used,text,toks){
+  const kind=String(found.find(f=>f.field==='Тип товара')?.value||'');
+  const sch=SCHEMES.find(x=>x.re.test(kind)); if(!sch)return;
+  const has=f=>found.some(x=>x.field===f);
+  const range=f=>sch.slots.find(s=>s[0]===f);
+  const fits=(f,v)=>{const r=range(f);return !r||v>=r[1]&&v<=r[2]};
+  const slot=v=>sch.slots.find(([f,a,b])=>!has(f)&&v>=a&&v<=b);
+  if(sch.dims)for(const f of found.filter(x=>x.field==='Размеры')){
+    if(sch.dims==='Конструкция'){f.field='Конструкция';f.value=f.value.replace(/ мм$/,'');continue}
+    const ns=(f.value.match(/\d+(?:,\d+)?/g)||[]).map(numv), free=sch.dims.filter(d=>!has(d));
+    if(ns.length===free.length&&ns.every((v,j)=>fits(free[j],v))){found.splice(found.indexOf(f),1);ns.forEach((v,j)=>found.push({field:free[j],value:slotLabel(free[j],v),n:v,...(f.s!=null?{...numSpan(text,f.s,f.e,fmt(v)),gs:f.gs??f.s,ge:f.ge??f.e}:{})}))}
+  }
+  for(const f of found)if(f.field==='Размер'&&f.n!=null){const s=slot(f.n);if(s){f.field=s[0];f.value=slotLabel(s[0],f.n)}}
+  t.forEach((w,i)=>{if(used.has(i)||!NUM.test(w))return;const v=numv(w),s=slot(v);if(s){found.push({field:s[0],value:slotLabel(s[0],v),n:v,guess:true,s:toks[i].s,e:toks[i].e});used.add(i)}});
+}
+const TEXT_RULES=[
+  ['Марка стали',R('\\bAISI\\s*(\\d{3}L?)'),m=>['AISI '+m[1].toUpperCase(),null]],
+  ['Угол резьбы',R('угол\\s+резьбы\\s+'+NN+'\\s*(?:°|градус[а-яё]*|гр\\.?)?'),m=>[m[1]+'°',numv(m[1])]],
+  ['Условный проход',R('(?:\\bDN|Д[уy])\\s*'+NN+NA),m=>['DN '+m[1],numv(m[1])]],
+  ['Давление',R('(?:\\bPN|Р[уy])\\s*'+NN+NA),m=>['PN '+m[1],numv(m[1])]],
+  ['Давление',R(NB+NN+'\\s*(бар|bar|мпа|mpa|атм)'+NA),m=>[m[1]+' '+m[2].toLowerCase(),numv(m[1])]],
+  ['Сечение',R(NB+NN+'\\s*[xх×*]\\s*'+NN+'\\s*(?:мм²|мм2|кв\\.?\\s*мм)'),m=>[m[1]+'×'+m[2]+' мм²',numv(m[1])*numv(m[2])]],
+  ['Сечение',R(NB+NN+'\\s*(?:мм²|мм2|кв\\.?\\s*мм)'),m=>[m[1]+' мм²',numv(m[1])]],
+  ['Площадь',R(NB+NN+'\\s*(?:м²|м2|кв\\.?\\s*м)'+NA),m=>[m[1]+' м²',numv(m[1])]],
+  ['Мощность',R(NB+NN+'\\s*(квт|kw|вт|w)'+NA),m=>{const v=numv(m[1])*(/^к|^k/i.test(m[2])?1000:1);return [v>=1000?fmt(v/1000)+' кВт':fmt(v)+' Вт',v]}],
+  ['Напряжение',R(NB+NN+'\\s*(?:в|v|вольт)'+NA),m=>[m[1]+' В',numv(m[1])]],
+  ['Ток',R(NB+NN+'\\s*(?:а|a)'+NA),m=>[m[1]+' А',numv(m[1])]],
+  ['Объём',R(NB+NN+'\\s*(мл|ml|л|l)'+NA),m=>{const v=numv(m[1])/(/^м|^m/i.test(m[2])?1000:1);return [fmt(v)+' л',v]}],
+  ['Масса',R(NB+NN+'\\s*(кг|kg|г|гр|g)\\.?'+NA),m=>{const v=numv(m[1])/(/^к|^k/i.test(m[2])?1:1000);return [fmt(v)+' кг',v]}],
+  ['Температура',R(NB+NN+'\\s*°\\s*[cс]'+NA),m=>[m[1]+' °C',numv(m[1])]],
+  ['Защита IP',R('\\bIP\\s*(\\d{2})'+NA),m=>['IP'+m[1],+m[1]]],
+  ['Обороты',R(NB+NN+'\\s*(?:об/мин|rpm)'),m=>[m[1]+' об/мин',numv(m[1])]],
+  ['Момент',R(NB+NN+'\\s*(?:н[·*]?м|nm)'+NA),m=>[m[1]+' Н·м',numv(m[1])]],
+  ['Угол',R(NB+NN+'\\s*(?:°|градус[а-яё]*)'),m=>[m[1]+'°',numv(m[1])]],
+  ['Цвет',R('\\bRAL\\s*(\\d{4})'),m=>['RAL '+m[1],null]],
+  ['Марка стали',new RegExp('(?<![\\d.,×xхA-Za-zА-Яа-я])(\\d{2}[ХГ]\\d{0,2}[А-Я][А-Я\\d]*)(?![A-Za-zА-Яа-я0-9])','g'),m=>[m[1],null]],
+  ['Стандарт',R('(ГОСТ(?:\\s+Р)?|ТУ)\\s*(\\d[\\d./-]*)(?![\\d./-])(?!\\s*(?:мм|см|м)(?![а-яёa-z]))'),m=>[m[1].toUpperCase()+' '+m[2],null]],
+  ['Длина',R('длин[аойе]*\\s*'+NN+'\\s*(мм|см|м)?'+NA),m=>{const v=numv(m[1])*({см:10,м:1000}[(m[2]||'').toLowerCase()]||1);return [len(v),v]}],
+  ['Ширина',R('ширин[аойе]*\\s*'+NN+'\\s*(мм|см|м)?'+NA),m=>{const v=numv(m[1])*({см:10,м:1000}[(m[2]||'').toLowerCase()]||1);return [len(v),v]}],
+  ['Толщина',R('(?:толщин[аойе]*|стенка)\\s*'+NN+'\\s*(мм)?'),m=>[fmt(numv(m[1]))+' мм',numv(m[1])]],
+  ['Диаметр',R('(?:диаметр(?:ом)?|диам\\.?|[ØФ⌀])\\s*'+NN+'(?:\\s*-\\s*'+NN+')?\\s*(мм)?'),m=>[m[1]+(m[2]?'-'+m[2]:'')+' мм',numv(m[1])]],
+  // Three sizes: a much larger one is the length (профиль 50×40×3000 мм -> 50×40 мм, длина 3 м),
+  // a much smaller one is the thickness (лист 2×1250×2500 -> толщина 2 мм, 1250×2500 мм).
+  ['Размеры',R(NB+NN+'\\s*[xх×*]\\s*'+NN+'\\s*[xх×*]\\s*'+NN+'(?:\\s*(мм|см))?'),m=>dims3(m)],
+  ['Размеры',R(NB+NN+'\\s*[xх×*]\\s*'+NN+'(?:\\s*(мм|см))?(?![xх×*\\d]|\\s*[xх×*])(?!\\s*м(?![мa-zа-яё]))'+NA),m=>dims([m[1],m[2]],m[3])],
+];
+function extract(name){
+  const text=String(name||''), toks=[], found=[], covered=[];
+  for(const m of text.matchAll(WORD)){
+    let w=m[0].toLowerCase().replaceAll('ё','е');
+    if(/\d/.test(w))w=[...w].map(c=>{const i=CYR.indexOf(c);return i<0?c:LAT[i]}).join('');
+    toks.push({w,o:m[0],s:m.index,e:m.index+m[0].length});
+  }
+  const used=new Set();
+  const add=(field,value,n,...idx)=>{const sp=idx.filter(i=>toks[i]);found.push({field,value:String(value),n,s:sp.length?Math.min(...sp.map(i=>toks[i].s)):undefined,e:sp.length?Math.max(...sp.map(i=>toks[i].e)):undefined});idx.forEach(i=>used.add(i))};
+  for(const [field,re,fn] of TEXT_RULES){
+    for(const m of text.matchAll(re)){
+      const s=m.index, e=m.index+m[0].length;
+      if(covered.some(([a,b])=>s<b&&e>a))continue;
+      covered.push([s,e]);
+      const r=fn(m); if(r.multi)for(const[f,value,n]of r.multi)found.push({field:f,value:String(value),n,...numSpan(text,s,e,value),gs:s,ge:e}); else found.push({field,value:String(r[0]),n:r[1],s,e});
+      toks.forEach((t,i)=>{if(t.s<e&&t.e>s)used.add(i)});
+    }
+  }
+  const t=toks.map(x=>x.w);
+  for(let i=0;i<t.length;i++){ // product type: the first noun of the name
+    // «Дюбель-R», «Анкер-LS»: a Latin tail after the hyphen is a model, the type is the Russian word.
+    const w=(t[i].match(/^([а-я]+)-[a-z0-9]+$/)||[])[1]||t[i]; if(!/^[а-я-]+$/.test(w))break;
+    if(used.has(i)||/(ая|яя|ый|ий|ой|ое|ее|ые|ие)$/.test(w)&&!w.includes('-'))continue;
+    add('Тип товара',TYPE_SYNONYMS[stem(w)]||w,null,i);break;
+  }
+  const mmOf=(v,u)=>u==='м'||u==='m'?v*1000:v;
+  for(let i=0;i<t.length;i++){
+    if(used.has(i))continue;
+    const w=t[i], nx=used.has(i+1)?'':(t[i+1]||''), n2=t[i+2]||'';
+    let m;
+    const dict=lookup(w);
+    if(dict){add(dict.field,dict.value,null,i);continue}
+    if((m=w.match(/^m(\d{1,2}(?:[.,]\d)?)(?:[x×*](\d+(?:[.,]\d+)?)(?:\/\d+)?)?$/))){
+      add('Резьба','M'+m[1],numv(m[1]),i);
+      if(m[2]){const u=['м','m','мм','mm'].includes(nx)?nx:'мм';const v=mmOf(numv(m[2]),u);add('Длина',len(v),v,i);if(u===nx)used.add(i+1);}
+      continue;
+    }
+    if(w==='l'&&(m=nx.match(/^(\d+(?:[.,]\d+)?)(мм|mm|м|m)?$/))){const u=m[2]||(['мм','mm','м','m'].includes(n2)?n2:'мм');const v=mmOf(numv(m[1]),u);add('Длина',len(v),v,i,i+1);if(!m[2]&&u===n2)used.add(i+2);continue}
+    if((m=w.match(/^l(\d+(?:[.,]\d+)?)$/))){const v=numv(m[1]);add('Длина',len(v),v,i);if(nx==='мм')used.add(i+1);continue}
+    if((m=w.match(/^(\d+(?:[.,]\d+)?)x(\d+(?:[.,]\d+)?)$/))&&['м','m'].includes(nx)){add('Ширина',len(numv(m[1])*1000),numv(m[1])*1000,i,i+1);add('Длина',len(numv(m[2])*1000),numv(m[2])*1000,i);continue}
+    if(NUM.test(w)&&['м','m'].includes(nx)&&numv(w)<=100){const v=numv(w)*1000;add('Длина',len(v),v,i,i+1);continue}
+    if((m=w.match(/^(\d+(?:[.,]\d+)?)m$/))&&numv(m[1])<=100){const v=numv(m[1])*1000;add('Длина',len(v),v,i);continue}
+    if((m=w.match(/^d(\d+(?:[.,]\d+)?(?:-\d+(?:[.,]\d+)?)?)$/))&&nx==='мм'){add('Диаметр',m[1]+' мм',numv(m[1]),i,i+1);continue}
+    if(NUM.test(w)&&nx==='мм'){add('Размер',fmt(numv(w))+' мм',numv(w),i,i+1);continue}
+    if((m=w.match(/^(\d+(?:[.,]\d+)?)(?:mm|мм)$/))){add('Размер',fmt(numv(m[1]))+' мм',numv(m[1]),i);continue}
+    if(w==='din'&&/^\d+$/.test(nx)){add('Стандарт','DIN '+nx,null,i,i+1);continue}
+    if((m=w.match(/^din(\d+)$/))){add('Стандарт','DIN '+m[1],null,i);continue}
+    if(w==='iso'&&/^\d/.test(nx)){add('Стандарт','ISO '+nx,null,i,i+1);continue}
+    if(w==='пр'&&CLASSES.has(nx.replace(',','.'))){add('Класс прочности',nx.replace(',','.'),null,i,i+1);continue}
+    if(CLASSES.has(w)&&w.includes('.')){add('Класс прочности',w,null,i);continue}
+    if((m=w.match(/^p(\d{2,4})$/))){add('Зернистость','P'+m[1],+m[1],i);continue}
+    if((m=w.match(/^(?:уп[./]?)?(\d{1,5})ш[тt]$/))){add('Фасовка',m[1]+' шт',+m[1],i);continue}
+    if(/^\d{1,5}$/.test(w)&&nx==='шт'){add('Фасовка',w+' шт',+w,i,i+1);continue}
+    if(BRANDS.has(w)){add('Бренд',toks[i].o.toUpperCase(),null,i);continue}
+    if((/[a-zа-я]/.test(w)&&/\d/.test(w)&&w.length>=5)||/^\d{5,}$/.test(w)){add('Код / артикул',toks[i].o,null,i);continue}
+  }
+  // One rubric for thickness: next to a section («50×40 мм») a single small size in mm
+  // («0,5 мм», «(0,4мм)») is the wall / sheet thickness, as in «50x40x0,65 мм».
+  const sec=found.filter(f=>f.field==='Размеры').flatMap(f=>(f.value.match(/\d+(?:,\d+)?/g)||[]).map(x=>numv(x)));
+  if(sec.length)for(const f of found)if(f.field==='Размер'&&f.n!=null&&f.n*10<=Math.min(...sec))f.field='Толщина';
+  applyScheme(found,t,used,text,toks);
+  const rest=new Set();
+  // One piece of text with several values («1,05x10 м» — ширина и длина, «М10×30» — резьба и длина):
+  // each value gets its own numbers, as in the filter column.
+  for(const f of found){
+    if(f.s==null||!found.some(g=>g!==f&&g.s!=null&&g.s<f.e&&f.s<g.e))continue;
+    const sp=numSpan(text,f.s,f.e,f.value); f.ns=sp.s; f.ne=sp.e; f.gs=Math.min(...found.filter(g=>g.s!=null&&g.s<f.e&&f.s<g.e).map(g=>g.s)); f.ge=Math.max(...found.filter(g=>g.s!=null&&g.s<f.e&&f.s<g.e).map(g=>g.e));
+  }
+  for(const f of found)if(f.ns!=null){f.s=f.ns;f.e=f.ne;delete f.ns;delete f.ne}
+  const spans=[];
+  t.forEach((w,i)=>{if(!used.has(i)){rest.add(w);spans.push({w,s:toks[i].s,e:toks[i].e})}});
+  return {found,rest,spans};
+}
+// Built-in dictionary plus the words you assigned to a rubric on this page.
+function lookup(w){
+  const s=stem(w);
+  const mine=(state.dict||{})[s]; if(mine)return mine;
+  const CANON={red:'красный',blue:'синий',green:'зеленый',yellow:'желтый',black:'черный',white:'белый',orange:'оранжевый',grey:'серый',gray:'серый',a2:'нерж. A2',a4:'нерж. A4',zn:'цинк','оцинкованный':'цинк','оцинк':'цинк','чёрный':'черный','сталь':'стальной','латунь':'латунный','медь':'медный','алюминий':'алюминиевый','чугун':'чугунный','пластик':'пластиковый','резина':'резиновый','полипропилен':'полипропиленовый','полиэтилен':'полиэтиленовый','поликарбонат':'поликарбонатный'};
+  for(const[field,list]of Object.entries(WORD_DICT)){const x=list.find(x=>x===w||stem(x)===s);if(x)return {field,value:CANON[x]||x}}
+  return null;
+}
+
+/* ---------- Model of one position ---------- */
+// A position is recomputed only when its own inputs change (marks, anchor, dictionary, products);
+// the other positions of the request reuse what was computed before.
+const modelCache=new Map();
+function modelOf(pos){
+  const key=JSON.stringify([pos.name,pos.qty,pos.unit,pos.products.length,state.marks?.[pos.id]||{},state.anchor?.[pos.id]||null,state.dict||{},state.conv?.[pos.id]||{}]);
+  const hit=modelCache.get(pos.id);
+  if(hit&&hit.key===key&&hit.products===pos.products)return hit.M;
+  const M=model(pos);
+  M.ranked=()=>M.__ranked||(M.__ranked=M.rankAll(M.reference));
+  modelCache.set(pos.id,{key,products:pos.products,M});
+  return M;
+}
+function model(pos){
+  const products=pos.products.map((p,i)=>{const x=extract(p[0]);return {i,name:p[0],price:+p[1]||0,unit:p[2]||'шт',found:x.found,raw:x.rest,spans:x.spans}});
+  const reqX=extract(pos.name), reqRaw=[...reqX.rest];
+  // Heap words: one key per word with its forms (same stem, or stems one letter apart).
+  const freq=new Map();
+  for(const p of products)for(const w of p.raw)freq.set(w,(freq.get(w)||0)+1);
+  for(const w of reqRaw)if(!freq.has(w))freq.set(w,0);
+  const keyOf=new Map(), stems=[];
+  for(const w of [...freq.keys()].sort((a,b)=>freq.get(b)-freq.get(a))){
+    const s=stem(w); const hit=stems.find(x=>x===s||(/^[а-я]+$/.test(s)&&(close(x,s)||Math.min(x.length,s.length)>=5&&Math.abs(x.length-s.length)<=2&&(x.startsWith(s)||s.startsWith(x)))));
+    if(!hit)stems.push(s); keyOf.set(w,'w|'+(hit||s));
+  }
+  const forms=new Map(), labels=new Map(), fieldOf=new Map(), numOf=new Map();
+  for(const[w,k]of keyOf){if(!forms.has(k))forms.set(k,[]);forms.get(k).push(w)}
+  for(const[k,fs]of forms)labels.set(k,fs.find(w=>reqRaw.includes(w))||[...fs].sort((a,b)=>freq.get(b)-freq.get(a))[0]);
+  // Field values: the type is matched by stem too («шпилька» = «шпильки»).
+  const fkey=f=>'f|'+f.field+'|'+(f.field==='Тип товара'?stem(f.value):f.value);
+  const keysOf=(x,raw)=>{
+    const keys=new Set();
+    for(const f of x.found){const k=fkey(f);keys.add(k);keys.add('r|'+f.field);
+      if(!labels.has(k)||f.field==='Тип товара'&&f.value===reqX.found.find(r=>r.field==='Тип товара')?.value)labels.set(k,f.value);
+      fieldOf.set(k,f.field);numOf.set(k,f.n);fieldOf.set('r|'+f.field,f.field);labels.set('r|'+f.field,'указано: '+f.field.toLowerCase())}
+    for(const w of raw)keys.add(keyOf.get(w));
+    return keys;
+  };
+  for(const p of products){p.words=keysOf(p,p.raw);
+    p.pieces=[...p.found.filter(f=>f.s!=null).map(f=>({s:f.s,e:f.e,gs:f.gs,ge:f.ge,k:fkey(f),guess:!!f.guess})),...p.spans.map(x=>({s:x.s,e:x.e,k:keyOf.get(x.w)}))].sort((a,b)=>a.s-b.s||b.e-a.e);p.guess=new Set(p.found.filter(f=>f.guess).map(fkey))}
+  const reqKeys=[...keysOf(reqX,reqRaw)].filter(k=>!k.startsWith('r|'));
+  // A request value found by elimination is a guess: not applied by itself, not a requirement.
+  const reqGuess=new Set(reqX.found.filter(f=>f.guess).map(fkey));
+  const reqWords=new Set(reqKeys);
+  const label=k=>labels.get(k)||k;
+  const counts=new Map();
+  for(const p of products)for(const w of p.words)counts.set(w,(counts.get(w)||0)+1);
+  const saved=state.marks[pos.id]||{};
+  const marks=new Map(), skipped=new Set();
+  for(const w of counts.keys()){
+    const u=saved[w];
+    if(u==='only'||u==='also'||u==='rejected')marks.set(w,{s:u,by:'user'});
+  }
+  const pick=s=>[...marks].filter(([,m])=>m.s===s).map(([w])=>w);
+  // ✓ — the value must be there; + — products with this value are shown too, as an analog / replacement.
+  // In a rubric all ✓ and + values are alternatives («M8 или аналог M10»); rubrics combine with «и».
+  // Loose words: all ✓ words, or any + word. ✕ never passes. Products matching nothing ticked are not shown.
+  const facets=list=>{const g=new Map();for(const[w,s]of list){if(s==='rejected'||w.startsWith('w|'))continue;
+    const f=w.startsWith('f|')?'f|'+fieldOf.get(w):w;if(!g.has(f))g.set(f,{main:[],alt:[]});g.get(f)[s==='also'?'alt':'main'].push(w)}return g};
+  // 0 — fails, 1 — passes on ✓ values, 2 — passes only thanks to + (an analog).
+  const grade=(list,p)=>{
+    if(list.some(([w,s])=>s==='rejected'&&p.words.has(w)))return 0;
+    let analog=false;
+    for(const {main,alt} of facets(list).values()){
+      if(main.some(w=>p.words.has(w)))continue;
+      if(alt.some(w=>p.words.has(w))){analog=true;continue}
+      return 0;
+    }
+    const wm=list.filter(([w,s])=>w.startsWith('w|')&&s==='only').map(([w])=>w), wa=list.filter(([w,s])=>w.startsWith('w|')&&s==='also').map(([w])=>w);
+    if(wm.length||wa.length){
+      if(wm.length&&wm.every(w=>p.words.has(w))){}
+      else if(wa.some(w=>p.words.has(w)))analog=true;
+      else return 0;
+    }
+    return analog?2:1;
+  };
+  const passesWith=list=>p=>grade(list,p)>0;
+  const current=()=>[...marks].map(([w,m])=>[w,m.s]);
+  // Request values and words are applied by the program in request order, never one that leaves no product.
+  // If your own marks already leave no product, a request value is checked against the request alone:
+  // «гофрокартон» is not «не применено» just because no product has both of your widths and length.
+  const autoOnly=[];
+  for(const w of reqKeys){
+    if(reqGuess.has(w))continue;
+    if(marks.has(w)||saved[w]==='none'||!counts.has(w))continue;
+    const userEmpty=!products.some(passesWith(current()));
+    if(products.some(passesWith([...current(),[w,'only']]))||(userEmpty&&products.some(passesWith([...autoOnly,[w,'only']])))){marks.set(w,{s:'only',by:'auto'});autoOnly.push([w,'only'])}
+    else skipped.add(w);
+  }
+  const only=pick('only'), also=pick('also'), rej=pick('rejected');
+  const groups=facets(current());
+  const alive=products.filter(passesWith(current()));
+  const left=new Map();
+  for(const p of alive)for(const w of p.words)left.set(w,(left.get(w)||0)+1);
+  const named=k=>(fieldOf.has(k)&&!k.startsWith('r|')?fieldOf.get(k)+' ':'')+label(k);
+  for(const p of products){
+    const bad=rej.filter(w=>p.words.has(w));
+    p.reasons=bad.length?bad.map(w=>'Исключено: '+named(w)):[...groups.values()].filter(g=>![...g.main,...g.alt].some(w=>p.words.has(w))).map(g=>'Нет: '+[...g.main,...g.alt].map(named).join(' или '));
+    p.analog=grade(current(),p)===2;
+    const [k,note]=conversion(pos,p); p.factor=k; p.note=note;
+    p.unitPrice=k?p.price/k:null;
+    p.buy=k?Math.ceil(pos.qty/k):null; p.total=k?p.buy*p.price:null;
+  }
+  // Order: products with the ✓ values first, analogs after them; each by the price per request unit.
+  alive.sort((a,b)=>a.analog-b.analog||(a.unitPrice??Infinity)-(b.unitPrice??Infinity));
+  // Close products: compared by every characteristic with a target — the request's own values, then the
+  // chosen (or best) product's values for the other rubrics. Codes, brand and pack size are not compared.
+  const SKIP=new Set(['Код / артикул','Бренд','Фасовка']);
+  const valuesOf=p=>{const m=new Map();for(const k of p.words)if(k.startsWith('f|')&&!SKIP.has(fieldOf.get(k))){const f=fieldOf.get(k);if(!m.has(f))m.set(f,new Set());m.get(f).add(k)}return m};
+  const target=new Map();
+  for(const k of reqKeys)if(k.startsWith('f|')&&!reqGuess.has(k)&&saved[k]!=='none'&&!SKIP.has(fieldOf.get(k))){const f=fieldOf.get(k);if(!target.has(f))target.set(f,new Set());target.get(f).add(k)}
+  for(const[k,m]of marks)if(k.startsWith('f|')&&m.s!=='rejected'&&!SKIP.has(fieldOf.get(k))){const f=fieldOf.get(k);if(!target.has(f))target.set(f,new Set());target.get(f).add(k)}
+  for(const[k,m]of marks)if(k.startsWith('w|')&&m.s==='only')target.set('слово «'+label(k)+'»',new Set([k]));
+  // One order for all products: how many characteristics of the request (and of your marks) they share.
+  // ✕ still removes; everything else is ranked, not filtered.
+  const rankAll=(ref)=>{
+    // The request (and your marks) decide; the anchor product only adds the rubrics the request does not name.
+    const t2=new Map(target), fromRef=new Set();
+    if(ref)for(const[f,ks]of valuesOf(ref))if(!t2.has(f)){t2.set(f,ks);fromRef.add(f)}
+    const list=[];
+    for(const p of products){
+      if(rej.some(w=>p.words.has(w)))continue;
+      const own=valuesOf(p), same=[], diff=[], unknown=[];
+      for(const[f,ks]of t2){
+        const o=f.startsWith('слово')?new Set([...ks].filter(k=>p.words.has(k))):own.get(f);
+        if(!o||!o.size){if(f.startsWith('слово'))diff.push({f,want:[...ks],has:[]});else unknown.push(f);continue}
+        if(![...o].some(k=>ks.has(k))&&[...o].every(k=>p.guess?.has(k))){unknown.push(f);continue}
+        if(f==='Материал'&&[...ks].some(k=>labels.get(k)==='пластиковый')&&[...o].some(k=>PLASTICS.has(labels.get(k)))){same.push({f,want:[...ks],has:[...o]});continue} // a guess does not count as a difference
+        ([...o].some(k=>ks.has(k))?same:diff).push({f,want:[...ks],has:[...o]});
+      }
+      const analog=same.some(x=>x.has.some(k=>marks.get(k)?.s==='also')&&!x.has.some(k=>marks.get(k)?.s==='only'||reqKeys.includes(k)));
+      const dReq=diff.filter(x=>!fromRef.has(x.f)), dRef=diff.filter(x=>fromRef.has(x.f));
+      list.push({p,same,diff,dReq,dRef,unknown,total:same.length+diff.length,analog,anchor:p===ref});
+    }
+    const weight=c=>c.dReq.reduce((s,x)=>s+(NUMERIC.has(x.f)?2:1),0);
+    return list.sort((a,b)=>b.anchor-a.anchor||a.dReq.length-b.dReq.length||weight(a)-weight(b)||a.dRef.length-b.dRef.length||a.analog-b.analog||b.same.length-a.same.length||a.unknown.length-b.unknown.length||(a.p.unitPrice??Infinity)-(b.p.unitPrice??Infinity));
+  };
+  const refName=state.anchor?.[pos.id];
+  const reference=products.find(p=>p.name===refName)||null;
+  return {products,reqWords,counts,marks,alive,left,only,also,rej,skipped,label,forms,fieldOf,numOf,named,
+    rankAll,targetSize:target.size,closeTo:(ref)=>{
+      const t2=new Map(target);
+      if(ref)for(const[f,ks]of valuesOf(ref))if(!t2.has(f))t2.set(f,ks);
+      const list=[];
+      for(const p of products){
+        if(alive.includes(p)||rej.some(w=>p.words.has(w))||p===ref)continue;
+        const own=valuesOf(p), same=[], diff=[], unknown=[];
+        for(const[f,ks]of t2){const o=own.get(f);if(!o){unknown.push(f);continue}([...o].some(k=>ks.has(k))?same:diff).push({f,want:[...ks],has:[...o]})}
+        if(same.length>=3&&diff.length<=2)list.push({p,same,diff,unknown,total:same.length+diff.length});
+      }
+      return list.sort((a,b)=>b.same.length-a.same.length||a.diff.length-b.diff.length||(a.p.unitPrice??Infinity)-(b.p.unitPrice??Infinity));
+    },reference};
+}
+
+/* ---------- Rendering ---------- */
+const el=(tag,attrs={},...kids)=>{const n=document.createElement(tag);for(const[k,v]of Object.entries(attrs)){if(k==='class')n.className=v;else if(k.startsWith('on'))n[k]=v;else if(v!==false&&v!=null)n.setAttribute(k,v===true?'':v)}for(const c of kids.flat())if(c!=null&&c!==false)n.append(c.nodeType?c:String(c));return n};
+const money=v=>v==null?'—':v.toLocaleString('ru-RU',{maximumFractionDigits:2})+' ₽';
+const num=v=>v==null?'—':v.toLocaleString('ru-RU',{maximumFractionDigits:3});
+
+let assigning=null, editingConv=null; const expanded=new Set();
+// One vocabulary for all hints: выбрано мной / аналог / замена / исключено / из заявки / не выбрано.
+const cap=t=>String(t).charAt(0).toUpperCase()+String(t).slice(1);
+const stateWord=m=>!m?'не выбрано':m.by==='auto'?'из заявки':{only:'выбрано мной',also:'аналог / замена',rejected:'исключено'}[m.s];
+function setMark(pos,word,next){
+  const m=state.marks[pos.id]||(state.marks[pos.id]={});
+  m[word]=next; // 'accepted' | 'rejected' | 'none' (a request word with its default ✓ taken off)
+  save();render();
+}
+function toggle(pos,word,decision,mark,isReq){
+  if(mark&&mark.by==='user'&&mark.s===decision)setMark(pos,word,isReq?'none':null);
+  else setMark(pos,word,decision);
+}
+
+function renderTabs(){
+  const tabs=document.getElementById('tabs');tabs.replaceChildren();
+  for(const p of state.positions){
+    tabs.append(el('button',{class:'tab',role:'tab','aria-selected':String(p.id===state.active),onclick:()=>{state.active=p.id;save();render()}},p.name.length>38?p.name.slice(0,36)+'…':p.name));
+  }
+  tabs.append(el('button',{class:'tab add',role:'tab','aria-selected':String(state.active==='new'),onclick:()=>{state.active='new';render()}},'+ Своя позиция'));
+}
+
+function renderPosition(pos){
+  const M=modelOf(pos);
+  // Counts in the filter column are of the products shown in the table — suitable and close ones —
+  // so a value that close products have is not hidden as «0».
+  const shownCount=new Map();
+  {const hid=new Set((state.hidden||{})[pos.id]||[]);
+   for(const r of M.ranked())if(!hid.has(r.p.name)&&r.same.length>0&&r.dReq.length<=2&&(r.dReq.length===0||r.same.length>=2))
+     for(const w of r.p.words)shownCount.set(w,(shownCount.get(w)||0)+1);}
+  const main=el('div',{class:'pos-work'});
+  main.append(el('div',{class:'req'},
+    el('b',{},pos.name), el('span',{class:'meta'},`${num(pos.qty)} ${pos.unit}`),
+    pos.example?el('span',{class:'note'},pos.example):null,
+    !pos.example?el('button',{class:'btn',onclick:()=>{state.positions=state.positions.filter(p=>p.id!==pos.id);delete state.marks[pos.id];state.active=state.positions[0]?.id||'new';save();render()}},'Удалить позицию'):null));
+
+  // Characteristics panel: rubrics with values, then the heap of words that fit no rubric.
+  const wp=el('section',{class:'panel','aria-label':'Характеристики и слова найденных товаров'});
+  // The explanation is folded behind «?» so the rubrics come first.
+  const help=el('details',{class:'help'},el('summary',{'aria-label':'Как пользоваться','title':'Как пользоваться'},'?'));
+  // The help opens as a floating card over the page, not squeezed into the narrow filter column.
+  const helpBody=el('div',{class:'help-body'},el('button',{type:'button',class:'help-close','aria-label':'Закрыть пояснение',onclick:()=>{help.open=false}},'×'));
+  help.append(helpBody);
+  wp.append(el('div',{class:'panel-head'},el('h2',{},'Характеристики найденных товаров'),help));
+  helpBody.append(el('p',{class:'hint'},'✓ — показать товары с этим значением. + — показать также товары с этим значением как аналог / замену (идут после основных, с пометкой). В одной рубрике отмеченные значения — «или», разные рубрики — «и». ✕ — убрать товары с этим значением. Чтобы вернуть остальные товары, снимите отметки. У названия рубрики ✓ — только товары, где эта характеристика указана, ✕ — убрать их. Число в скобках — сколько оставшихся товаров содержат значение.'));
+  // Legend: each state drawn exactly as the value looks in the list, with one line of meaning.
+  const sample=(cls,text,n,pressed)=>{const b=(sym,on,extra='')=>el('button',{type:'button',tabindex:-1,'aria-hidden':'true',class:extra,'aria-pressed':String(on)},sym);
+    return el('span',{class:'w '+cls},text,el('span',{class:'n'},`(${n})`),b('✓',pressed==='only','bk'),b('+',pressed==='also','ba'),b('✕',pressed==='rejected','bx'))};
+  const legend=[
+    [sample('mk mk-only','M8',4,'only'),'Рамка зелёная — вы отметили ✓: показаны товары с этим значением'],
+    [sample('mk mk-also','M10',1,'also'),'Рамка жёлтая — вы отметили +: такие товары показаны как аналог / замена'],
+    [sample('mk mk-rejected','держатель',0,'rejected'),'Рамка красная — вы отметили ✕: товары с этим значением убраны'],
+    [sample('s-only','шпилька',4,'only'),'Заливка — совпадает с заявкой (программа отобрала по нему сама)'],
+    [sample('w cmp-diff','М12',1,null),'Оранжевая заливка — отличие при сравнении товаров'],
+    [sample('','M12',1,null),'Без отметки — можно отметить'],
+    [sample('dim','M24',0,null),'Нет у показанных товаров — есть только у отсеянных'],
+  ];
+  helpBody.append(el('div',{class:'legend'},legend.map(([chipNode,text])=>el('div',{class:'legend-row'},chipNode,el('span',{},text)))));
+  const chosen=el('div',{class:'chosen'});
+  const sym={only:'✓ ',also:'+ ',rejected:'✕ '}; // + is «также, аналог»
+  const reset=el('button',{class:'btn',onclick:()=>{state.marks[pos.id]={};save();render()}},'Вернуть значения заявки');
+  if(M.marks.size){
+    chosen.append(el('span',{},'Отбор:'));
+    for(const[w,m]of M.marks)chosen.append(el('span',{class:'tag '+(m.s==='rejected'?'rej':m.s==='also'?'also':'acc')+(m.by==='user'?' framed':''),title:M.named(w)+' — '+stateWord(m)},sym[m.s]+M.named(w),
+      el('button',{type:'button','aria-label':'Снять выбор: '+M.named(w),title:'Снять выбор',onclick:()=>setMark(pos,w,M.reqWords.has(w)?'none':null)},'×')));
+    chosen.append(el('button',{class:'btn',onclick:()=>{const m=state.marks[pos.id]={};for(const w of M.marks.keys())if(M.reqWords.has(w))m[w]='none';save();render()}},'Сбросить всё'),reset);
+  } else chosen.append(el('span',{class:'note'},'Ничего не выбрано — показаны все товары.'),reset);
+  wp.append(chosen);
+  if(M.skipped.size)wp.append(el('p',{class:'note'},'Из заявки не применено — с этим не остаётся ни одного товара: '+[...M.skipped].map(M.named).join(', ')+'.'));
+  const narrowing=M.only.length>0||M.also.length>0;
+  const chip=(w,text,what)=>{
+    const m=M.marks.get(w), n=shownCount.get(w)||0, isReq=M.reqWords.has(w);
+    // Fill shows the status (✓ green, + yellow, ✕ red), whoever set it; a frame only on your own marks.
+    let cls='w'+(isReq&&m&&m.s!=='rejected'?' s-only':'')+(m&&m.by==='user'?' mk mk-'+m.s:'');
+    if(!m&&!n)cls+=' dim';
+    const s=m&&m.by==='user'?m.s:null;
+    const fs=w.startsWith('w|')?(M.forms.get(w)||[]):[];
+    const tip=[`${cap(what)} — ${stateWord(m)}`,isReq&&M.skipped.has(w)?'Есть в заявке, но не применено: с этим не остаётся ни одного товара':'',fs.length>1?'Формы: '+fs.join(', '):''].filter(Boolean).join('\n');
+    const node=el('span',{class:cls,title:tip},text+(fs.length>1?'*':''),el('span',{class:'n'},`(${n})`),
+      el('button',{class:'bk',type:'button','aria-label':'Только товары, где '+what,title:s==='only'?'Снять выбор: '+what:'Показывать, где '+what,'aria-pressed':String(s==='only'||(m?.by==='auto')),onclick:()=>toggle(pos,w,'only',m,isReq)},'✓'));
+    if(!w.startsWith('r|'))node.append(el('button',{class:'ba',type:'button','aria-label':'Также, как аналог: '+what,title:s==='also'?'Снять выбор: '+what:'Показывать также, где '+what+' (аналог / замена)','aria-pressed':String(s==='also'),onclick:()=>toggle(pos,w,'also',m,isReq)},'+'));
+    node.append(el('button',{class:'bx',type:'button','aria-label':'Убрать товары, где '+what,title:s==='rejected'?'Снять выбор: '+what:'Не показывать, где '+what,'aria-pressed':String(s==='rejected'),onclick:()=>toggle(pos,w,'rejected',m,isReq)},'✕'));
+    return node;
+  };
+  // Only ✓ and ✕ beside a rubric name: products where it is stated / not stated.
+  const rubricMarks=f=>{const c=chip('r|'+f,'',`указана рубрика ${f}`);c.querySelector('.n').remove();c.firstChild.remove?.();c.classList.add('head');
+    c.title='';const bk=c.querySelector('.bk'),bx=c.querySelector('.bx');
+    if(bk)bk.title='Показывать, где указано: '+f.toLowerCase();if(bx)bx.title='Не показывать, где указано: '+f.toLowerCase();return c};
+  const byField=new Map();
+  for(const k of M.counts.keys())if(k.startsWith('f|')){const f=M.fieldOf.get(k);if(!byField.has(f))byField.set(f,[]);byField.get(f).push(k)}
+  // Rubrics with chosen values first, then those with values among the remaining products, then the rest.
+  // In a rubric: chosen values, then values the remaining products have, then the others; a few are shown.
+  // A value from the request is recommended: it stays at the top even when its mark is taken off.
+  const rankKey=k=>M.marks.has(k)?0:M.reqWords.has(k)?1:(shownCount.get(k)||0)>0?2:3;
+  const fields=[...FIELDS,...[...byField.keys()].filter(f=>!FIELDS.includes(f))].filter(f=>byField.has(f));
+  const rankField=f=>Math.min(M.marks.has('r|'+f)?0:9,...byField.get(f).map(rankKey));
+  fields.sort((a,b)=>rankField(a)-rankField(b));
+  // A value is live when the remaining products have it, it is marked, or it is in the request;
+  // values with 0 products wait under their own «Ещё N с 0», so the rubric list stays short.
+  const live=k=>M.marks.has(k)||M.reqWords.has(k)||(shownCount.get(k)||0)>0;
+  const limited=(allKeys,f,limit,make)=>{
+    const box=el('div',{class:'words',role:'group','aria-label':f});
+    const keys=allKeys.filter(live), zero=allKeys.filter(k=>!live(k));
+    const open=expanded.has(pos.id+'|'+f), keep=Math.max(limit,keys.filter(k=>M.marks.has(k)).length);
+    for(const k of open?keys:keys.slice(0,keep))box.append(make(k));
+    if(keys.length>keep)box.append(el('button',{class:'more',type:'button',onclick:()=>{open?expanded.delete(pos.id+'|'+f):expanded.add(pos.id+'|'+f);render()}},open?'Свернуть':`Ещё ${keys.length-keep}`));
+    if(zero.length&&keys.length){
+      const zo=expanded.has(pos.id+'|'+f+'|0');
+      if(zo)for(const k of zero)box.append(make(k));
+      box.append(el('button',{class:'more',type:'button',title:'Значения, которых нет у оставшихся товаров',onclick:()=>{zo?expanded.delete(pos.id+'|'+f+'|0'):expanded.add(pos.id+'|'+f+'|0');render()}},zo?'Скрыть значения с 0':`Ещё ${zero.length} с 0`));
+    } else for(const k of zero)box.append(make(k)); // a rubric shown with all zeros shows them all
+    return box;
+  };
+  // Rubrics where no remaining product has a value (and nothing is marked) are folded together;
+  // their button comes right after the visible rubrics.
+  const emptyRubrics=[], showEmpty=expanded.has(pos.id+'|empty');
+  const rubricBlock=f=>{
+    const keys=byField.get(f);
+    keys.sort((a,b)=>rankKey(a)-rankKey(b)||(M.numOf.get(a)??Infinity)-(M.numOf.get(b)??Infinity)||M.label(a).localeCompare(M.label(b),'ru'));
+    return el('div',{class:'rubric'},
+      el('div',{class:'rubric-head'},el('b',{},f),rubricMarks(f)),
+      limited(keys,f,5,k=>chip(k,M.label(k),`${f.toLowerCase()} ${M.label(k)}`)));
+  };
+  for(const f of fields){
+    if(!M.marks.has('r|'+f)&&!byField.get(f).some(live)){emptyRubrics.push(f);continue}
+    wp.append(rubricBlock(f));
+  }
+  if(emptyRubrics.length){
+    if(showEmpty)for(const f of emptyRubrics)wp.append(rubricBlock(f));
+    wp.append(el('div',{class:'rubric'},el('button',{class:'more',type:'button',title:emptyRubrics.join(', '),onclick:()=>{showEmpty?expanded.delete(pos.id+'|empty'):expanded.add(pos.id+'|empty');render()}},
+      showEmpty?'Скрыть рубрики без товаров':`Рубрики без товаров: ${emptyRubrics.length} — показать`)));
+  }
+  const heap=[...M.counts.keys()].filter(k=>k.startsWith('w|')).sort((a,b)=>(shownCount.get(b)||0)-(shownCount.get(a)||0)||M.counts.get(b)-M.counts.get(a)||M.label(a).localeCompare(M.label(b),'ru'));
+  if(heap.length){
+    const sec=el('div',{class:'rubric'},el('div',{class:'rubric-head'},el('b',{},`Прочие слова (${heap.length})`),el('span',{class:'note',title:'Не попали ни в одну рубрику; формы одного слова объединены (*). Кнопка ⤴ относит слово к рубрике — дальше это работает во всех позициях.'},'ⓘ')));
+    if(assigning&&heap.includes(assigning)){
+      const word=M.label(assigning);
+      const sel=el('select',{id:'assign-field'},[...new Set([...FIELDS.filter(f=>!['Тип товара','Код / артикул'].includes(f)),...Object.values(state.dict||{}).map(d=>d.field)])].map(f=>el('option',{value:f},f)),el('option',{value:'__new'},'Новая рубрика…'));
+      const custom=el('input',{id:'assign-new',placeholder:'Название новой рубрики',hidden:true});
+      sel.onchange=()=>{custom.hidden=sel.value!=='__new'};
+      sec.append(el('div',{class:'assign'},el('span',{},`Отнести «${word}» к рубрике`),sel,custom,
+        el('button',{class:'btn',onclick:()=>{const field=sel.value==='__new'?custom.value.trim():sel.value;if(!field)return;
+          state.dict=state.dict||{};for(const f of (M.forms.get(assigning)||[word]))state.dict[stem(f)]={field,value:word};assigning=null;save();render()}},'Отнести'),
+        el('button',{class:'btn',onclick:()=>{assigning=null;render()}},'Отмена')));
+    }
+    heap.sort((a,b)=>rankKey(a)-rankKey(b));
+    sec.append(limited(heap,'Прочие слова',8,k=>{const c=chip(k,M.label(k),`слово «${M.label(k)}»`);
+      c.append(el('button',{type:'button',title:'Отнести к рубрике','aria-label':'Отнести к рубрике: '+M.label(k),onclick:()=>{assigning=k;render()}},'⤴'));return c}));
+    wp.append(sec);
+  }
+  const mine=Object.entries(state.dict||{});
+  if(mine.length)wp.append(el('details',{class:'rubric'},el('summary',{},`Мой справочник (${mine.length})`),
+    el('div',{class:'words'},mine.map(([s,d])=>el('span',{class:'tag acc'},`${d.value} → ${d.field}`,el('button',{type:'button','aria-label':'Убрать из справочника: '+d.value,onclick:()=>{delete state.dict[s];save();render()}},'×'))))));
+
+  // Products panel: one order for all products — those with every characteristic of the request first
+  // (green), then the closest ones with their differences, then the rest folded away.
+  const pp=el('section',{class:'panel','aria-label':'Подходящие товары'});
+  const hidden=new Set((state.hidden||{})[pos.id]||[]);
+  const ranked=M.ranked().filter(r=>!hidden.has(r.p.name));
+  const exact=ranked.filter(r=>r.dReq.length===0&&r.same.length>0);
+  const near=ranked.filter(r=>!exact.includes(r)&&r.dReq.length<=2&&r.same.length>=2);
+  const rest=ranked.filter(r=>!exact.includes(r)&&!near.includes(r));
+  // Sorting by price (header click): inside each group — suitable, close, the rest — so the cheapest of
+  // fifty equal offers is on top without mixing in products that do not fit.
+  const sortBy=state.sort?.[pos.id]||null; // {k:'unit'|'total', d:1|-1}
+  if(sortBy){const val=r=>sortBy.k==='unit'?r.p.unitPrice:r.p.total;
+    for(const g of [exact,near,rest])g.sort((a,b)=>(val(a)==null)-(val(b)==null)||sortBy.d*((val(a)??0)-(val(b)??0)));}
+  const sortHead=(k,label,cls)=>{const on=sortBy?.k===k, d=on?sortBy.d:0;
+    return el('th',{class:cls||'','aria-sort':on?(d>0?'ascending':'descending'):'none'},el('button',{type:'button',class:'sorth',title:on?(d>0?'По возрастанию · нажмите — по убыванию':'По убыванию · нажмите — без сортировки'):'Сортировать по возрастанию',
+      onclick:()=>{state.sort=state.sort||{};state.sort[pos.id]=!on?{k,d:1}:d>0?{k,d:-1}:null;save();render()}},label,on?(d>0?' ▲':' ▼'):' ↕'))};
+  // ★ — the cheapest per request unit among products with every request value confirmed (none unknown);
+  // if no product has them all, the cheapest of the suitable ones.
+  const cheapest=list=>list.filter(r=>r.p.unitPrice!=null).sort((a,b)=>a.p.unitPrice-b.p.unitPrice)[0]?.p;
+  const best=cheapest(exact.filter(r=>!r.unknown.length))||cheapest(exact);
+  // Products ticked «Сравнить»: rubrics whose values are not the same in all of them.
+  const cmpNames=new Set((state.compare||{})[pos.id]||[]);
+  const cmpList=M.products.filter(p=>cmpNames.has(p.name));
+  const cmpFields=new Set(), cmpWords=new Set();
+  if(cmpList.length>1){
+    const per=cmpList.map(p=>{const m=new Map();for(const k of p.words)if(k.startsWith('f|')&&M.fieldOf.get(k)!=='Код / артикул'){const f=M.fieldOf.get(k);if(!m.has(f))m.set(f,[]);m.get(f).push(k)}return m});
+    const all=new Set(per.flatMap(m=>[...m.keys()]));
+    for(const f of all){const sig=per.map(m=>[...(m.get(f)||[])].sort().join('|'));if(new Set(sig).size>1)cmpFields.add(f)}
+    // Words outside the rubrics too («45» / «55», «RED» / «BLUE»): a word not in every compared product differs.
+    for(const p of cmpList)for(const k of p.words)if(k.startsWith('w|')&&!cmpList.every(q=>q.words.has(k)))cmpWords.add(k);
+  }
+  pp.append(el('h2',{},`Подходящие товары (${exact.length})`));
+  if(cmpList.length)pp.append(el('div',{class:'cmpbar'},
+    cmpList.length>1?`Сравниваются ${cmpList.length} товара: отличия выделены оранжевым`+(cmpFields.size||cmpWords.size?` (${[...cmpFields].join(', ').toLowerCase()}${cmpFields.size&&cmpWords.size?', ':''}${cmpWords.size?'слова: '+[...cmpWords].map(M.label).join(', '):''})`:' — по характеристикам они не отличаются'):'Отметьте «Сравнить» ещё у одного товара',
+    el('button',{class:'btn',type:'button',onclick:()=>{delete state.compare[pos.id];save();render()}},'Снять сравнение')));
+  if(M.reference)pp.append(el('p',{class:'hint'},'Эталон: ',el('b',{},M.reference.name),' — его характеристики дополняют заявку при сравнении; характеристики заявки важнее. ',
+    el('button',{class:'btn',onclick:()=>{delete state.anchor[pos.id];save();render()}},'Убрать эталон')));
+  pp.append(el('p',{class:'hint'},best?`Лучшая цена за ${unit(pos.unit)}: ${money(best.unitPrice)} — на ${num(pos.qty)} ${pos.unit} нужно купить ${num(best.buy)} ${best.unit}, сумма ${money(best.total)}.`:exact.length?`Подходящие есть, но цену за ${pos.unit} не посчитать: ${exact[0].p.note||'нет пересчёта единиц поставщика в единицы заявки'}.`:'Товаров со всеми характеристиками заявки нет — смотрите близкие ниже.'));
+  const head=[el('tr',{class:'group'},el('th',{colspan:2,class:'g-start'},'Данные заявки'),el('th',{colspan:6,class:'g-start g-end'},'Данные поставщика'),el('th',{})),
+    el('tr',{},el('th',{class:'g-start'},'Ед. изм.'),el('th',{},'Кол-во'),el('th',{class:'g-start'},'Товар'),el('th',{},'Ед. изм.'),el('th',{},'Кол-во'),el('th',{},'Цена'),sortHead('unit','Цена за ед. заявки'),sortHead('total','Сумма','g-end'),el('th',{},''))];
+  // Table values: quick presses — 1 ✓ green, 2 + yellow, 3 ✕ red, 4 no mark; applied 0.35 s after the last.
+  const BY_COUNT=['only','also','rejected','none'], SYM={only:'✓ ',also:'+ ',rejected:'✕ ',none:''};
+  const STATE={only:'выбрано мной',also:'аналог / замена',rejected:'исключено',none:'не выбрано'};
+  // In the product name only the fill shows the mark — no ✓/+/✕ signs inside the text.
+  const valueButton=(k,raw)=>{const lab=raw??M.label(k), sym=st=>raw!=null?'':SYM[st];
+    const s=M.marks.get(k)?.s||'none', isReq=M.reqWords.has(k);
+    let framed=M.marks.get(k)?.by==='user';
+    const cls=st=>'w cyc'+(isReq&&st!=='none'&&st!=='rejected'?' s-only':'')+(framed&&st!=='none'?' mk mk-'+st:'');
+    let presses=0, timer=null;
+    const button=el('button',{type:'button',class:cls(s),
+      title:`${M.fieldOf.get(k)?M.fieldOf.get(k)+' '+M.label(k):'Слово «'+M.label(k)+'»'} — ${stateWord(M.marks.get(k))}\nНажмите: 1 раз — выбрано мной, 2 — аналог / замена, 3 — исключить, 4 — снять выбор`,
+      'aria-label':`${M.named(k)}: ${STATE[s]}`,
+      onclick:()=>{presses=Math.min(presses+1,4);const st=BY_COUNT[presses-1];framed=true;
+        button.className=cls(st)+['inl','cmp-diff'].filter(c=>button.classList.contains(c)).map(c=>' '+c).join(''); // keep the look of a part of the namebutton.textContent=sym(st)+lab;
+        clearTimeout(timer);timer=setTimeout(()=>setMark(pos,k,st==='none'?(isReq?'none':null):st),350);}},sym(s)+lab);
+    return button;
+  };
+  // The name of the product, its recognised parts and words as buttons (same marks as in the filter column).
+  const nameButtons=p=>{
+    const box=el('span',{class:'pname'}), inCmp=cmpList.length>1&&cmpList.includes(p);
+    const button=x=>{
+      const b=valueButton(x.k,p.name.slice(x.s,x.e));b.classList.add('inl');
+      if(x.guess){b.append('?');b.title='Определено методом исключения — проверьте · '+b.title}
+      if(inCmp&&(cmpFields.has(M.fieldOf.get(x.k))||cmpWords.has(x.k))){b.classList.add('cmp-diff');b.title='Отличается от других сравниваемых товаров · '+b.title}
+      return b;
+    };
+    const ok=x=>x.k&&M.fieldOf.get(x.k)!=='Код / артикул';
+    const pieces=(p.pieces||[]).filter(ok);
+    let at=0;
+    for(const x of pieces){
+      if(x.s<at)continue;
+      // A designation with several values («1,05x10 м», «М10×30») is one block: its values are buttons,
+      // the signs between them (×, /, units) are plain text.
+      if(x.gs!=null&&x.gs>=at&&x.ge>x.gs){
+        if(x.gs>at)box.append(p.name.slice(at,x.gs));
+        const g=el('span',{class:'pgroup'}); let gat=x.gs;
+        for(const y of pieces.filter(y=>y.gs===x.gs&&y.ge===x.ge&&y.s>=x.gs&&y.e<=x.ge).sort((a,b)=>a.s-b.s)){
+          if(y.s<gat)continue; if(y.s>gat)g.append(p.name.slice(gat,y.s)); g.append(button(y)); gat=y.e;
+        }
+        if(gat<x.ge)g.append(p.name.slice(gat,x.ge));
+        box.append(g);at=x.ge;continue;
+      }
+      if(x.s>at)box.append(p.name.slice(at,x.s));
+      box.append(button(x));at=x.e;
+    }
+    if(at<p.name.length)box.append(p.name.slice(at));
+    return box;
+  };
+  const inName=p=>new Set((p.pieces||[]).map(x=>x.k));
+  const rowVals=p=>{
+    const shown=inName(p), keys=[...p.words].filter(k=>k.startsWith('f|')&&M.fieldOf.get(k)!=='Код / артикул'&&!shown.has(k))
+      .sort((a,b)=>FIELDS.indexOf(M.fieldOf.get(a))-FIELDS.indexOf(M.fieldOf.get(b)));
+    const inCmp=cmpList.length>1&&cmpList.includes(p);
+    const buttons=keys.map(k=>{const b=valueButton(k);if(p.guess?.has(k)){b.append('?');b.title='Определено методом исключения — проверьте · '+b.title}if(inCmp&&cmpFields.has(M.fieldOf.get(k))){b.classList.add('cmp-diff');b.title='Отличается от других сравниваемых товаров · '+b.title}return b});
+    // A rubric the other compared products have and this one does not.
+    const missing=inCmp?[...cmpFields].filter(f=>![...p.words].some(k=>M.fieldOf.get(k)===f)).map(f=>el('span',{class:'cmp-miss',title:'У других сравниваемых товаров указано'},'нет: '+f.toLowerCase())):[];
+    return keys.length||missing.length?el('div',{class:'rowvals'},buttons,missing):null;
+  };
+  const compareBox=p=>{const on=cmpNames.has(p.name);
+    return el('label',{class:'cmpbox',title:'Сравнить с другими отмеченными товарами: отличия будут выделены оранжевым'},
+      el('input',{type:'checkbox',checked:on,onchange:()=>{state.compare=state.compare||{};const l=new Set(state.compare[pos.id]||[]);on?l.delete(p.name):l.add(p.name);state.compare[pos.id]=[...l];save();render()}}),'Сравнить')};
+  // Product actions as icons; the word is in the hint. 🛒 choose (goes to the invoice), 📌 reference, ⚖ compare, eye — hide.
+  const productActions=(pos,p,c)=>{
+    const on=isChosen(pos,p), cmp=cmpNames.has(p.name);
+    const b=(name,title,pressed,cls,onclick)=>{const x=el('button',{type:'button',class:'ibtn '+cls+(pressed?' on':''),title,'aria-label':title,'aria-pressed':String(!!pressed),onclick});x.innerHTML=ICONS[name];return x};
+    return el('div',{class:'acts-row'},
+      b('cart',on?'Выбрано — нажмите, чтобы убрать из счёта':'Выбрать',on,'i-cart',()=>chooseToggle(pos,p)),
+      b('pin',c.anchor?'Эталон — нажмите, чтобы убрать':'Взять за основу: сравнивать остальные товары с этим',c.anchor,'i-pin',()=>{state.anchor=state.anchor||{};state.anchor[pos.id]=c.anchor?undefined:p.name;save();render()}),
+      b('scales',cmp?'Сравнивается — нажмите, чтобы убрать из сравнения':'Сравнить с другими отмеченными товарами',cmp,'i-cmp',()=>{state.compare=state.compare||{};const l=new Set(state.compare[pos.id]||[]);cmp?l.delete(p.name):l.add(p.name);state.compare[pos.id]=[...l];save();render()}),
+      b('eyeoff','Скрыть товар',false,'i-hide',()=>hideOne(p)));
+  };
+  // Supplier unit: a pack is shown as «уп (250 шт)»; the conversion can be set by hand (✎), and it goes to the invoice.
+  const unitCell=(pos,p)=>{
+    const own=state.conv?.[pos.id]?.[convKey(pos,p)];
+    const packed=!own&&p.factor&&p.factor>1&&['шт','упак'].includes(unit(p.unit))&&unit(pos.unit)==='шт';
+    const label=packed?`уп (${num(p.factor)} шт)`:p.unit+(p.factor&&p.factor!==1&&!own?` (${p.note})`:'');
+    const box=el('div',{class:'unitcell'},el('span',{title:p.factor?'':p.note},label));
+    if(editingConv===pos.id+'|'+p.i){
+      const input=el('input',{type:'number',min:'0',step:'any',value:p.factor||'',class:'convin','aria-label':`Сколько ${pos.unit} в 1 ${p.unit}`});
+      const apply=()=>{const v=parseFloat(String(input.value).replace(',','.'));editingConv=null;
+        state.conv=state.conv||{};state.conv[pos.id]=state.conv[pos.id]||{};
+        if(v>0)state.conv[pos.id][convKey(pos,p)]=v;else delete state.conv[pos.id][convKey(pos,p)];
+        save();render();if(v>0)sendConversion(pos,p,v)};
+      input.onkeydown=e=>{if(e.key==='Enter')apply();if(e.key==='Escape'){editingConv=null;render()}};
+      box.append(el('div',{class:'convrow'},`1 ${p.unit} =`,input,pos.unit,el('button',{type:'button',class:'btn',onclick:apply},'OK')));
+      setTimeout(()=>input.focus(),0);
+    } else box.append(el('button',{type:'button',class:'convedit',title:`Задать пересчёт: сколько ${pos.unit} в 1 ${p.unit}`,'aria-label':'Задать пересчёт единиц',onclick:()=>{editingConv=pos.id+'|'+p.i;render()}},own?`1 ${p.unit} = ${num(own)} ${pos.unit} ✎`:p.factor?'✎':'задать пересчёт ✎'));
+    return box;
+  };
+  const hideOne=p=>{state.hidden=state.hidden||{};(state.hidden[pos.id]=state.hidden[pos.id]||[]).push(p.name);save();render()};
+  const diffTag=(c,x)=>el('span',{class:'cmp diff'},x.has.length?`${x.f}: ${x.has.map(M.label).join('/')} вместо ${x.want.map(M.label).join('/')}`:(x.f.startsWith('слово')?'нет слова'+x.f.slice(5):'нет '+x.f),
+    el('button',{type:'button',class:'xbtn',title:'Убрать только этот товар','aria-label':'Убрать товар: '+c.p.name,onclick:()=>hideOne(c.p)},'✕'),
+    x.has.length?el('button',{type:'button',class:'xbtn all',title:'Исключить товары с этим значением во всей позиции','aria-label':'Исключить везде: '+x.has.map(M.label).join('/'),onclick:()=>{for(const k of x.has)state.marks[pos.id]=Object.assign(state.marks[pos.id]||{},{[k]:'rejected'});save();render()}},'✕'):null);
+  const tb=el('tbody');
+  const row=(c,cls)=>{const p=c.p;return el('tr',{class:cls+(cmpNames.has(p.name)?' compared':'')},
+    el('td',{class:'g-start'},pos.unit),el('td',{class:'num'},num(pos.qty)),
+    el('td',{class:'g-start'},c.anchor?el('div',{class:'anchormark'},'эталон — остальные сравниваются с ним'):null,nameButtons(p),p===best?el('span',{class:'bestmark'},'★ лучшая цена'):null,c.analog?el('div',{class:'analog'},'аналог / замена'):null,
+      cls!=='main'?el('div',{class:'neardiff',title:c.diff.map(x=>x.has.length?`${x.f}: ${x.has.map(M.label).join('/')} вместо ${x.want.map(M.label).join('/')}`:`нет ${x.f}`).join('\n')},`совпадает ${c.same.length} из ${c.total}`+(c.unknown.length?` · не указано: ${c.unknown.join(', ').toLowerCase()}`:'')):null,
+      c.diff.length&&cmpNames.has(p.name)?el('div',{class:'cmprow'},...c.diff.map(x=>diffTag(c,x))):null,
+      rowVals(p),productMeta(pos,p)),
+    el('td',{},unitCell(pos,p)),
+    el('td',{class:'num'},p.buy==null?'—':num(p.buy)),el('td',{class:'num'},money(p.price)),
+    el('td',{class:'num',title:p.factor?'':p.note},money(p.unitPrice)),el('td',{class:'num g-end'},money(p.total)),
+    el('td',{class:'acts'},productActions(pos,p,c)))};
+  // Groups: products with the same set of characteristics (codes, brand and pack size ignored) are one group.
+  // The cheapest offer stands for the group; the rest are folded under it («Ещё N предложений»).
+  const SKIPG=new Set(['Код / артикул','Бренд','Фасовка']);
+  const gkey=p=>[...p.words].filter(k=>(k.startsWith('f|')&&!SKIPG.has(M.fieldOf.get(k)))||k.startsWith('w|')).sort().join('||');
+  const plural=n=>n%10===1&&n%100!==11?'предложение':(n%10>=2&&n%10<=4&&(n%100<10||n%100>=20)?'предложения':'предложений');
+  const byPrice=(a,b)=>(a.p.unitPrice==null)-(b.p.unitPrice==null)||(a.p.unitPrice??0)-(b.p.unitPrice??0);
+  const grouped=(list,clsOf)=>{
+    const map=new Map();
+    for(const c of list){const k=gkey(c.p);if(!map.has(k))map.set(k,[]);map.get(k).push(c)}
+    const gs=[...map.entries()].map(([k,g])=>({k,g:g.sort(byPrice)}));
+    if(!sortBy)gs.sort((a,b)=>byPrice(a.g[0],b.g[0]));
+    for(const {k,g} of gs){
+      tb.append(row(g[0],clsOf(g[0])));
+      if(g.length<2)continue;
+      const id=pos.id+'|'+k, open=!!state.groupOpen?.[id];
+      const sup=[...new Set(g.slice(1).map(c=>metaOf(pos,c.p).supplier).filter(Boolean))].join(', ');
+      tb.append(el('tr',{class:'grpmore'},el('td',{colspan:9},el('button',{class:'more',type:'button','aria-expanded':String(open),
+        onclick:()=>{state.groupOpen=state.groupOpen||{};state.groupOpen[id]=!open;save();render()}},
+        `${open?'▾':'▸'} Ещё ${g.length-1} ${plural(g.length-1)} с такими же характеристиками: от ${money(g[1].p.unitPrice)} за ${unit(pos.unit)}${sup?' · '+sup:''}`))));
+      if(open)for(const c of g.slice(1)){const r=row(c,clsOf(c));r.classList.add('ingroup');tb.append(r)}
+    }
+  };
+  // Levels inside «Подходящие»: first everything the request names is confirmed, then products
+  // where something (for example the size) is not in the name — they are not rejected, just not confirmed.
+  const full=exact.filter(r=>!r.unknown.length), partial=exact.filter(r=>r.unknown.length);
+  if(full.length&&partial.length)tb.append(el('tr',{class:'lvl'},el('td',{colspan:9},`Подтверждены все значения заявки: ${full.length} `,el('span',{class:'note'},'· дешёвые сверху, одинаковые по характеристикам собраны в группы'))));
+  grouped(full,c=>c.analog?'alt':'main');
+  if(partial.length){
+    if(full.length)tb.append(el('tr',{class:'lvl'},el('td',{colspan:9},`Не всё указано в названии: ${partial.length} `,el('span',{class:'note'},'· ничего не противоречит заявке, но часть значений (например, размер) в названии нет'))));
+    grouped(partial,c=>c.analog?'alt':'main');
+  }
+  if(near.length){
+    const limit=state.closeAll?.[pos.id]?near.length:8;
+    tb.append(el('tr',{class:'sep'},el('td',{colspan:9},`Близкие по характеристикам: ${near.length} — отличаются 1–2 характеристиками`,
+      hidden.size?el('span',{class:'note'},` · убрано: ${hidden.size} `,el('button',{class:'btn',onclick:()=>{delete state.hidden[pos.id];save();render()}},'Вернуть')):null)));
+    grouped(near.slice(0,limit),()=>'close');
+    if(near.length>8)tb.append(el('tr',{class:'sep'},el('td',{colspan:9},el('button',{class:'more',type:'button',onclick:()=>{state.closeAll=state.closeAll||{};state.closeAll[pos.id]=!state.closeAll[pos.id];save();render()}},state.closeAll?.[pos.id]?'Свернуть':`Ещё ${near.length-8}`))));
+  }
+  // «Остальные» are rows of the same table with every function of the others; folded until opened.
+  if(rest.length){
+    const open=!!state.restOpen?.[pos.id];
+    tb.append(el('tr',{class:'sep'},el('td',{colspan:9},el('button',{class:'more',type:'button','aria-expanded':String(open),
+      onclick:()=>{state.restOpen=state.restOpen||{};state.restOpen[pos.id]=!open;save();render()}},
+      `${open?'▾':'▸'} Остальные — отличаются больше: ${rest.length}`))));
+    if(open)grouped(rest,()=>'out');
+  }
+  pp.append(el('div',{class:'tablewrap'},el('table',{class:'offers'},el('thead',{},head),tb)));
+  pp.append(el('p',{class:'note'},'Наличие и дату цены проверьте на этапе «Счёт» перед выставлением.'));
+  main.append(aiPickPanel(pos,M));
+  main.append(el('div',{class:'grid'},wp,pp));
+  return main;
+}
+
+function renderNew(){
+  const main=document.getElementById('main');main.replaceChildren();
+  const form=el('form',{class:'add panel'});
+  form.append(el('h2',{},'Своя позиция'),
+    el('div',{class:'row'},
+      el('label',{for:'f-name'},'Наименование из заявки',el('input',{id:'f-name',required:true,placeholder:'Фланец стальной приварной диам.300мм РУ16'})),
+      el('label',{for:'f-qty'},'Количество',el('input',{id:'f-qty',required:true,inputmode:'decimal',placeholder:'10'})),
+      el('label',{for:'f-unit'},'Единица',el('input',{id:'f-unit',value:'шт'}))),
+    el('label',{for:'f-products'},'Найденные товары — по одному на строку: наименование ; цена ; единица (цена и единица необязательны)',
+      el('textarea',{id:'f-products',required:true,placeholder:'Фланец плоский стальной Ду300 Ру16 ГОСТ 33259 ; 4850 ; шт\nФланец воротниковый Ду300 Ру16 ; 7120 ; шт'})),
+    el('p',{class:'note'},'Скопируйте товары из карточки поставщика или из «Других результатов» в приложении. Всё хранится только в этом браузере.'),
+    el('div',{},el('button',{class:'btn',type:'submit'},'Добавить позицию')));
+  form.onsubmit=e=>{
+    e.preventDefault();
+    const name=form.querySelector('#f-name').value.trim(), qty=parseFloat(form.querySelector('#f-qty').value.replace(',','.'))||0;
+    const products=form.querySelector('#f-products').value.split('\n').map(l=>l.split(/\s*[;\t]\s*/)).filter(a=>a[0]&&a[0].trim()).map(([n,p,u])=>[n.trim(),parseFloat(String(p||'').replace(/\s/g,'').replace(',','.'))||0,(u||'шт').trim()]);
+    if(!name||!products.length)return;
+    const id='p'+Date.now();
+    state.positions.push({id,name,qty,unit:form.querySelector('#f-unit').value.trim()||'шт',products});
+    state.active=id;save();render();
+  };
+  main.append(form);
+}
+
+/* ---------- AI parsing, compared with the rules ----------
+   One call to Claude with every request and product name; each value it returns must stand in the
+   name word for word (its «evidence»), and its rubric must be one of ours — otherwise it is rejected. */
+let sampleFn=null, aiBusy=false, aiError='', aiCtl=null;
+(async()=>{try{sampleFn=await window.claude?.use?.('sample')}catch(e){sampleFn=null} render()})();
+function aiNames(){
+  const names=[];
+  for(const pos of state.positions){names.push({kind:'Заявка',pos:pos.name,name:pos.name});for(const p of pos.products)names.push({kind:'Товар',pos:pos.name,name:p[0]})}
+  return names;
+}
+const squash=s=>String(s||'').toLowerCase().replaceAll('ё','е').replace(/[×*х]/g,'x').replace(/\s+/g,' ').trim();
+async function runAi(){
+  if(!sampleFn||aiBusy)return;
+  aiBusy=true;aiError='';render();
+  const all=aiNames(), out={};
+  aiCtl=new AbortController();
+  try{
+  // Batches of 20 names keep each answer well under the length limit.
+  for(let from=0;from<all.length;from+=20){
+  const names=all.slice(from,from+20);
+  aiError=`Разобрано ${from} из ${all.length}…`;render();
+  const prompt=`Ты разбираешь наименования строительных и промышленных товаров на характеристики.
+Рубрики (используй только их; если значение не подходит ни к одной — пропусти его): ${FIELDS.join('; ')}.
+Правила: значение пиши коротко с единицей (например «10 мм», «M8», «1 м», «AISI 304L», «FFP2»). Для каждого значения дай evidence — точный кусок исходного наименования, из которого оно взято, символ в символ. Ничего не придумывай: если в названии нет — не пиши. «Тип товара» — существительное, что это за товар (в именительном падеже, ед. числе).
+Ответь только JSON-массивом той же длины и порядка: [{"i":0,"fields":[{"field":"Резьба","value":"M8","evidence":"М8"}]}].
+Наименования:
+${names.map((n,i)=>i+'. '+n.name).join('\n')}`;
+    const res=await sampleFn.json(prompt,{signal:aiCtl.signal,cache:{gcTime:86400000}});
+    for(const r of Array.isArray(res)?res:[]){
+      const n=names[Number(r?.i)]; if(!n)continue;
+      const text=squash(n.name);
+      out[n.name]=(Array.isArray(r.fields)?r.fields:[]).map(f=>{
+        const field=String(f?.field||''), value=String(f?.value||''), ev=String(f?.evidence||'');
+        const why=!FIELDS.includes(field)?'рубрики нет в списке':!ev||!text.includes(squash(ev))?'нет в тексте названия':'';
+        return {field,value,evidence:ev,why};
+      });
+    }
+  }
+    state.ai={at:new Date().toLocaleString('ru-RU'),names:out};aiError='';save();
+  }catch(e){aiError=e?.code==='cancelled'?'':e?.code==='not_granted'?'Доступ к Claude для этой страницы не разрешён.':e?.code==='rate_limited'?'Слишком много запросов, попробуйте позже.':'Не удалось получить разбор: '+(e?.code||'ошибка')}
+  finally{aiBusy=false;render()}
+}
+// The same value written two ways is one value: «zn» = «цинк», «1000 мм» = «1 м», «8,8» = «8.8».
+function canonValue(field,value){
+  const v=String(value||'').trim();
+  const d=lookup(v.toLowerCase().replaceAll('ё','е'));
+  if(d&&d.field===field)return d.value;
+  const m=v.toLowerCase().replace(',','.').match(/^(\d+(?:\.\d+)?)\s*(мм|mm|см|м|m)$/);
+  if(m&&['Длина','Ширина','Толщина','Размер','Диаметр'].includes(field)){const n=parseFloat(m[1])*({см:10,м:1000,m:1000}[m[2]]||1);return field==='Длина'||field==='Ширина'?len(n):fmt(n)+' мм'}
+  if(field==='Резьба')return v.toUpperCase().replace('М','M').replace(/\s/g,'');
+  if(field==='Класс прочности')return v.replace(',','.');
+  return v;
+}
+// Rules vs AI for one name: same values, values only one side found, AI values rejected by the checks.
+function compareParse(name){
+  const rules=extract(name).found.filter(f=>f.field!=='Код / артикул').map(f=>({field:f.field,value:f.value}));
+  const ai=((state.ai?.names||{})[name]||[]).map(f=>({...f,value:canonValue(f.field,f.value)}));
+  const key=f=>f.field+'|'+squash(f.value).replace(/\s/g,'');
+  const rk=new Set(rules.map(key)), ok=ai.filter(f=>!f.why&&f.field!=='Код / артикул'), ak=new Set(ok.map(key));
+  return {same:rules.filter(f=>ak.has(key(f))),onlyRules:rules.filter(f=>!ak.has(key(f))),onlyAi:ok.filter(f=>!rk.has(key(f))),rejected:ai.filter(f=>f.why)};
+}
+function aiPanel(){
+  const box=el('details',{class:'aipanel',open:!!state.aiOpen});
+  box.addEventListener('toggle',()=>{state.aiOpen=box.open;save()});
+  box.append(el('summary',{},'Разбор наименований: правила и ИИ'+(state.ai?` · ИИ от ${state.ai.at}`:'')));
+  if(!sampleFn){box.append(el('p',{class:'note'},'ИИ не подключён: на сервере не задан ключ ANTHROPIC_API_KEY.'));return box}
+  box.append(el('p',{class:'hint'},`Один запрос к Claude разбирает все ${aiNames().length} наименований (заявка и найденные товары). Значение ИИ принимается, только если оно буквально есть в названии и его рубрика — из нашего списка. Запрос расходует лимит вашего аккаунта Claude; первый раз Claude спросит разрешение.`),
+    el('div',{class:'posnav'},el('button',{class:'btn',disabled:aiBusy,onclick:runAi},aiBusy?'ИИ разбирает… (до минуты)':state.ai?'Разобрать заново':'Разобрать ИИ'),
+      aiBusy?el('button',{class:'btn',onclick:()=>aiCtl?.abort()},'Остановить'):null,aiError?el('span',{class:'note'},aiError):null));
+  if(!state.ai)return box;
+  let agree=0,diffs=0,rejected=0;
+  const tb=el('tbody');
+  for(const n of aiNames()){
+    const c=compareParse(n.name); rejected+=c.rejected.length;
+    if(!c.onlyRules.length&&!c.onlyAi.length){agree++;continue}
+    diffs++;
+    const list=(arr,cls)=>arr.map(f=>el('span',{class:'cmp '+cls},`${f.field}: ${f.value}`));
+    tb.append(el('tr',{},el('td',{},el('div',{class:'note'},n.kind+(n.kind==='Товар'?' · '+n.pos.slice(0,30):'')),n.name),
+      el('td',{},el('div',{class:'cmprow'},...list(c.onlyRules,'diff'))),
+      el('td',{},el('div',{class:'cmprow'},...list(c.onlyAi,'s-also'))),
+      el('td',{},el('div',{class:'cmprow'},...c.rejected.map(f=>el('span',{class:'cmp',title:f.why,style:'text-decoration:line-through;opacity:.6'},`${f.field}: ${f.value}`))))));
+  }
+  box.append(el('p',{class:'totals'},`Совпало полностью: ${agree} · расходятся: ${diffs} · значений ИИ отклонено проверкой: ${rejected} `,
+    el('button',{class:'btn',onclick:async e=>{
+      const lines=aiNames().map(n=>{const c=compareParse(n.name);if(!c.onlyRules.length&&!c.onlyAi.length&&!c.rejected.length)return null;
+        const f=a=>a.map(x=>x.field+': '+x.value).join('; ');
+        return `${n.name}\n  правила: ${f(c.onlyRules)||'—'}\n  ИИ: ${f(c.onlyAi)||'—'}`+(c.rejected.length?`\n  отклонено: ${f(c.rejected)}`:'')}).filter(Boolean);
+      const text=`Совпало: ${agree}, расходятся: ${diffs}\n\n`+lines.join('\n');
+      try{await navigator.clipboard.writeText(text);e.target.textContent='Скопировано'}catch(err){e.target.textContent='Не удалось скопировать'}
+    }},'Скопировать расхождения')));
+  if(diffs)box.append(el('div',{class:'tablewrap'},el('table',{},el('thead',{},el('tr',{},el('th',{},'Наименование'),el('th',{},'Нашли только правила'),el('th',{},'Нашёл только ИИ'),el('th',{},'ИИ, отклонено проверкой'))),tb)));
+  return box;
+}
+
+/* ---------- AI choice for one position, checked by the rules ----------
+   Claude rates every found product against the request; the request's numbers and sizes (as the rules read
+   them) must be in the product, otherwise «подходит» is lowered to «проверить». Rules can lower, never raise. */
+const NUMERIC=new Set(['Резьба','Длина','Ширина','Толщина','Диаметр','Посадка','Размер','Размеры','Условный проход','Давление','Сечение','Напряжение','Мощность','Ток','Объём','Масса','Зернистость','Типоразмер']);
+const pickBusy=new Set(); const pickErr={}; const pickCtl={};
+async function runPick(pos){
+  if(!sampleFn||pickBusy.has(pos.id))return;
+  pickBusy.add(pos.id);delete pickErr[pos.id];render();
+  const list=pos.products.map((p,i)=>`${i}. ${p[0]} — ${p[1]} ₽ за ${p[2]||'шт'}`).join('\n');
+  const prompt=`Ты снабженец. Нужно подобрать товар под позицию заявки.
+Позиция заявки: «${pos.name}», количество ${pos.qty} ${pos.unit}.
+Найденные товары поставщика:
+${list}
+
+Оцени КАЖДЫЙ товар: "подходит" — это то же изделие с теми же существенными параметрами (размеры, резьба, материал, класс); "аналог" — может заменить, но есть отличие (назови его); "не подходит" — другое изделие или существенный параметр другой. Не выдумывай параметры, которых нет в названии; если в названии чего-то не хватает для уверенности — это "аналог" с отличием «не указано: …». Цена на оценку не влияет.
+"best" — только товар с оценкой "подходит"; если такого нет, best = null. В "best_reason" одной фразой объясни выбор.
+Ответь только JSON: {"best": номер или null, "best_reason": "…", "items":[{"i":0,"verdict":"подходит|аналог|не подходит","reason":"коротко, словами из названия","differences":["…"]}]}`;
+  pickCtl[pos.id]=new AbortController();
+  try{
+    const res=await sampleFn.json(prompt,{signal:pickCtl[pos.id].signal,cache:{gcTime:86400000}});
+    const items=(Array.isArray(res?.items)?res.items:[]).filter(x=>pos.products[Number(x?.i)]).map(x=>({i:Number(x.i),verdict:['подходит','аналог','не подходит'].includes(x.verdict)?x.verdict:'аналог',reason:String(x.reason||''),differences:(Array.isArray(x.differences)?x.differences:[]).map(String)}));
+    state.aiPick=state.aiPick||{};
+    // A «best» is kept only when the AI itself rated that product «подходит».
+    const best=Number.isInteger(res?.best)&&items.find(x=>x.i===res.best&&x.verdict==='подходит')?res.best:null;
+    state.aiPick[pos.id]={at:new Date().toLocaleString('ru-RU'),best,bestReason:best!=null?String(res?.best_reason||''):'',items};save();
+  }catch(e){pickErr[pos.id]=e?.code==='cancelled'?'':e?.code==='not_granted'?'Доступ к Claude для этой страницы не разрешён.':e?.code==='rate_limited'?'Слишком много запросов, попробуйте позже.':'Не удалось получить подбор: '+(e?.code||'ошибка')}
+  finally{pickBusy.delete(pos.id);render()}
+}
+/* «Спросить ИИ»: a free question about one position. Claude sees the request, every found product with its
+   price per request unit, your marks and the AI choice; the short conversation is kept per position. */
+const askBusy=new Set(), askCtl={}, askLive={};
+async function runAsk(pos,M,question){
+  if(!sampleFn||askBusy.has(pos.id)||!question.trim())return;
+  const chat=(state.aiChat=state.aiChat||{})[pos.id]=(state.aiChat[pos.id]||[]);
+  const goods=M.products.map((p,i)=>`${i}. ${p.name} — ${p.price} ₽ за ${p.unit}`+(p.unitPrice!=null?`; ${Math.round(p.unitPrice*100)/100} ₽ за ${pos.unit}, купить ${p.buy} ${p.unit}`:'; пересчёт в единицы заявки неизвестен')).join('\n');
+  const marks=[...M.marks].map(([k,m])=>({only:'обязательно',also:'аналог',rejected:'исключено'}[m.s]+': '+M.named(k))).join('; ')||'нет';
+  const pick=state.aiPick?.[pos.id]?.items?.map(x=>`${x.i}: ${x.verdict}`).join(', ')||'не запускался';
+  const context=`Ты помогаешь снабженцу разобраться с позицией заявки. Отвечай по-русски, коротко и по делу, опирайся только на данные ниже; если данных не хватает — так и скажи, ничего не выдумывай. Цены не пересчитывай заново, если они уже даны.
+Позиция заявки: «${pos.name}», ${pos.qty} ${pos.unit}.
+Найденные товары:
+${goods}
+Отметки снабженца: ${marks}.
+Оценки подбора ИИ: ${pick}.`;
+  chat.push({role:'user',content:question.trim()});
+  askBusy.add(pos.id);askLive[pos.id]='';render();
+  askCtl[pos.id]=new AbortController();
+  try{
+    const turns=[{role:'user',content:context},...chat.slice(-8)];
+    const {text}=await sampleFn(turns,{cache:false,signal:askCtl[pos.id].signal,onText:({text})=>{askLive[pos.id]=text;const n=document.getElementById('ask-live-'+pos.id);if(n)n.textContent=text}});
+    chat.push({role:'assistant',content:text});
+  }catch(e){
+    chat.push({role:'assistant',content:(e?.text?e.text+'\n\n':'')+(e?.code==='cancelled'?'(остановлено)':e?.code==='not_granted'?'Доступ к Claude для этой страницы не разрешён.':e?.code==='rate_limited'?'Слишком много запросов, попробуйте позже.':'Не удалось получить ответ: '+(e?.code||'ошибка'))});
+  }finally{askBusy.delete(pos.id);delete askLive[pos.id];save();render()}
+}
+function askBlock(pos,M){
+  const box=el('div',{class:'ask'});
+  const chat=state.aiChat?.[pos.id]||[];
+  for(const t of chat.slice(-6))box.append(el('div',{class:'ask-msg '+(t.role==='user'?'q':'a')},t.content));
+  if(askBusy.has(pos.id))box.append(el('div',{class:'ask-msg a',id:'ask-live-'+pos.id},askLive[pos.id]||'Думаю…'));
+  const input=el('textarea',{id:'ask-'+pos.id,rows:2,placeholder:'Например: чем отличаются рулоны 1,4x20 и 1,4x25? Можно ли штангу вместо шпильки?',disabled:askBusy.has(pos.id)});
+  input.addEventListener('keydown',e=>{if(e.key==='Enter'&&(e.ctrlKey||e.metaKey)){e.preventDefault();runAsk(pos,M,input.value)}});
+  box.append(el('div',{class:'ask-row'},input,
+    askBusy.has(pos.id)?el('button',{class:'btn',onclick:()=>askCtl[pos.id]?.abort()},'Остановить'):el('button',{class:'btn',onclick:()=>runAsk(pos,M,input.value)},'Спросить ИИ'),
+    chat.length&&!askBusy.has(pos.id)?el('button',{class:'btn',onclick:()=>{delete state.aiChat[pos.id];save();render()}},'Очистить'):null));
+  return box;
+}
+function aiPickPanel(pos,M){
+  const box=el('section',{class:'panel aipick','aria-label':'Подбор ИИ'});
+  const saved=state.aiPick?.[pos.id], busy=pickBusy.has(pos.id);
+  box.append(el('div',{class:'posnav'},el('b',{},'Подбор ИИ'),
+    sampleFn?el('button',{class:'btn',disabled:busy,onclick:()=>runPick(pos)},busy?'ИИ оценивает товары… (до минуты)':saved?'Подобрать заново':'Подобрать ИИ'):el('span',{class:'note'},'ИИ не подключён: на сервере не задан ключ ANTHROPIC_API_KEY.'),
+    busy?el('button',{class:'btn',onclick:()=>pickCtl[pos.id]?.abort()},'Остановить'):null,
+    pickErr[pos.id]?el('span',{class:'note'},pickErr[pos.id]):null,
+    saved?el('span',{class:'note'},`от ${saved.at} · числа и размеры заявки проверяются правилами`):null));
+  if(sampleFn)box.append(askBlock(pos,M));
+  if(!saved)return box;
+  const reqNums=[...M.reqWords].filter(k=>k.startsWith('f|')&&NUMERIC.has(M.fieldOf.get(k)));
+  const order={'подходит':0,'проверить':1,'аналог':2,'не подходит':3};
+  const rows=saved.items.map(x=>{
+    const p=M.products[x.i]; const missing=reqNums.filter(k=>!p.words.has(k));
+    const verdict=x.verdict==='подходит'&&missing.length?'проверить':x.verdict;
+    return {...x,p,missing,verdict};
+  }).sort((a,b)=>order[a.verdict]-order[b.verdict]||(a.p.unitPrice??Infinity)-(b.p.unitPrice??Infinity));
+  const shown=rows.filter(r=>r.verdict!=='не подходит'), hidden=rows.length-shown.length;
+  const tb=el('tbody');
+  for(const r of shown){
+    const pill={'подходит':'done','проверить':'todo','аналог':'todo','не подходит':'miss'}[r.verdict];
+    tb.append(el('tr',{},
+      el('td',{},el('span',{class:'pill '+pill},r.verdict),r.i===saved.best&&r.verdict==='подходит'?el('div',{class:'bestmark',title:saved.bestReason||''},'★ выбор ИИ'):null),
+      el('td',{},r.p.name,el('div',{class:'note'},r.reason),
+        r.differences.length?el('div',{class:'neardiff'},'отличия: '+r.differences.join('; ')):null,
+        r.missing.length?el('div',{class:'cmprow'},...r.missing.map(k=>el('span',{class:'cmp diff'},'не подтверждено: '+M.named(k)))):null),
+      el('td',{class:'num'},money(r.p.unitPrice)),
+      el('td',{},el('button',{class:'btn'+(isChosen(pos,r.p)?' chosen':''),type:'button',onclick:()=>chooseToggle(pos,r.p)},isChosen(pos,r.p)?'Выбрано ✓':'Выбрать'))));
+  }
+  box.append(el('div',{class:'tablewrap'},el('table',{},el('thead',{},el('tr',{},el('th',{},'Оценка'),el('th',{},'Товар и обоснование ИИ'),el('th',{},'Цена за ед. заявки'),el('th',{},''))),tb)));
+  if(hidden)box.append(el('p',{class:'note'},`ИИ отнёс к «не подходит»: ${hidden} товаров — они не показаны.`));
+  return box;
+}
+
+// Status of a position in the whole request.
+function status(pos){
+  if(!pos.products.length)return {code:'none',text:'Поиск не запускался'};
+  const M=modelOf(pos);
+  const chosen=state.chosen?.[pos.id]!=null&&M.products.find(p=>p.name===state.chosen[pos.id]);
+  if(chosen)return {code:'done',text:'Выбрано',offer:chosen};
+  const ranked=M.ranked(), fit=ranked.filter(r=>r.dReq.length===0&&r.same.length>0&&r.p.unitPrice!=null), cheap=l=>[...l].sort((a,b)=>a.p.unitPrice-b.p.unitPrice)[0]?.p;
+  const best=cheap(fit.filter(r=>!r.unknown.length))||cheap(fit);
+  const near=ranked.find(r=>r.dReq.length<=2&&r.same.length>=2&&r.p.unitPrice!=null)?.p;
+  if(best)return {code:'todo',text:'Нужно решение',offer:best,recommended:true};
+  if(near)return {code:'todo',text:'Нужно решение',offer:near,recommended:true,closeOnly:true};
+  // Suitable or close products without a price per request unit (no unit conversion) are still found.
+  const any=ranked.find(r=>r.dReq.length===0&&r.same.length>0)||ranked.find(r=>r.dReq.length<=2&&r.same.length>=2);
+  return any?{code:'todo',text:'Нужно решение',offer:any.p,noPrice:true}:{code:'miss',text:'Не найдено'};
+}
+const STATUS_ORDER=[['all','Все'],['todo','Нужно решение'],['done','Выбрано'],['miss','Не найдено'],['none','Поиск не запускался']];
+function render(){
+  const main=document.getElementById('main');main.replaceChildren();
+  const tabs=document.getElementById('tabs');tabs.replaceChildren();
+  if(state.active==='new'){
+    tabs.append(el('button',{class:'tab',onclick:()=>{state.active=null;render()}},'← К заявке'));
+    renderNew();return;
+  }
+  const rows=state.positions.map((pos,i)=>({pos,n:i+1,st:status(pos)}));
+  const filter=state.filter||'all';
+  for(const[code,label]of STATUS_ORDER){
+    const count=code==='all'?rows.length:rows.filter(r=>r.st.code===code).length;
+    tabs.append(el('button',{class:'tab',role:'tab','aria-selected':String(filter===code),onclick:()=>{state.filter=code;save();render()}},`${label} (${count})`));
+  }
+  tabs.append(el('button',{class:'tab add',onclick:()=>{state.active='new';render()}},'+ Своя позиция'));
+  main.append(aiPanel());
+  const shown=rows.filter(r=>filter==='all'||r.st.code===filter);
+  const done=rows.filter(r=>r.st.code==='done');
+  const sum=done.reduce((s,r)=>s+(r.st.offer.total||0),0);
+  main.append(el('p',{class:'totals'},`Выбрано: ${done.length} из ${rows.length} · Итого по выбранным: `,el('b',{},money(sum))));
+  const order=rows.filter(r=>r.st.code==='todo').map(r=>r.pos.id);
+  const go=id=>{state.active=id;save();render();setTimeout(()=>document.getElementById('row-'+id)?.scrollIntoView({block:'start',behavior:'smooth'}),0)};
+  const tb=el('tbody');
+  for(const r of shown){
+    const open=state.active===r.pos.id, o=r.st.offer;
+    tb.append(el('tr',{id:'row-'+r.pos.id,class:'sumrow'+(open?' open':''),tabindex:0,onclick:()=>{state.active=open?null:r.pos.id;save();render()},onkeydown:e=>{if(e.key==='Enter'){state.active=open?null:r.pos.id;save();render()}}},
+      el('td',{class:'num'},String(r.n)),el('td',{},el('span',{class:'caret'},open?'▾ ':'▸ '),r.pos.name),el('td',{class:'num'},num(r.pos.qty)),el('td',{},r.pos.unit),
+      el('td',{},el('span',{class:'pill '+r.st.code},r.st.text)),
+      el('td',{},o?o.name:'—',o&&r.st.recommended?el('div',{class:'note'},r.st.closeOnly?'точного нет, ближайший по характеристикам':'рекомендовано: лучшая цена'):o&&r.st.noPrice?el('div',{class:'note'},'найдено, но цену за единицу заявки не посчитать: нет пересчёта единиц'):null),
+      el('td',{class:'num'},o?money(o.unitPrice):'—'),el('td',{class:'num'},o?money(o.total):'—')));
+    if(open){
+      const i=state.positions.indexOf(r.pos);
+      const prev=state.positions[i-1], next=state.positions[i+1], nextTodo=order.find(id=>state.positions.findIndex(p=>p.id===id)>i)||order.find(id=>id!==r.pos.id);
+      const nav=el('div',{class:'posnav'},
+        el('button',{class:'btn',disabled:!prev,onclick:()=>prev&&go(prev.id)},'← Предыдущая'),
+        el('button',{class:'btn',disabled:!next,onclick:()=>next&&go(next.id)},'Следующая →'),
+        el('button',{class:'btn',disabled:!nextTodo,onclick:()=>nextTodo&&go(nextTodo)},'Следующая нерешённая →'),
+        r.pos.example?el('span',{class:'note'},r.pos.example):el('button',{class:'btn',onclick:()=>{state.positions=state.positions.filter(p=>p.id!==r.pos.id);delete state.marks[r.pos.id];state.active=null;save();render()}},'Удалить позицию'));
+      const work=r.pos.products.length?renderPosition(r.pos):el('p',{class:'note'},'Товаров нет: поиск по этой позиции не запускался. Когда приложение снова получит доступ к базе, сюда попадут найденные товары.');
+      tb.append(el('tr',{class:'workrow'},el('td',{colspan:8},nav,work)));
+    }
+  }
+  main.append(el('div',{class:'tablewrap'},el('table',{class:'summary-table'},
+    el('thead',{},el('tr',{},...['№','Наименование заявки','Кол-во','Ед.','Статус','Предложение','Цена за ед. заявки','Сумма'].map(h=>el('th',{},h)))),tb)));
+}
+/* APP: заголовок и ссылки приложения */
+// «…/podbor#p5» opens position 5 (links from the request and the invoice pages).
+{const h=location.hash.match(/^#(p\d+)$/);if(h&&state.positions.some(p=>p.id===h[1])){state.active=h[1];setTimeout(()=>document.getElementById('row-'+h[1])?.scrollIntoView({block:'start'}),0)}}
+document.getElementById('app-title').textContent=APP.title;document.title=APP.title;
+if(APP.local){const sub=document.querySelector('header .sub');if(sub)sub.textContent='Стенд: та же страница «Подбор товаров», что в приложении, на примерах. Решения хранятся только в этом браузере, в счёт ничего не уходит.'}
+for(const[href,text]of APP.links){const a=document.createElement('a');a.href=href;a.textContent=text;document.getElementById('app-nav').append(a)}
 render();
+})();
 </script>
