@@ -1240,6 +1240,7 @@ def _supplier_balanced_candidates(candidates: list[dict], per_supplier: int = 3,
 
 def _build_match_row(position: int, item: dict, suppliers, excluded_keys: set[str] | None = None,
                      search_session: SearchSession | None = None) -> dict:
+    from search_rules import shares_word
     requested = str(item.get("goodName") or "").strip()
     excluded_keys = set(excluded_keys or ())
     position_started = time.monotonic()
@@ -1254,6 +1255,10 @@ def _build_match_row(position: int, item: dict, suppliers, excluded_keys: set[st
     for quote in quotes:
         if quote.error:
             rejected.append({"supplier": quote.supplier, "error": quote.error})
+            continue
+        # A supplier-API result that shares no word with the request (a belt or
+        # a drill for «профиль 60*27») is junk, not an alternative.
+        if quote.source_type not in {"price_list", "own_catalog"} and not shares_word(requested, quote.name):
             continue
         score, reasons = _score_details(requested, quote)
         candidate = quote.to_dict()

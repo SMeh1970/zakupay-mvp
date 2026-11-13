@@ -11,6 +11,7 @@ import html
 import io
 import json
 import math
+import os
 import re
 import zipfile
 from contextlib import contextmanager
@@ -369,11 +370,21 @@ def search_prices(query, limit=8):
     from supplier_adapters import SupplierQuote
     from vi_order_match import _identifiers, _score_details
     from automation_pipeline import _hard_conflicts, _candidate_matches_brand, _requested_brands, _search_variants, _product_types
+    from search_rules import (compare_sizes, match_level, normalize_sizes, product_type,
+                              size_tokens, sizes, strip_sizes, type_status)
+    # 60*27, 60×27, 60x27, 60/27 and 60х27 are one size: unify before anything else.
+    query = normalize_sizes(query)
+    requested_sizes = sizes(query)
+    requested_type = product_type(query)
     # Expand once inside the indexed lookup; score against the original request.
     variants = [query, *_search_variants(query)[:8]]
-    terms = sorted({term for variant in variants for term in tokens(variant)})[:128]
-    lexical = {t for t in terms if re.fullmatch(r"[а-яa-z]{3,}", t)}
-    ids = sorted(_identifiers(query))
+    heavy_sizes = size_tokens(query)
+    type_options = {kind for kind in (product_type(v) for v in variants) if kind}
+    terms = sorted({term for variant in variants for term in tokens(variant)} | heavy_sizes)[:128]
+    lexical = {t for t in terms if re.fullmatch(r"[а-яa-z]{3,}", t)} | heavy_sizes
+    # A size such as 60х27 is compared by the size rules, never as a model or article.
+    bare_query = strip_sizes(query)
+    ids = sorted(_identifiers(bare_query))
     if not terms and not ids:
         return []
     rows = {}
@@ -386,6 +397,7 @@ def search_prices(query, limit=8):
                 [identifier.lower() for identifier in ids]).fetchall()
             rows.update((row["id"], row) for row in exact)
         if terms:
+            shortlist_limit = max(400, int(os.getenv("PRICE_SEARCH_SHORTLIST", "3000")))
             placeholders = ",".join("?" for _ in terms)
             word_slots = ",".join("?" for _ in lexical) or "NULL"
             matched = execute(conn, f"""WITH token_hits AS MATERIALIZED (
@@ -395,7 +407,7 @@ def search_prices(query, limit=8):
                 SELECT h.item_id,h.hits FROM token_hits h
                 JOIN supplier_price_items si ON si.id=h.item_id
                 JOIN supplier_price_lists p ON p.id=si.list_id
-                WHERE p.status='active' ORDER BY h.hits DESC,h.item_id LIMIT 400
+                WHERE p.status='active' ORDER BY h.hits DESC,h.item_id LIMIT {shortlist_limit}
                 ) SELECT i.id,i.payload_json,r.hits FROM shortlist r
                 JOIN supplier_price_items i ON i.id=r.item_id ORDER BY r.hits DESC,i.id""", [*sorted(lexical), *terms]).fetchall()
             rows.update((row["id"], row) for row in matched)
@@ -423,6 +435,11 @@ def search_prices(query, limit=8):
         offered_types = _product_types(item.name)
         if requested_types and offered_types and requested_types.isdisjoint(offered_types) and not exact_id:
             continue
+        # Synonym variants («коронка» -> «пила кольцевая») are legitimate types too.
+        type_state = min((type_status(kind, item.name, item.brand) for kind in type_options),
+                         key=("match", "doubtful", "other").index, default="match")
+        if type_state == "other" and not exact_id:
+            continue
         analysis = {"category": item.category, "attributes": item.characteristics} if item.category else extract(item.name)
         analysis = corrected.get(item.catalog_product_id, analysis)
         item.category, item.characteristics = analysis["category"], analysis["attributes"]
@@ -432,22 +449,48 @@ def search_prices(query, limit=8):
                                          for value in characteristic_match["conflicts"]]
         item.characteristic_missing = ["не подтверждена характеристика: " + value
                                        for value in characteristic_match["missing"]]
+        # «Category needs manual check» is a note, not a missing requested value.
+        real_missing = [value for value in characteristic_match["missing"]
+                        if not value.startswith(("Категория", "Обязательные характеристики"))]
         # Retrieval retains relevant differences for the review screen. The
         # pipeline applies these warnings before selection and exact matching.
-        conflicts = _hard_conflicts(query, item.to_dict())
+        conflicts = _hard_conflicts(bare_query, item.to_dict())
         brand_conflict = bool(brands and not _candidate_matches_brand(item.to_dict(), brands))
-        accepted.append((item, score, bool(conflicts or brand_conflict),
-                         bool(item.characteristic_missing)))
-    # Return a shortlist per supplier so a large cheap catalogue cannot hide
-    # alternatives from every other firm. Final unit-aware selection is shared.
-    accepted.sort(key=lambda pair: (pair[2], pair[3], -pair[1], pair[0].price, pair[0].name))
-    result, counts = [], {}
-    for item, *_ in accepted:
-        if counts.get(item.supplier, 0) >= max(8, limit):
+        size_check = compare_sizes(requested_sizes, item.name)
+        if size_check["conflicts"]:
+            item.characteristic_conflicts.append("не совпадает размер: " + ", ".join(
+                "х".join(size) for size in size_check["conflicts"]))
+        if size_check["missing"]:
+            item.characteristic_missing.append("размер не указан: " + ", ".join(
+                "х".join(size) for size in size_check["missing"]))
+        differences = (max(len(size_check["conflicts"]), len(characteristic_match["conflicts"]), len(conflicts))
+                       + int(brand_conflict))
+        level = match_level(type_state="match" if exact_id else type_state, differences=differences,
+                            missing=bool(real_missing or size_check["missing"]))
+        if level is None:
+            continue
+        item.search_level = level
+        accepted.append((item, score, level))
+    # Retrieve everything relevant, not eight per firm: levels 1-3 are kept in
+    # full (up to a generous cap), level 4 («only the type matches») is a short
+    # tail. Inside a level the cheapest comes first; the final unit-aware
+    # selection is shared.
+    per_supplier = max(int(limit), int(os.getenv("PRICE_SEARCH_PER_SUPPLIER", "100")))
+    total_cap = max(80, int(os.getenv("PRICE_SEARCH_TOTAL", "1000")))
+    tail_cap = int(os.getenv("PRICE_SEARCH_TAIL", "30"))
+    accepted.sort(key=lambda row: (row[2], row[0].price if row[0].price is not None else float("inf"),
+                                   -row[1], row[0].name))
+    result, counts, tail = [], {}, 0
+    for item, _score, level in accepted:
+        if level == 4:
+            if tail >= tail_cap or counts.get(item.supplier, 0) >= 3:
+                continue
+            tail += 1
+        elif counts.get(item.supplier, 0) >= per_supplier:
             continue
         result.append(item)
         counts[item.supplier] = counts.get(item.supplier, 0) + 1
-        if len(result) >= 80:
+        if len(result) >= total_cap:
             break
     return result
 

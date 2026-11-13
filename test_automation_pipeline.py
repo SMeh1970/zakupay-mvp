@@ -320,7 +320,9 @@ class PipelineTests(unittest.TestCase):
         item = pipeline.build_vi_draft(order)["items"][0]
         self.assertIsNone(item["selected"])
         self.assertEqual(item["match_status"], "не соответствует")
-        self.assertTrue(any("не совпадает тип товара" in x for x in item["rejected_candidates"][0]["hard_conflicts"]))
+        # A supplier-API result sharing no word with the request is junk: not shown at all.
+        self.assertEqual(item["rejected_candidates"], [])
+        self.assertEqual(pipeline._review_candidates(item), [])
 
     @patch.object(pipeline.VseinstrumentiAdapter, "search")
     def test_manual_repeat_search_excludes_previously_shown_candidate(self, search):
