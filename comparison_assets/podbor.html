@@ -197,6 +197,9 @@ form.add textarea{min-height:180px;font-family:var(--mono);font-size:13px}
 .supplier-line img.photo{display:block;max-width:240px;max-height:240px;margin:6px 0;border:1px solid var(--line);border-radius:6px;background:#fff}
 .appnav{display:flex;gap:14px;flex-wrap:wrap;font-size:14px;margin:0 0 6px}.appnav a{color:var(--accent)}
 .app-status{font-size:13px;color:var(--muted);min-height:1em;margin:4px 0 0}.app-status.error{color:var(--no)}
+.app-toast{position:fixed;left:50%;transform:translateX(-50%);bottom:16px;max-width:min(720px,92vw);background:#fff;border:1px solid var(--no);color:var(--no);border-radius:8px;padding:10px 36px 10px 14px;box-shadow:0 4px 16px rgba(0,0,0,.15);z-index:50;font-size:14px}
+.app-toast button{position:absolute;top:4px;right:6px;border:0;background:none;font-size:18px;cursor:pointer;color:inherit}
+.doneck{display:inline-flex;align-items:center;gap:6px;margin:8px 0;font-size:14px;cursor:pointer}.doneck input{width:18px;height:18px}.doneck.off{color:var(--muted);cursor:not-allowed}
 </style>
 
 <div class="wrap">
@@ -238,7 +241,11 @@ const load=()=>{
   return {...s,version:5,positions,chosen,chosenKey,active,marks:s.marks||{}};
 };
 let saveTimer=null, synced={...(APP.chosen||{})}, syncedKey={...(APP.chosenKey||{})}, revision=APP.revision, syncing=Promise.resolve();
-const appStatus=(text,error)=>{const n=document.getElementById('app-status');if(n){n.textContent=text||'';n.className=error?'app-status error':'app-status'}};
+const appStatus=(text,error)=>{const n=document.getElementById('app-status');if(n){n.textContent=text||'';n.className=error?'app-status error':'app-status'}
+  // An error also shows at the bottom of the screen, where the person works (the line under the title is out of sight in a long table).
+  let t=document.getElementById('app-toast');
+  if(!t){t=document.createElement('div');t.id='app-toast';t.className='app-toast';t.setAttribute('role','alert');t.hidden=true;document.body.append(t)}
+  if(error&&text){const x=document.createElement('button');x.type='button';x.setAttribute('aria-label','Закрыть');x.textContent='×';x.onclick=()=>{t.hidden=true};t.replaceChildren(text,x);t.hidden=false}else t.hidden=true};
 const post=async(url,body)=>{
   const r=await fetch(url,{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json','X-Requested-With':'podbor'},body:JSON.stringify(body)});
   const d=await r.json().catch(()=>({}));
@@ -271,6 +278,12 @@ function syncChosen(){
       const wanted=state.chosenKey?.[pos.id], product=cur==null?null:(pos.products.find(p=>p[0]===cur&&p[3]?.key===wanted)||pos.products.find(p=>p[0]===cur));
       try{
         appStatus(cur==null?'Убираю товар из счёта…':'Переношу выбор в счёт…');
+        // The conversion typed in the table lives in the browser state; if it never reached the app (or the app was reloaded),
+        // the app refuses the choice with «Нет пересчёта единиц». Send it again right before choosing: the action just sets the same value.
+        if(cur!=null&&product?.[3]?.key){
+          const own=state.conv?.[pos.id]?.[product[3].key];
+          if(own>0){const c=await post(APP.action_url,{action:'conversion',position:pos.position,key:product[3].key,factor:own,csrf:APP.csrf,revision});revision=c.revision}
+        }
         const d=await post(APP.action_url,cur==null
           ?{action:'value_unselect',position:pos.position,csrf:APP.csrf,revision}
           :{action:'value_accept_select',position:pos.position,key:product?.[3]?.key,csrf:APP.csrf,revision,page:pagePrice(pos,product)});
@@ -1344,13 +1357,18 @@ function render(){
     if(open){
       const i=state.positions.indexOf(r.pos);
       const prev=state.positions[i-1], next=state.positions[i+1], nextTodo=order.find(id=>state.positions.findIndex(p=>p.id===id)>i)||order.find(id=>id!==r.pos.id);
+      // A tick closes the row once a product is chosen (✓ cart): the position then shows in the table above as chosen.
+      const doneBox=()=>{const ok=r.st.code==='done';
+        return el('label',{class:'doneck'+(ok?'':' off'),title:ok?'Закрыть строку позиции':'Сначала выберите товар (корзинка)'},
+          el('input',{type:'checkbox',disabled:!ok,'aria-label':'Готово — закрыть строку',onchange:e=>{if(!e.target.checked)return;state.active=null;save();render();setTimeout(()=>document.getElementById('row-'+r.pos.id)?.scrollIntoView({block:'center'}),0)}}),'Готово — закрыть строку')};
       const nav=el('div',{class:'posnav'},
         el('button',{class:'btn',disabled:!prev,onclick:()=>prev&&go(prev.id)},'← Предыдущая'),
         el('button',{class:'btn',disabled:!next,onclick:()=>next&&go(next.id)},'Следующая →'),
         el('button',{class:'btn',disabled:!nextTodo,onclick:()=>nextTodo&&go(nextTodo)},'Следующая нерешённая →'),
+        doneBox(),
         r.pos.example?el('span',{class:'note'},r.pos.example):el('button',{class:'btn',onclick:()=>{state.positions=state.positions.filter(p=>p.id!==r.pos.id);delete state.marks[r.pos.id];state.active=null;save();render()}},'Удалить позицию'));
       const work=r.pos.products.length?renderPosition(r.pos):el('p',{class:'note'},'Товаров нет: поиск по этой позиции не запускался. Когда приложение снова получит доступ к базе, сюда попадут найденные товары.');
-      tb.append(el('tr',{class:'workrow'},el('td',{colspan:8},nav,work)));
+      tb.append(el('tr',{class:'workrow'},el('td',{colspan:8},nav,work,r.pos.products.length?doneBox():null)));
     }
   }
   main.append(el('div',{class:'tablewrap'},el('table',{class:'summary-table'},
