@@ -3,6 +3,7 @@ import os
 import re
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import Mock, patch
 
 from fastapi import FastAPI
@@ -167,6 +168,14 @@ class PodborPageTests(unittest.TestCase):
 
 
 class StandBuildTests(unittest.TestCase):
+    def test_choose_can_close_the_position_form(self):
+        """Галочка «Закрывать позицию после выбора»: настройка хранится в состоянии, выбор закрывает форму только при ней."""
+        html = (Path(podbor_page.__file__).parent / "comparison_assets" / "podbor.html").read_text(encoding="utf-8")
+        self.assertIn("Закрывать позицию после выбора", html)
+        self.assertIn("state.closeOnChoose=e.target.checked", html)
+        choose = html[html.index("function chooseToggle"):html.index("// Поставщик мелкой строкой")]
+        self.assertIn("state.closeOnChoose&&state.chosen[pos.id]!=null&&state.active===pos.id", choose)  # только выбор, не снятие
+
     def test_stand_is_built_from_the_app_page(self):
         import sys
         sys.path.insert(0, os.path.join(os.path.dirname(__file__), "scripts"))
