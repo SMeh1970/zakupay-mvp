@@ -200,8 +200,11 @@ form.add textarea{min-height:180px;font-family:var(--mono);font-size:13px}
 .offers tr.grpmore td{background:var(--bg);padding:3px 8px;border-top:0}
 .offers tr.ingroup td:first-child{box-shadow:inset 4px 0 0 var(--accent)}
 .offers tr.ingroup td{background:var(--accent-bg)}
-.offers tr.lvl td{background:var(--ok-bg);font-weight:600;color:var(--ok);border-top:2px solid var(--muted)}
-.offers tr.lvl td .note{font-weight:400;color:var(--ok)}
+.offers tr.main.partial td{background:transparent}
+.offers tr.lvl td{background:var(--bg);font-weight:600;color:var(--fg);border-top:2px solid var(--muted)}
+.offers tr.lvl td .note{font-weight:400;color:var(--muted)}
+.offers tr.lvl.ok td{background:var(--ok-bg);color:var(--ok)}
+.offers tr.lvl.ok td .note{color:var(--ok)}
 </style>
 
 <div class="wrap">
@@ -1066,30 +1069,30 @@ function renderPosition(pos){
   const gkey=p=>[...p.words].filter(k=>(k.startsWith('f|')&&!SKIPG.has(M.fieldOf.get(k)))||k.startsWith('w|')).sort().join('||');
   const plural=n=>n%10===1&&n%100!==11?'предложение':(n%10>=2&&n%10<=4&&(n%100<10||n%100>=20)?'предложения':'предложений');
   const byPrice=(a,b)=>(a.p.unitPrice==null)-(b.p.unitPrice==null)||(a.p.unitPrice??0)-(b.p.unitPrice??0);
-  const grouped=(list,clsOf)=>{
+  const grouped=(list,clsOf,extra)=>{
     const map=new Map();
     for(const c of list){const k=gkey(c.p);if(!map.has(k))map.set(k,[]);map.get(k).push(c)}
     const gs=[...map.entries()].map(([k,g])=>({k,g:g.sort(byPrice)}));
     if(!sortBy)gs.sort((a,b)=>byPrice(a.g[0],b.g[0]));
     for(const {k,g} of gs){
-      tb.append(row(g[0],clsOf(g[0])));
+      {const r0=row(g[0],clsOf(g[0]));if(extra)r0.classList.add(extra);tb.append(r0)}
       if(g.length<2)continue;
       const id=pos.id+'|'+k, open=!!state.groupOpen?.[id];
       const sup=[...new Set(g.slice(1).map(c=>metaOf(pos,c.p).supplier).filter(Boolean))].join(', ');
       tb.append(el('tr',{class:'grpmore'},el('td',{colspan:9},el('button',{class:'more',type:'button','aria-expanded':String(open),
         onclick:()=>{state.groupOpen=state.groupOpen||{};state.groupOpen[id]=!open;save();render()}},
         `${open?'▾':'▸'} Ещё ${g.length-1} ${plural(g.length-1)} с такими же характеристиками: от ${money(g[1].p.unitPrice)} за ${unit(pos.unit)}${sup?' · '+sup:''}`))));
-      if(open)for(const c of g.slice(1)){const r=row(c,clsOf(c));r.classList.add('ingroup');tb.append(r)}
+      if(open)for(const c of g.slice(1)){const r=row(c,clsOf(c));r.classList.add('ingroup');if(extra)r.classList.add(extra);tb.append(r)}
     }
   };
   // Levels inside «Подходящие»: first everything the request names is confirmed, then products
   // where something (for example the size) is not in the name — they are not rejected, just not confirmed.
   const full=exact.filter(r=>!r.unknown.length), partial=exact.filter(r=>r.unknown.length);
-  if(full.length&&partial.length)tb.append(el('tr',{class:'lvl'},el('td',{colspan:9},`Подтверждены все значения заявки: ${full.length} `,el('span',{class:'note'},'· дешёвые сверху, одинаковые по характеристикам собраны в группы'))));
+  if(full.length&&partial.length)tb.append(el('tr',{class:'lvl ok'},el('td',{colspan:9},`Подтверждены все значения заявки: ${full.length} `,el('span',{class:'note'},'· дешёвые сверху, одинаковые по характеристикам собраны в группы'))));
   grouped(full,c=>c.analog?'alt':'main');
   if(partial.length){
     if(full.length)tb.append(el('tr',{class:'lvl'},el('td',{colspan:9},`Не всё указано в названии: ${partial.length} `,el('span',{class:'note'},'· ничего не противоречит заявке, но часть значений (например, размер) в названии нет'))));
-    grouped(partial,c=>c.analog?'alt':'main');
+    grouped(partial,c=>c.analog?'alt':'main','partial');
   }
   if(near.length){
     const limit=state.closeAll?.[pos.id]?near.length:8;
