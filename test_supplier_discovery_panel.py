@@ -1,0 +1,211 @@
+import json
+import os
+import re
+import tempfile
+from unittest.mock import patch
+
+import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
+import automation_pipeline as pipeline
+import supplier_discovery as sd
+import supplier_discovery_panel as panel_module
+from security import SESSION_COOKIE, _session_token, install_security
+
+SECRET = "SERP-SECRET-0123456789"
+
+
+@pytest.fixture
+def panel():
+    with tempfile.TemporaryDirectory() as directory, patch.multiple(
+            pipeline, DB_PATH=os.path.join(directory, "web.db"), DATABASE_URL="", _initialized_database_key=None), \
+            patch.dict(os.environ, {"APP_SIGNING_SECRET": "test-only-secret", "SERPAPI_API_KEY": SECRET,
+                                    "FIRECRAWL_API_KEY": "", "WEB_SEARCH_PAGES_PER_CLICK": "3"}):
+        app = FastAPI()
+        panel_module.install_supplier_discovery(app)
+        install_security(app)
+        with TestClient(app, base_url="https://testserver") as client:
+            client.cookies.set(SESSION_COOKIE, _session_token())
+            yield client
+
+
+def add_job(items=("Профиль потолочный 60*27", "Саморез 4,2*16")):
+    order = {"name": "Тестовая заявка", "orderItems": [{"goodName": n, "count": 1} for n in items]}
+    with pipeline._connect() as conn:
+        cursor = conn.execute(
+            "INSERT INTO automation_jobs (dedupe_key,order_id,event_type,status,order_json,result_json,created_at,updated_at) "
+            "VALUES (?,?,?,?,?,?,?,?)", ("job", 1, "test", "ready", json.dumps(order), "{}", "now", "now"))
+        return cursor.lastrowid
+
+
+def token(client, job_id):
+    response = client.get(f"/dashboard/web-suppliers?job_id={job_id}")
+    assert response.status_code == 200
+    return re.search(r"name='csrf' value='([^']+)'", response.text).group(1)
+
+
+def fake_search(by_query):
+    """search_page, отдающий сайты по тексту запроса и запоминающий вызовы."""
+    calls = []
+
+    def search(engine, page, query, **kwargs):
+        calls.append((engine, page, query, kwargs))
+        urls = by_query.get(query, [])
+        results = [{"url": u, "title": t, "description": "купить с доставкой"} for u, t in urls] if page == 0 else []
+        return {"results": results, "raw": results, "next": None, "notice": "",
+                "diagnostics": {"raw": len(results), "invalid": 0, "excluded": 0}}
+    search.calls = calls
+    return search
+
+
+PROFILE = [("https://stroy-profil.ru/catalog/profil/", "Профили — купить"), ("https://gkl-shop.ru/catalog/", "ГКЛ и профиль")]
+SCREWS = [("https://gkl-shop.ru/catalog/samorez/", "Саморезы — купить"), ("https://krepezh.ru/catalog/", "Крепёж")]
+
+
+def post(client, path, job_id, **data):
+    return client.post(path, data={"csrf": token(client, job_id), "job_id": job_id, **data}, follow_redirects=False)
+
+
+def test_panel_is_private_and_forms_need_a_token(panel):
+    job = add_job()
+    panel.cookies.clear()
+    assert panel.get("/dashboard/web-suppliers", follow_redirects=False).status_code == 303
+    panel.cookies.set(SESSION_COOKIE, _session_token())
+    with patch.object(sd, "search_page") as call:
+        response = panel.post("/dashboard/web-suppliers/search", data={"job_id": job, "position": 1})
+        assert response.status_code == 403
+        call.assert_not_called()
+
+
+def test_order_page_lists_positions_with_a_search_button(panel):
+    job = add_job()
+    html = panel.get(f"/dashboard/web-suppliers?job_id={job}").text
+    assert "Профиль потолочный 60*27" in html and "Саморез 4,2*16" in html and html.count(">Найти</button>") == 2
+    assert SECRET not in html
+
+
+def test_search_stores_sites_and_aggregates_domains_across_positions(panel):
+    job = add_job()
+    search = fake_search({"Профиль потолочный 60х27": PROFILE, "Саморез 4,2х16": SCREWS})
+    with patch.object(sd, "search_page", search):
+        assert post(panel, "/dashboard/web-suppliers/search", job, position=1).status_code == 303
+        assert post(panel, "/dashboard/web-suppliers/search", job, position=2).status_code == 303
+    engines = {c[0] for c in search.calls}
+    assert engines == {"yandex", "google"}
+    assert all(c[3]["serpapi_key"] == SECRET for c in search.calls)
+    html = panel.get(f"/dashboard/web-suppliers?job_id={job}").text
+    assert "Найденные сайты (3)" in html, re.findall(r"Найденные сайты \(\d+\)|<b><a [^>]*>[^<]+</a></b>", html)
+    # gkl-shop.ru найден по обеим позициям и поэтому стоит первым
+    assert html.index("gkl-shop.ru") < html.index("stroy-profil.ru") and "2 из 2" in html and "1 из 2" in html
+    assert SECRET not in html
+
+
+def test_size_in_the_query_is_written_in_one_spelling(panel):
+    job = add_job(("Профиль 60 * 27",))
+    search = fake_search({})
+    with patch.object(sd, "search_page", search):
+        post(panel, "/dashboard/web-suppliers/search", job, position=1)
+    assert {c[2] for c in search.calls} == {"Профиль 60х27"}
+
+
+def test_second_click_continues_and_does_not_charge_finished_pages_again(panel):
+    job = add_job(("Профиль 60х27",))
+    pages = iter([(PROFILE[:1], 1), (PROFILE[1:], 2)])
+
+    def search(engine, page, query, **kwargs):
+        if engine == "google":
+            return {"results": [], "raw": [], "next": None, "diagnostics": {"raw": 0, "invalid": 0, "excluded": 0}}
+        urls, nxt = next(pages)
+        results = [{"url": u, "title": t, "description": ""} for u, t in urls]
+        return {"results": results, "raw": results, "next": nxt, "diagnostics": {"raw": 1, "invalid": 0, "excluded": 0}}
+    with patch.object(sd, "search_page", search), patch.dict(os.environ, {"WEB_SEARCH_PAGES_PER_CLICK": "1"}):
+        post(panel, "/dashboard/web-suppliers/search", job, position=1)
+        key = panel_module.run_key(job, 1, "Профиль 60х27")
+        first = panel_module.load_run(key)[1]
+        post(panel, "/dashboard/web-suppliers/search", job, position=1)
+        second = panel_module.load_run(key)[1]
+    assert len(second["sites"]) > len(first["sites"]) and second["requests"] > first["requests"]
+    assert len(second["completed"]) == len(set(second["completed"]))
+
+
+def test_excluded_domain_disappears_and_is_skipped_by_new_searches(panel):
+    job = add_job(("Профиль 60х27",))
+    search = fake_search({"Профиль 60х27": PROFILE})
+    with patch.object(sd, "search_page", search):
+        post(panel, "/dashboard/web-suppliers/search", job, position=1)
+        response = post(panel, "/dashboard/web-suppliers/policy", job, domain="gkl-shop.ru", policy="excluded")
+        assert response.status_code == 303
+        assert "gkl-shop.ru" not in panel.get(f"/dashboard/web-suppliers?job_id={job}").text.split("Найденные сайты")[1]
+        assert "gkl-shop.ru" in panel.get(f"/dashboard/web-suppliers?job_id={job}&all=1").text
+    other = fake_search({"Профиль 60х27": PROFILE})
+    with patch.object(sd, "search_page", other):
+        state = panel_module.execute_search("m:fresh", 0, 0, "Профиль 60х27", "Профиль 60х27", ["yandex"])
+    assert [sd.site_domain(s["url"]) for s in state["sites"]] == ["stroy-profil.ru"]
+    assert "gkl-shop.ru" in other.calls[0][3]["exclude_domains"]
+
+
+def test_policy_rejects_unknown_marks(panel):
+    job = add_job()
+    assert post(panel, "/dashboard/web-suppliers/policy", job, domain="a.ru", policy="boss").status_code == 400
+
+
+def test_contacts_are_saved_per_domain_and_shown(panel):
+    job = add_job(("Профиль 60х27",))
+    with patch.object(sd, "search_page", fake_search({"Профиль 60х27": PROFILE})):
+        post(panel, "/dashboard/web-suppliers/search", job, position=1)
+    found = {"contacts": [{"kind": "email", "value": "zakaz@stroy-profil.ru", "source": "x"},
+                          {"kind": "phone", "value": "+7 (495) 123-45-67", "source": "x"}], "errors": [], "url": "x"}
+    with patch.object(sd, "read_domain_contacts", return_value=found) as read:
+        response = post(panel, "/dashboard/web-suppliers/contacts", job, domain="stroy-profil.ru", url="https://stroy-profil.ru/catalog/profil/")
+        assert response.status_code == 303 and read.call_args[0][0] == "https://stroy-profil.ru/catalog/profil/"
+    html = panel.get(f"/dashboard/web-suppliers?job_id={job}").text
+    assert "zakaz@stroy-profil.ru" in html and "+7 (495) 123-45-67" in html
+
+
+def test_contacts_for_a_foreign_address_are_refused(panel):
+    job = add_job()
+    with patch.object(sd, "read_domain_contacts") as read:
+        response = post(panel, "/dashboard/web-suppliers/contacts", job, domain="stroy-profil.ru", url="https://evil.ru/")
+        assert response.status_code == 400
+        read.assert_not_called()
+
+
+def test_provider_error_is_shown_without_a_server_error_and_without_the_key(panel):
+    job = add_job(("Профиль 60х27",))
+
+    def failing(engine, page, query, **kwargs):
+        raise sd.ProviderError("SerpAPI (поиск) (HTTP 402): Лимит поиска или баланс исчерпан.")
+    with patch.object(sd, "search_page", failing):
+        response = post(panel, "/dashboard/web-suppliers/search", job, position=1)
+    assert response.status_code == 303
+    html = panel.get(response.headers["location"]).text
+    assert "Лимит поиска или баланс исчерпан" in html and SECRET not in html
+
+
+def test_position_outside_the_order_is_rejected(panel):
+    job = add_job()
+    assert post(panel, "/dashboard/web-suppliers/search", job, position=9).status_code == 400
+    assert post(panel, "/dashboard/web-suppliers/search", job, position=0).status_code == 400
+
+
+def test_manual_search_without_an_order_works_and_needs_a_name(panel):
+    page = panel.get("/dashboard/web-suppliers")
+    csrf_value = re.search(r"name='csrf' value='([^']+)'", page.text).group(1)
+    with patch.object(sd, "search_page", fake_search({"Профиль 60х27": PROFILE})) as search:
+        response = panel.post("/dashboard/web-suppliers/search", data={"csrf": csrf_value, "query": "Профиль 60*27"}, follow_redirects=False)
+        assert response.status_code == 303 and "message=" in response.headers["location"]
+        assert panel.post("/dashboard/web-suppliers/search", data={"csrf": csrf_value, "query": " "}).status_code == 400
+
+
+def test_a_second_click_during_a_running_search_does_not_spend_the_budget_twice(panel):
+    job = add_job(("Профиль 60х27",))
+    key = panel_module.run_key(job, 1, "Профиль 60х27")
+    panel_module._running.add(key)
+    try:
+        with patch.object(sd, "search_page") as call:
+            response = post(panel, "/dashboard/web-suppliers/search", job, position=1)
+            assert response.status_code == 303 and "уже выполняется" in panel.get(response.headers["location"]).text
+            call.assert_not_called()
+    finally:
+        panel_module._running.discard(key)

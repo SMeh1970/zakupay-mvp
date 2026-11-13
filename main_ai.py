@@ -42,6 +42,7 @@ from supplier_comparison import install_supplier_comparison
 from price_lists import install_price_lists
 from own_catalog import install_own_catalog
 from sniper_integration import install_sniper
+from supplier_discovery_panel import install_supplier_discovery
 from procurement import install_procurement
 from porcelain_panel import install_porcelain
 from tile_autopilot import install_tile_autopilot
@@ -243,6 +244,7 @@ install_request_page(app)
 install_price_lists(app)
 install_own_catalog(app)
 install_sniper(app)
+install_supplier_discovery(app)
 install_offer_panel(
     app,
     fetch_all_orders=fetch_all_orders,
