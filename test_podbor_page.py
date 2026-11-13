@@ -118,6 +118,31 @@ class PodborPageTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(self.data()[0]["chosen"], {"p1": "Труба 89х4 мм"})
 
+    def test_weight_from_the_name_gives_the_same_numbers_on_page_and_in_the_invoice(self):
+        """Заявка 75 кг, товар «(20кг)» за штуку: страница и счёт считают 4 шт × 1000 = 4000, цена 50 ₽/кг."""
+        from datetime import datetime, timezone
+        today = datetime.now(timezone.utc).date().isoformat()
+        offer = {**quote("В", name="Шпатлёвка финишная Ветонит LR+ (20кг)", price_date=today), "unit": "шт", "price": 1000}
+        tape = {**quote("Г", name="Шпатлёвка финишная лента (50м)", price_date=today), "unit": "шт", "price": 500}
+        result = dict(items=[dict(position=1, requested_name="Шпатлёвка финишная", quantity=75, unit="кг", decision="review", candidates=[offer, tape])])
+        with pipeline._connect() as conn:
+            conn.execute("UPDATE automation_jobs SET result_json=? WHERE id=?", (json.dumps(result), self.job))
+        data, _ = self.data()
+        products = {p[0]: p for p in data["positions"][0]["products"]}
+        key = products["Шпатлёвка финишная Ветонит LR+ (20кг)"][3]["key"]
+        wrong = {"unit_price": 1000, "buy": 75, "total": 75000}   # как считает страница без правила: штука = килограмм
+        response = self.client.post(data["action_url"], headers=H, json={
+            "action": "value_accept_select", "position": 1, "key": key, "csrf": data["csrf"], "revision": data["revision"], "page": wrong})
+        self.assertEqual(response.status_code, 400, response.text)
+        right = {"unit_price": 50, "buy": 4, "total": 4000}
+        response = self.client.post(data["action_url"], headers=H, json={
+            "action": "value_accept_select", "position": 1, "key": key, "csrf": data["csrf"], "revision": data["revision"], "page": right})
+        self.assertEqual(response.status_code, 200, response.text)
+        # товар в метрах для заявки в килограммах в счёт с ценой «за килограмм» не попадает
+        view = comparison.offer_view(result["items"][0], tape)
+        self.assertIsNone(view["factor"])
+        self.assertIn("в названии 50 м", view["factor_source"])
+
     def test_request_page_and_stages(self):
         import request_steps
         request_steps.install(self.app)
