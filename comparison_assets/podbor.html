@@ -194,6 +194,7 @@ form.add textarea{min-height:180px;font-family:var(--mono);font-size:13px}
 /* APP: строка ссылок и сообщения о сохранении; поставщик и фото под названием товара */
 .supplier-line{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:4px;font-size:12px;color:var(--muted)}
 .photo-btn{font:inherit;font-size:12px;padding:1px 8px;border:1px solid var(--line);border-radius:4px;background:var(--panel);color:var(--fg);cursor:pointer}
+.supplier-line>a{color:var(--blue,#2d6087);text-decoration:underline;text-underline-offset:2px}
 .supplier-line img.photo{display:block;max-width:240px;max-height:240px;margin:6px 0;border:1px solid var(--line);border-radius:6px;background:#fff}
 .appnav{display:flex;gap:14px;flex-wrap:wrap;font-size:14px;margin:0 0 6px}.appnav a{color:var(--accent)}
 .app-status{font-size:13px;color:var(--muted);min-height:1em;margin:4px 0 0}.app-status.error{color:var(--no)}
@@ -322,7 +323,11 @@ function chooseToggle(pos,p){
 function productMeta(pos,p){
   const m=metaOf(pos,p);
   if(!m.supplier&&!m.image_url)return null;
-  const box=el('div',{class:'supplier-line'},m.supplier?el('span',{},m.supplier):null);
+  const productUrl=/^https?:\/\//i.test(m.url||'')?m.url:'';
+  const supplier=m.supplier?(productUrl
+    ?el('a',{href:productUrl,target:'_blank',rel:'noopener noreferrer',title:'Открыть этот товар на сайте поставщика'},m.supplier)
+    :el('span',{},m.supplier)):null;
+  const box=el('div',{class:'supplier-line'},supplier);
   if(m.image_url){
     const holder=el('div',{});
     const btn=el('button',{type:'button',class:'photo-btn','aria-expanded':'false',title:'Показать фото товара (загружается с сайта поставщика)',onclick:()=>{
