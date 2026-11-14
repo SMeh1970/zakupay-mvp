@@ -42,6 +42,7 @@ def add_job(items=("Профиль потолочный 60*27", "Саморез 
 def token(client, job_id):
     response = client.get(f"/dashboard/web-suppliers?job_id={job_id}")
     assert response.status_code == 200
+    assert f"/dashboard/automation/jobs/{job_id}/review" in response.text
     return re.search(r"name='csrf' value='([^']+)'", response.text).group(1)
 
 

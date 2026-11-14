@@ -122,6 +122,7 @@ class ManualPriceSearchTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertNotIn(sniper_text, response.text)
         self.assertNotIn(tiles_text, response.text)
+        self.assertIn(f"/dashboard/web-suppliers?job_id={plain['job_id']}", response.text)
 
         order = copy.deepcopy(ORDER)
         order["id"] = str(order.get("id", "1")) + "9"

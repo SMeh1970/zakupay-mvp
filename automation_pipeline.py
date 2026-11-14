@@ -3154,6 +3154,7 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
                 if any(_is_tile_item(str(item.get('goodName') or item.get('name') or '')) for item in source_items)
                 else ""
             )
+            web_suppliers_link_html = f"<p><a href='/dashboard/web-suppliers?job_id={job_id}'>Поставщики в интернете: найти профильные сайты</a></p>"
             pending_rows = "".join(
                 "<tr>"
                 f"<td><input class='position-checkbox' type='checkbox' name='selected_position' value='{index}' checked></td>"
@@ -3176,6 +3177,7 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
                     "<p><b>Поиск цен ещё не запускался.</b> Сначала проверьте состав заявки, затем запустите поиск для выбранных позиций.</p>"
                     f"<p><b>Дата заявки:</b> {html.escape(order_date)} · <b>Заказчик:</b> {html.escape(customer_name)}</p>"
                     f"{tiles_link_html}"
+                    f"{web_suppliers_link_html}"
                     f"<p><b>Адрес доставки:</b> {html.escape(str(order.get('deliveryAddress') or 'не передан'))}</p>"
                     f"<p>Получено и сохранено позиций: <b>{len(source_items)}</b>. Отметьте строки, для которых нужно найти цены и подготовить предложение.</p>"
                     f"<form method='post' action='/dashboard/automation/jobs/{job_id}/start'>"
