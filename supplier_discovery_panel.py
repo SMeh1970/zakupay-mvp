@@ -455,7 +455,7 @@ def render_page(request, job_id, message, show_all, run="", seller="all", inc=()
                       f"<a class='tab{' on' if view == 'seq' else ''}' href='/dashboard/web-suppliers?{esc(urlencode({'job_id': job_id, 'view': 'seq'}))}'>По порядку номеров</a>")
         body += (f"<section><h2>{esc(title)}: позиции</h2><div class='tabs'>{view_links}</div>"
                  "<p class='note'><b>Цвет</b> (точка, нажатие меняет цвет по кругу; точка на заголовке рубрики или категории красит весь блок) — в какую группу идёт позиция. "
-                 "<b>Галочка</b> — эта позиция и есть поисковая фраза своей группы. "
+                 "<b>Галочка</b> — эта позиция и есть поисковая фраза своей группы; в группе может быть только одна фраза (вторая галочка снимает первую). "
                  "Позиция без цвета никуда не попадает и не ищется.</p>"
                  + form_start(request, "/dashboard/web-suppliers/groups", f"<input type='hidden' name='job_id' value='{job_id}'><input type='hidden' name='view' value='{view}'>")
                  + "<div class='scroll'><table><tr><th>Группа · фраза</th><th>№</th><th>Позиция</th><th>Кол-во</th></tr>"
@@ -543,7 +543,11 @@ def render_page(request, job_id, message, show_all, run="", seller="all", inc=()
                  "m.querySelector('.dot').addEventListener('click',function(){i.value=((parseInt(i.value)||0)+1)%C.length;refresh();});});"
                  "document.querySelectorAll('.dot.block').forEach(function(b){b.addEventListener('click',function(){"
                  "var list=rows(b.getAttribute('data-sel')),cur=0;if(list.length){var same=true;list.forEach(function(i){if(i.value!==list[0].value){same=false;}});cur=same?(parseInt(list[0].value)||0):0;}"
-                 "var n=(cur+1)%C.length;list.forEach(function(i){i.value=n;});refresh();});});refresh();")
+                 "var n=(cur+1)%C.length;list.forEach(function(i){i.value=n;});refresh();});});"
+                 "document.querySelectorAll('tr.pos input[type=checkbox]').forEach(function(cb){cb.addEventListener('change',function(){"
+                 "if(!cb.checked){return;}var row=cb.closest('tr'),c=row.querySelector('input.color').value;if(c==='0'){return;}"
+                 "document.querySelectorAll('tr.pos').forEach(function(r){if(r!==row&&r.querySelector('input.color').value===c){r.querySelector('input[type=checkbox]').checked=false;}});});});"
+                 "refresh();")
     return respond(body, colors_js)
 
 
