@@ -82,16 +82,23 @@ def test_panel_is_private_and_forms_need_a_token(panel):
 def test_order_page_lists_positions_with_a_search_button(panel):
     job = add_job()
     html = panel.get(f"/dashboard/web-suppliers?job_id={job}").text
-    assert "Профиль потолочный 60*27" in html and "Саморез 4,2*16" in html and html.count(">Найти</button>") == 2
+    assert "Профиль потолочный 60*27" in html and "Саморез 4,2*16" in html
+    assert html.count("class='dot'") == 2 and html.count("type='checkbox'") == 2 and "Сохранить группы" in html
+    assert "Найти сайты" in html and "Позиции без цвета образуют" in html
     assert SECRET not in html
+    # скрипт смены цвета разрешён только своим одноразовым кодом
+    response = panel.get(f"/dashboard/web-suppliers?job_id={job}")
+    nonce = re.search(r"<script nonce='([^']+)'", response.text).group(1)
+    assert f"script-src 'nonce-{nonce}'" in response.headers["content-security-policy"]
 
 
 def test_search_stores_sites_and_aggregates_domains_across_positions(panel):
     job = add_job()
     search = fake_search({"Профиль потолочный 60х27": PROFILE, "Саморез 4,2х16": SCREWS})
     with patch.object(sd, "search_page", search):
-        assert post(panel, "/dashboard/web-suppliers/search", job, position=1).status_code == 303
-        assert post(panel, "/dashboard/web-suppliers/search", job, position=2).status_code == 303
+        assert post(panel, "/dashboard/web-suppliers/groups", job, color_1=1, sel_1=1, color_2=2, sel_2=1).status_code == 303
+        assert post(panel, "/dashboard/web-suppliers/group-search", job, color=1, keyword="Профиль потолочный 60*27").status_code == 303
+        assert post(panel, "/dashboard/web-suppliers/group-search", job, color=2, keyword="Саморез 4,2*16").status_code == 303
     engines = {c[0] for c in search.calls}
     assert engines == {"yandex", "google"}
     assert all(c[3]["serpapi_key"] == SECRET for c in search.calls)
@@ -246,13 +253,74 @@ def test_yandex_deferred_click_waits_then_collects_without_a_second_charge(panel
         return {"results": results, "raw": results, "next": None, "notice": "", "diagnostics": {"raw": 2, "invalid": 0, "excluded": 0}}
 
     with patch.dict(os.environ, env), patch.object(sd, "search_page", search):
-        first = post(panel, "/dashboard/web-suppliers/search", job, position=1)
+        first = post(panel, "/dashboard/web-suppliers/group-search", job, color=0, keyword="Профиль 60х27")
         assert "Запрос отправлен в Яндекс" in panel.get(first.headers["location"]).text
         html = panel.get(f"/dashboard/web-suppliers?job_id={job}").text
         assert "Забрать результат" in html and "YK-SECRET" not in html
-        post(panel, "/dashboard/web-suppliers/search", job, position=1)       # ещё не готово
-        post(panel, "/dashboard/web-suppliers/search", job, position=1)       # готово
-    state = panel_module.load_run(panel_module.run_key(job, 1, "Профиль 60х27"))[1]
+        post(panel, "/dashboard/web-suppliers/group-search", job, color=0, keyword="Профиль 60х27")       # ещё не готово
+        post(panel, "/dashboard/web-suppliers/group-search", job, color=0, keyword="Профиль 60х27")       # готово
+    state = panel_module.load_run(panel_module.group_run_key(job, 0))[1]
     assert state["requests"] == 1 and state["reason"] == "exhausted" and state["operations"] == {}
     assert {sd.site_domain(s["url"]) for s in state["sites"]} == {"stroy-profil.ru", "gkl-shop.ru"}
     assert all(c[:2] == ("yandex_cloud", 0) and c[2:] == ("YK-SECRET", "folder") for c in calls)
+
+
+def test_marks_make_groups_and_unchecked_positions_stay_out_of_search(panel):
+    job = add_job(("Профиль 60х27", "Саморез 4,2х16", "Дюбель 6х40"))
+    assert post(panel, "/dashboard/web-suppliers/groups", job, color_1=1, sel_1=1, color_2=1, sel_2=1, color_3=2).status_code == 303
+    assert panel_module.build_groups(panel_module.load_marks(job, 3)) == {1: [1, 2]}
+    html = panel.get(f"/dashboard/web-suppliers?job_id={job}").text
+    assert "Группа 1" in html and "Группа 2" not in html and "позиций: 2" in html
+    search = fake_search({"Профиль 60х27": PROFILE})
+    with patch.object(sd, "search_page", search):
+        post(panel, "/dashboard/web-suppliers/group-search", job, color=1, keyword="Профиль 60х27")
+    assert {c[2] for c in search.calls} == {"Профиль 60х27"}
+    html = panel.get(f"/dashboard/web-suppliers?job_id={job}").text
+    # сайты группы засчитаны обеим её позициям, а не отключённой третьей
+    assert "2 из 3" in html and "1. " in html and "2. " in html and "3. <a" not in html
+
+
+def test_group_without_selected_positions_cannot_be_searched(panel):
+    job = add_job(("Профиль 60х27", "Саморез 4,2х16"))
+    post(panel, "/dashboard/web-suppliers/groups", job, color_1=1, color_2=2, sel_2=1)
+    with patch.object(sd, "search_page", fake_search({})) as search:
+        assert post(panel, "/dashboard/web-suppliers/group-search", job, color=1, keyword="Профиль").status_code == 400
+    assert not search.calls if hasattr(search, "calls") else True
+    assert post(panel, "/dashboard/web-suppliers/group-search", job, color=2, keyword="  ").status_code == 400
+
+
+def test_group_keyword_is_saved_and_shown_again(panel):
+    job = add_job()
+    post(panel, "/dashboard/web-suppliers/groups", job, color_1=3, sel_1=1)
+    with patch.object(sd, "search_page", fake_search({"гипсокартон лист": PROFILE})):
+        post(panel, "/dashboard/web-suppliers/group-search", job, color=3, keyword="гипсокартон лист")
+    assert "value=\"гипсокартон лист\"" in panel.get(f"/dashboard/web-suppliers?job_id={job}").text or \
+        "value='гипсокартон лист'" in panel.get(f"/dashboard/web-suppliers?job_id={job}").text
+
+
+def test_group_contacts_are_collected_for_sites_of_that_group_only(panel):
+    job = add_job(("Профиль 60х27", "Саморез 4,2х16"))
+    post(panel, "/dashboard/web-suppliers/groups", job, color_1=1, sel_1=1, color_2=2, sel_2=1)
+    with patch.object(sd, "search_page", fake_search({"Профиль": PROFILE, "Саморез": SCREWS})):
+        post(panel, "/dashboard/web-suppliers/group-search", job, color=1, keyword="Профиль")
+        post(panel, "/dashboard/web-suppliers/group-search", job, color=2, keyword="Саморез")
+    visited = []
+
+    def contacts(url, blocked=(), session=None):
+        visited.append(sd.site_domain(url))
+        return {"contacts": [{"kind": "email", "value": f"info@{sd.site_domain(url)}"}], "errors": [], "url": url}
+    with patch.object(sd, "read_domain_contacts", contacts):
+        response = post(panel, "/dashboard/web-suppliers/group-contacts", job, color=2)
+    assert response.status_code == 303
+    assert sorted(visited) == ["gkl-shop.ru", "krepezh.ru"]      # сайты группы 2; stroy-profil.ru из группы 1 не тронут
+    html = panel.get(f"/dashboard/web-suppliers?job_id={job}").text
+    assert "info@krepezh.ru" in html and "info@stroy-profil.ru" not in html
+    with patch.object(sd, "read_domain_contacts", contacts):
+        again = post(panel, "/dashboard/web-suppliers/group-contacts", job, color=2)
+    assert "уже проверены" in panel.get(again.headers["location"]).text
+
+
+def test_standalone_page_lists_recent_orders_to_open_in_the_search(panel):
+    job = add_job()
+    html = panel.get("/dashboard/web-suppliers").text
+    assert f"/dashboard/web-suppliers?job_id={job}" in html and "Тестовая заявка" in html and "позиций: 2" in html

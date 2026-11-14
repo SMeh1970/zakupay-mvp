@@ -133,6 +133,11 @@ class ManualPriceSearchTests(unittest.TestCase):
         self.assertNotIn(sniper_text, response.text)
         self.assertIn(tiles_text, response.text)
 
+    def test_requests_list_has_a_button_to_the_web_suppliers_page(self):
+        response = self.client.get("/dashboard/automation")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("href='/dashboard/web-suppliers'>Поставщики в интернете</a>", response.text)
+
     def test_expired_session_during_start_can_recover_and_search_selected_positions(self):
         import security
 
