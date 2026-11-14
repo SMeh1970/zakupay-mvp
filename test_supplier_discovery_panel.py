@@ -324,3 +324,88 @@ def test_standalone_page_lists_recent_orders_to_open_in_the_search(panel):
     job = add_job()
     html = panel.get("/dashboard/web-suppliers").text
     assert f"/dashboard/web-suppliers?job_id={job}" in html and "Тестовая заявка" in html and "позиций: 2" in html
+
+
+TILE_SITES = [
+    ("https://tile-a.ru/catalog/keramogranit/", "Керамогранит соль-перец 600х600", "Керамогранит матовый, плиты со склада, купить с доставкой, каталог, оптом"),
+    ("https://tile-b.ru/catalog/granit/", "Гранит полированный плита", "Гранит природный, плиты со склада, каталог"),
+    ("https://tile-c.ru/about/", "О компании", "Информация о нас"),
+]
+
+
+def manual_search(panel, query="Керамогранит 600*600 соль/перец", sites=TILE_SITES):
+    page = panel.get("/dashboard/web-suppliers")
+    csrf_value = re.search(r"name='csrf' value='([^']+)'", page.text).group(1)
+    results = [{"url": u, "title": t, "description": d} for u, t, d in sites]
+    search = lambda engine, page, q, **kw: {"results": results if page == 0 else [], "raw": results, "next": None, "notice": "",
+                                            "diagnostics": {"raw": len(results), "invalid": 0, "excluded": 0}}
+    with patch.object(sd, "search_page", search):
+        response = panel.post("/dashboard/web-suppliers/search", data={"csrf": csrf_value, "query": query}, follow_redirects=False)
+    assert response.status_code == 303
+    return response.headers["location"]
+
+
+def run_of(location):
+    from urllib.parse import parse_qs, urlsplit
+    return parse_qs(urlsplit(location).query)["run"][0]
+
+
+def page_token(panel, url):
+    return re.search(r"name='csrf' value='([^']+)'", panel.get(url).text).group(1)
+
+
+def test_standalone_page_shows_search_results_with_tabs(panel):
+    location = manual_search(panel)
+    assert "run=" in location
+    html = panel.get(location).text
+    assert "Сайты и Email" in html and "НАИМЕНОВАНИЕ" in html and "Керамогранит 600х600 соль/перец" in html
+    assert "Сайтов: 3 / 3" in html and "Все · 3" in html
+    assert "tile-a.ru" in html and "tile-b.ru" in html and "Керамогранит соль-перец 600х600" in html
+    assert "Продавец ·" in html and "Возможно продавец ·" in html and "Не подтверждено ·" in html
+    assert SECRET not in html
+
+
+def test_standalone_page_without_a_search_shows_the_form_not_a_list_of_orders_first(panel):
+    add_job()
+    html = panel.get("/dashboard/web-suppliers").text
+    assert "НАИМЕНОВАНИЕ" in html and "Найти</button>" in html
+    assert "<details>" in html and html.index("НАИМЕНОВАНИЕ") < html.index("Поиск по позициям заявки")
+
+
+def test_word_filters_keep_or_drop_sites(panel):
+    location = manual_search(panel)
+    run = run_of(location)
+    html = panel.get(location).text
+    assert "плиты" in html.split("<aside>")[1].split("</aside>")[0]     # слово, общее для двух найденных текстов
+    only = panel.get("/dashboard/web-suppliers", params={"run": run, "inc": "керамогранит"}).text
+    assert "tile-a.ru" in only and "tile-b.ru" not in only and "Сайтов: 1 / 3" in only
+    without = panel.get("/dashboard/web-suppliers", params={"run": run, "exc": "гранит"}).text
+    assert "tile-a.ru" in without and "tile-c.ru" in without and "tile-b.ru" not in without
+
+
+def test_find_emails_then_choose_which_to_copy_and_exclude_a_site(panel):
+    location = manual_search(panel)
+    token_value = page_token(panel, location)
+    run = run_of(location)
+
+    def contacts(url, blocked=(), session=None):
+        domain = sd.site_domain(url)
+        return {"contacts": [{"kind": "email", "value": f"sales@{domain}"}, {"kind": "email", "value": f"info@{domain}"}], "errors": [], "url": url}
+    with patch.object(sd, "read_domain_contacts", contacts):
+        response = panel.post("/dashboard/web-suppliers/find-emails", data={"csrf": token_value, "run": run}, follow_redirects=False)
+    html = panel.get(response.headers["location"]).text
+    assert "Проверено сайтов 3, с e-mail 3" in html and "sales@tile-a.ru" in html and "Копировать Email · 6" in html
+    # снимаем галочку у одного адреса и исключаем второй сайт
+    token_value = page_token(panel, response.headers["location"])
+    data = {"csrf": token_value, "run": run, "exclude_domain": "tile-b.ru",
+            "listed": ["sales@tile-a.ru", "info@tile-a.ru", "sales@tile-b.ru", "info@tile-b.ru", "sales@tile-c.ru", "info@tile-c.ru"],
+            "selected": ["sales@tile-a.ru", "sales@tile-c.ru", "info@tile-c.ru"]}
+    saved = panel.post("/dashboard/web-suppliers/emails", data=data, follow_redirects=False)
+    assert saved.status_code == 303
+    html = panel.get(saved.headers["location"]).text
+    assert "sales@tile-a.ru; sales@tile-c.ru; info@tile-c.ru" in html and "info@tile-a.ru;" not in html and "tile-b.ru</div>" not in html
+    assert "Исключённые · 1" in html
+
+
+def test_emails_route_needs_the_form_token(panel):
+    assert panel.post("/dashboard/web-suppliers/emails", data={"listed": "a@b.ru"}).status_code in (400, 403)
