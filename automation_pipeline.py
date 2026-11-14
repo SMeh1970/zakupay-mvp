@@ -275,10 +275,12 @@ def _initialize_schema(conn) -> None:
         from price_lists import initialize_schema as initialize_price_schema
         from own_catalog import initialize_schema as initialize_catalog_schema
         from sniper_integration import initialize_schema as initialize_sniper_schema
+        from supplier_discovery_panel import initialize_schema as initialize_web_supplier_schema
         from porcelain import initialize_schema as initialize_tile_schema
         initialize_price_schema(conn, bool(DATABASE_URL))
         initialize_catalog_schema(conn, bool(DATABASE_URL))
         initialize_sniper_schema(conn, bool(DATABASE_URL))
+        initialize_web_supplier_schema(conn, bool(DATABASE_URL))
         initialize_tile_schema(conn, bool(DATABASE_URL))
         from tile_autopilot import initialize_schema as initialize_tile_auto_schema
         initialize_tile_auto_schema(conn)
@@ -3354,7 +3356,7 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
                 "<tr><th>№</th><th>Заявка</th><th>Товар в счёте<br><small>выбирается на этапе «Мониторинг»</small></th><th>Кол-во</th><th>Наша цена<br><small>за единицу заявки (+5%)</small></th>"
                 "</tr>"
                 + "".join(table_rows) + "</table>" + save_control + invoice_link + offer_link
-                + f"<p><a href='/dashboard/prices/match-order/{job_id}'>Подобрать по характеристикам из прайсов</a> · <a href='/dashboard/automation/jobs/{job_id}/catalog-sale'>Сохранить успешную продажу в наш каталог</a> · <a href='/dashboard/prices'>Прайсы</a> · <a href='/dashboard/catalog'>Наш каталог</a> · <a href='/dashboard/automation/jobs/{job_id}/tiles'>Подобрать керамогранит с доставкой</a> · <a href='/dashboard/sniper?job_id={job_id}'>Найти поставщиков через Sniper</a></p>"
+                + f"<p><a href='/dashboard/prices/match-order/{job_id}'>Подобрать по характеристикам из прайсов</a> · <a href='/dashboard/automation/jobs/{job_id}/catalog-sale'>Сохранить успешную продажу в наш каталог</a> · <a href='/dashboard/prices'>Прайсы</a> · <a href='/dashboard/catalog'>Наш каталог</a> · <a href='/dashboard/automation/jobs/{job_id}/tiles'>Подобрать керамогранит с доставкой</a> · <a href='/dashboard/sniper?job_id={job_id}'>Найти поставщиков через Sniper</a> · <a href='/dashboard/web-suppliers?job_id={job_id}'>Найти профильные сайты в интернете</a></p>"
                 + f"<script nonce='{review_script_nonce}'>{_REVIEW_SELECTION_SCRIPT}{_INVOICE_DEFAULT_SCRIPT}</script>"
                 + "</main></body></html>"
             ),
