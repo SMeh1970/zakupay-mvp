@@ -260,7 +260,7 @@ def test_yandex_deferred_click_waits_then_collects_without_a_second_charge(panel
         assert "Забрать результат" in html and "YK-SECRET" not in html
         post(panel, "/dashboard/web-suppliers/group-search", job, color=1, keyword="Профиль 60х27")       # ещё не готово
         post(panel, "/dashboard/web-suppliers/group-search", job, color=1, keyword="Профиль 60х27")       # готово
-    state = panel_module.load_run(panel_module.group_run_key(job, 1))[1]
+    state = panel_module.load_run(panel_module.group_run_key(job, 1, "Профиль 60х27"))[1]
     assert state["requests"] == 1 and state["reason"] == "exhausted" and state["operations"] == {}
     assert {sd.site_domain(s["url"]) for s in state["sites"]} == {"stroy-profil.ru", "gkl-shop.ru"}
     assert all(c[:2] == ("yandex_cloud", 0) and c[2:] == ("YK-SECRET", "folder") for c in calls)
@@ -300,25 +300,40 @@ def test_phrase_is_the_ticked_position_or_the_typed_text_and_a_group_without_eit
     html = panel.get(f"/dashboard/web-suppliers?job_id={job}").text
     card = html.split("Поиск по группам")[1]
     assert "group warn" in card and "Введите поисковую фразу ниже" in card and "value='Профиль" not in card
-    search = fake_search({"Профиль направляющий 28х27": PROFILE, "гипсокартон лист": PROFILE})
+    search = fake_search({"Профиль направляющий 28х27": PROFILE, "Профиль потолочный 60х27": SCREWS, "гипсокартон лист": PROFILE})
     with patch.object(sd, "search_page", search):
         response = post(panel, "/dashboard/web-suppliers/group-search", job, color=1)
         assert response.status_code == 303 and not search.calls
         assert "нет поисковой фразы" in panel.get(response.headers["location"]).text
-        # две галочки в одной группе — тоже предупреждение, поиск не запускается
-        post(panel, "/dashboard/web-suppliers/groups", job, color_1=1, color_2=1, phrase_1=1, phrase_2=1)
-        again = post(panel, "/dashboard/web-suppliers/group-search", job, color=1)
-        assert not search.calls and "отмечено фраз 2" in panel.get(again.headers["location"]).text
-        assert "В группе отмечено фраз: 2" in panel.get(f"/dashboard/web-suppliers?job_id={job}").text
         # одна галочка — фраза берётся с позиции как есть
         post(panel, "/dashboard/web-suppliers/groups", job, color_1=1, color_2=1, phrase_2=1)
         card = panel.get(f"/dashboard/web-suppliers?job_id={job}").text.split("Поиск по группам")[1]
         assert "group warn" not in card and "«Профиль направляющий 28*27»" in card
         post(panel, "/dashboard/web-suppliers/group-search", job, color=1)
         assert {c[2] for c in search.calls} == {"Профиль направляющий 28х27"}
-        # своя фраза важнее галочки
+        # своя фраза ищется отдельно и появляется в карточке как вписанная вручную
         post(panel, "/dashboard/web-suppliers/group-search", job, color=1, keyword="гипсокартон лист")
         assert search.calls[-1][2] == "гипсокартон лист"
+        card = panel.get(f"/dashboard/web-suppliers?job_id={job}").text.split("Поиск по группам")[1]
+        assert "вписана вручную" in card and "«гипсокартон лист»" in card
+
+
+def test_several_ticked_phrases_in_one_group_are_each_searched_separately(panel):
+    job = add_job(("Профиль потолочный 60*27", "Профиль направляющий 28*27", "Саморез 4,2*16"))
+    post(panel, "/dashboard/web-suppliers/groups", job, color_1=1, color_2=1, color_3=1, phrase_1=1, phrase_2=1)
+    card = panel.get(f"/dashboard/web-suppliers?job_id={job}").text.split("Поиск по группам")[1]
+    assert "Отмечено фраз: 2" in card and "group warn" not in card and "Найти по всем отмеченным фразам" in card
+    search = fake_search({"Профиль потолочный 60х27": PROFILE, "Профиль направляющий 28х27": SCREWS})
+    with patch.object(sd, "search_page", search):
+        response = post(panel, "/dashboard/web-suppliers/group-search", job, color=1)
+    assert {c[2] for c in search.calls} == {"Профиль потолочный 60х27", "Профиль направляющий 28х27"}
+    assert "фраз 2" in panel.get(response.headers["location"]).text
+    runs = panel_module.group_runs(job, 1)
+    assert len(runs) == 2 and {r[1] for r in runs} == {"Профиль потолочный 60*27", "Профиль направляющий 28*27"}
+    html = panel.get(f"/dashboard/web-suppliers?job_id={job}").text
+    # сайты обеих фраз собраны по доменам и засчитаны всем трём позициям группы
+    assert "Найденные сайты (3)" in html and "3 из 3" in html
+    assert "Найти по всем отмеченным фразам" not in html      # обе фразы уже исчерпаны: повторно кнопка не нужна
 
 
 def test_group_page_shows_the_phrase_it_searches_by(panel):
@@ -327,7 +342,8 @@ def test_group_page_shows_the_phrase_it_searches_by(panel):
     with patch.object(sd, "search_page", fake_search({"гипсокартон лист": PROFILE})):
         post(panel, "/dashboard/web-suppliers/group-search", job, color=3, keyword="гипсокартон лист")
     html = panel.get(f"/dashboard/web-suppliers?job_id={job}").text
-    assert "Ищем по фразе: <b>«гипсокартон лист»</b>" in html and "Найти сайты по новой фразе" in html
+    card = html.split("Поиск по группам")[1]
+    assert "«гипсокартон лист»" in card and "вписана вручную" in card and "Найти по своей фразе" in card
 
 
 def test_group_contacts_are_collected_for_sites_of_that_group_only(panel):
