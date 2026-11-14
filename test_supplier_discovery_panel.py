@@ -79,12 +79,12 @@ def test_panel_is_private_and_forms_need_a_token(panel):
         call.assert_not_called()
 
 
-def test_order_page_lists_positions_with_a_search_button(panel):
+def test_order_page_lists_positions_with_colour_dots_and_phrase_ticks(panel):
     job = add_job()
     html = panel.get(f"/dashboard/web-suppliers?job_id={job}").text
     assert "Профиль потолочный 60*27" in html and "Саморез 4,2*16" in html
     assert html.count("class='dot'") == 2 and html.count("type='checkbox'") == 2 and "Сохранить группы" in html
-    assert "Найти сайты" in html and "Позиции без цвета образуют" in html
+    assert "Позиция без цвета никуда не попадает" in html and "Групп нет" in html
     assert SECRET not in html
     # скрипт смены цвета разрешён только своим одноразовым кодом
     response = panel.get(f"/dashboard/web-suppliers?job_id={job}")
@@ -237,6 +237,7 @@ def test_yandex_keys_switch_the_default_engine_to_the_official_api(panel):
 
 def test_yandex_deferred_click_waits_then_collects_without_a_second_charge(panel):
     job = add_job(("Профиль 60х27",))
+    post(panel, "/dashboard/web-suppliers/groups", job, color_1=1, phrase_1=1)
     env = {"YANDEX_SEARCH_API_KEY": "YK-SECRET", "YANDEX_FOLDER_ID": "folder", "SERPAPI_API_KEY": ""}
     calls = []
     answers = iter(["wait", "wait", "ready"])
@@ -253,49 +254,80 @@ def test_yandex_deferred_click_waits_then_collects_without_a_second_charge(panel
         return {"results": results, "raw": results, "next": None, "notice": "", "diagnostics": {"raw": 2, "invalid": 0, "excluded": 0}}
 
     with patch.dict(os.environ, env), patch.object(sd, "search_page", search):
-        first = post(panel, "/dashboard/web-suppliers/group-search", job, color=0, keyword="Профиль 60х27")
+        first = post(panel, "/dashboard/web-suppliers/group-search", job, color=1)      # фраза — позиция, отмеченная галочкой
         assert "Запрос отправлен в Яндекс" in panel.get(first.headers["location"]).text
         html = panel.get(f"/dashboard/web-suppliers?job_id={job}").text
         assert "Забрать результат" in html and "YK-SECRET" not in html
-        post(panel, "/dashboard/web-suppliers/group-search", job, color=0, keyword="Профиль 60х27")       # ещё не готово
-        post(panel, "/dashboard/web-suppliers/group-search", job, color=0, keyword="Профиль 60х27")       # готово
-    state = panel_module.load_run(panel_module.group_run_key(job, 0))[1]
+        post(panel, "/dashboard/web-suppliers/group-search", job, color=1, keyword="Профиль 60х27")       # ещё не готово
+        post(panel, "/dashboard/web-suppliers/group-search", job, color=1, keyword="Профиль 60х27")       # готово
+    state = panel_module.load_run(panel_module.group_run_key(job, 1))[1]
     assert state["requests"] == 1 and state["reason"] == "exhausted" and state["operations"] == {}
     assert {sd.site_domain(s["url"]) for s in state["sites"]} == {"stroy-profil.ru", "gkl-shop.ru"}
     assert all(c[:2] == ("yandex_cloud", 0) and c[2:] == ("YK-SECRET", "folder") for c in calls)
 
 
-def test_marks_make_groups_and_unchecked_positions_stay_out_of_search(panel):
+def test_colour_makes_the_group_and_positions_without_colour_go_nowhere(panel):
     job = add_job(("Профиль 60х27", "Саморез 4,2х16", "Дюбель 6х40"))
-    assert post(panel, "/dashboard/web-suppliers/groups", job, color_1=1, sel_1=1, color_2=1, sel_2=1, color_3=2).status_code == 303
-    assert panel_module.build_groups(panel_module.load_marks(job, 3)) == {1: [1, 2]}
+    response = post(panel, "/dashboard/web-suppliers/groups", job, color_1=1, phrase_1=1, color_2=1, phrase_3=1)
+    assert response.status_code == 303
+    assert panel_module.build_groups(panel_module.load_marks(job, 3)) == {1: [1, 2]}      # позиция 3 без цвета — ни в какой группе
+    message = panel.get(response.headers["location"]).text
+    assert "Галочка без цвета у позиций 3" in message and "⚠ галочка без цвета" in message
     html = panel.get(f"/dashboard/web-suppliers?job_id={job}").text
     assert "Группа 1" in html and "Группа 2" not in html and "позиций: 2" in html
     search = fake_search({"Профиль 60х27": PROFILE})
     with patch.object(sd, "search_page", search):
-        post(panel, "/dashboard/web-suppliers/group-search", job, color=1, keyword="Профиль 60х27")
-    assert {c[2] for c in search.calls} == {"Профиль 60х27"}
+        post(panel, "/dashboard/web-suppliers/group-search", job, color=1)
+    assert {c[2] for c in search.calls} == {"Профиль 60х27"}      # поисковая фраза — позиция с галочкой
     html = panel.get(f"/dashboard/web-suppliers?job_id={job}").text
-    # сайты группы засчитаны обеим её позициям, а не отключённой третьей
-    assert "2 из 3" in html and "1. " in html and "2. " in html and "3. <a" not in html
+    # сайты группы засчитаны обеим её позициям, а не позиции без цвета
+    assert "2 из 2" in html and "3. <a" not in html
 
 
-def test_group_without_selected_positions_cannot_be_searched(panel):
+def test_group_without_positions_cannot_be_searched(panel):
     job = add_job(("Профиль 60х27", "Саморез 4,2х16"))
-    post(panel, "/dashboard/web-suppliers/groups", job, color_1=1, color_2=2, sel_2=1)
-    with patch.object(sd, "search_page", fake_search({})) as search:
-        assert post(panel, "/dashboard/web-suppliers/group-search", job, color=1, keyword="Профиль").status_code == 400
-    assert not search.calls if hasattr(search, "calls") else True
-    assert post(panel, "/dashboard/web-suppliers/group-search", job, color=2, keyword="  ").status_code == 400
+    post(panel, "/dashboard/web-suppliers/groups", job, color_1=1, phrase_1=1, phrase_2=1)      # у позиции 2 нет цвета
+    search = fake_search({})
+    with patch.object(sd, "search_page", search):
+        assert post(panel, "/dashboard/web-suppliers/group-search", job, color=2, keyword="Саморез").status_code == 400
+    assert not search.calls
 
 
-def test_group_keyword_is_saved_and_shown_again(panel):
+def test_phrase_is_the_ticked_position_or_the_typed_text_and_a_group_without_either_is_flagged(panel):
+    job = add_job(("Профиль потолочный 60*27", "Профиль направляющий 28*27"))
+    # цвет есть, галочки нет: карточка оранжевая и просит ввести фразу, ничего не подставляется
+    post(panel, "/dashboard/web-suppliers/groups", job, color_1=1, color_2=1)
+    html = panel.get(f"/dashboard/web-suppliers?job_id={job}").text
+    card = html.split("Поиск по группам")[1]
+    assert "group warn" in card and "Введите поисковую фразу ниже" in card and "value='Профиль" not in card
+    search = fake_search({"Профиль направляющий 28х27": PROFILE, "гипсокартон лист": PROFILE})
+    with patch.object(sd, "search_page", search):
+        response = post(panel, "/dashboard/web-suppliers/group-search", job, color=1)
+        assert response.status_code == 303 and not search.calls
+        assert "нет поисковой фразы" in panel.get(response.headers["location"]).text
+        # две галочки в одной группе — тоже предупреждение, поиск не запускается
+        post(panel, "/dashboard/web-suppliers/groups", job, color_1=1, color_2=1, phrase_1=1, phrase_2=1)
+        again = post(panel, "/dashboard/web-suppliers/group-search", job, color=1)
+        assert not search.calls and "отмечено фраз 2" in panel.get(again.headers["location"]).text
+        assert "В группе отмечено фраз: 2" in panel.get(f"/dashboard/web-suppliers?job_id={job}").text
+        # одна галочка — фраза берётся с позиции как есть
+        post(panel, "/dashboard/web-suppliers/groups", job, color_1=1, color_2=1, phrase_2=1)
+        card = panel.get(f"/dashboard/web-suppliers?job_id={job}").text.split("Поиск по группам")[1]
+        assert "group warn" not in card and "«Профиль направляющий 28*27»" in card
+        post(panel, "/dashboard/web-suppliers/group-search", job, color=1)
+        assert {c[2] for c in search.calls} == {"Профиль направляющий 28х27"}
+        # своя фраза важнее галочки
+        post(panel, "/dashboard/web-suppliers/group-search", job, color=1, keyword="гипсокартон лист")
+        assert search.calls[-1][2] == "гипсокартон лист"
+
+
+def test_group_page_shows_the_phrase_it_searches_by(panel):
     job = add_job()
     post(panel, "/dashboard/web-suppliers/groups", job, color_1=3, sel_1=1)
     with patch.object(sd, "search_page", fake_search({"гипсокартон лист": PROFILE})):
         post(panel, "/dashboard/web-suppliers/group-search", job, color=3, keyword="гипсокартон лист")
-    assert "value=\"гипсокартон лист\"" in panel.get(f"/dashboard/web-suppliers?job_id={job}").text or \
-        "value='гипсокартон лист'" in panel.get(f"/dashboard/web-suppliers?job_id={job}").text
+    html = panel.get(f"/dashboard/web-suppliers?job_id={job}").text
+    assert "Ищем по фразе: <b>«гипсокартон лист»</b>" in html and "Найти сайты по новой фразе" in html
 
 
 def test_group_contacts_are_collected_for_sites_of_that_group_only(panel):
@@ -324,3 +356,140 @@ def test_standalone_page_lists_recent_orders_to_open_in_the_search(panel):
     job = add_job()
     html = panel.get("/dashboard/web-suppliers").text
     assert f"/dashboard/web-suppliers?job_id={job}" in html and "Тестовая заявка" in html and "позиций: 2" in html
+
+
+TILE_SITES = [
+    ("https://tile-a.ru/catalog/keramogranit/", "Керамогранит соль-перец 600х600", "Керамогранит матовый, плиты со склада, купить с доставкой, каталог, оптом"),
+    ("https://tile-b.ru/catalog/granit/", "Гранит полированный плита", "Гранит природный, плиты со склада, каталог"),
+    ("https://tile-c.ru/about/", "О компании", "Информация о нас"),
+]
+
+
+def manual_search(panel, query="Керамогранит 600*600 соль/перец", sites=TILE_SITES):
+    page = panel.get("/dashboard/web-suppliers")
+    csrf_value = re.search(r"name='csrf' value='([^']+)'", page.text).group(1)
+    results = [{"url": u, "title": t, "description": d} for u, t, d in sites]
+    search = lambda engine, page, q, **kw: {"results": results if page == 0 else [], "raw": results, "next": None, "notice": "",
+                                            "diagnostics": {"raw": len(results), "invalid": 0, "excluded": 0}}
+    with patch.object(sd, "search_page", search):
+        response = panel.post("/dashboard/web-suppliers/search", data={"csrf": csrf_value, "query": query}, follow_redirects=False)
+    assert response.status_code == 303
+    return response.headers["location"]
+
+
+def run_of(location):
+    from urllib.parse import parse_qs, urlsplit
+    return parse_qs(urlsplit(location).query)["run"][0]
+
+
+def page_token(panel, url):
+    return re.search(r"name='csrf' value='([^']+)'", panel.get(url).text).group(1)
+
+
+def test_standalone_page_shows_search_results_with_tabs(panel):
+    location = manual_search(panel)
+    assert "run=" in location
+    html = panel.get(location).text
+    assert "Сайты и Email" in html and "НАИМЕНОВАНИЕ" in html and "Керамогранит 600х600 соль/перец" in html
+    assert "Сайтов: 3 / 3" in html and "Все · 3" in html
+    assert "tile-a.ru" in html and "tile-b.ru" in html and "Керамогранит соль-перец 600х600" in html
+    assert "Продавец ·" in html and "Возможно продавец ·" in html and "Не подтверждено ·" in html
+    assert SECRET not in html
+
+
+def test_standalone_page_without_a_search_shows_the_form_not_a_list_of_orders_first(panel):
+    add_job()
+    html = panel.get("/dashboard/web-suppliers").text
+    assert "НАИМЕНОВАНИЕ" in html and "Найти</button>" in html
+    assert "<details>" in html and html.index("НАИМЕНОВАНИЕ") < html.index("Поиск по позициям заявки")
+
+
+def test_word_filters_keep_or_drop_sites(panel):
+    location = manual_search(panel)
+    run = run_of(location)
+    html = panel.get(location).text
+    assert "плиты" in html.split("<aside>")[1].split("</aside>")[0]     # слово, общее для двух найденных текстов
+    only = panel.get("/dashboard/web-suppliers", params={"run": run, "inc": "керамогранит"}).text
+    assert "tile-a.ru" in only and "tile-b.ru" not in only and "Сайтов: 1 / 3" in only
+    without = panel.get("/dashboard/web-suppliers", params={"run": run, "exc": "гранит"}).text
+    assert "tile-a.ru" in without and "tile-c.ru" in without and "tile-b.ru" not in without
+
+
+def test_find_emails_then_choose_which_to_copy_and_exclude_a_site(panel):
+    location = manual_search(panel)
+    token_value = page_token(panel, location)
+    run = run_of(location)
+
+    def contacts(url, blocked=(), session=None):
+        domain = sd.site_domain(url)
+        return {"contacts": [{"kind": "email", "value": f"sales@{domain}"}, {"kind": "email", "value": f"info@{domain}"}], "errors": [], "url": url}
+    with patch.object(sd, "read_domain_contacts", contacts):
+        response = panel.post("/dashboard/web-suppliers/find-emails", data={"csrf": token_value, "run": run}, follow_redirects=False)
+    html = panel.get(response.headers["location"]).text
+    assert "Проверено сайтов 3, с e-mail 3" in html and "sales@tile-a.ru" in html and "Копировать Email · 6" in html
+    # снимаем галочку у одного адреса и исключаем второй сайт
+    token_value = page_token(panel, response.headers["location"])
+    data = {"csrf": token_value, "run": run, "exclude_domain": "tile-b.ru",
+            "listed": ["sales@tile-a.ru", "info@tile-a.ru", "sales@tile-b.ru", "info@tile-b.ru", "sales@tile-c.ru", "info@tile-c.ru"],
+            "selected": ["sales@tile-a.ru", "sales@tile-c.ru", "info@tile-c.ru"]}
+    saved = panel.post("/dashboard/web-suppliers/emails", data=data, follow_redirects=False)
+    assert saved.status_code == 303
+    html = panel.get(saved.headers["location"]).text
+    assert "sales@tile-a.ru; sales@tile-c.ru; info@tile-c.ru" in html and "info@tile-a.ru;" not in html and "tile-b.ru</div>" not in html
+    assert "Исключённые · 1" in html
+
+
+def test_emails_route_needs_the_form_token(panel):
+    assert panel.post("/dashboard/web-suppliers/emails", data={"listed": "a@b.ru"}).status_code in (400, 403)
+
+
+def test_positions_show_quantity_and_unit(panel):
+    order = {"name": "З", "orderItems": [{"goodName": "Хомут Ду 25", "count": 12, "unit": {"name": "шт"}},
+                                         {"goodName": "Труба 57х3,5", "quantity": "40", "unit": "м"}, {"goodName": "Краска"}]}
+    with pipeline._connect() as conn:
+        job = conn.execute("INSERT INTO automation_jobs (dedupe_key,order_id,event_type,status,order_json,result_json,created_at,updated_at) "
+                           "VALUES (?,?,?,?,?,?,?,?)", ("q", 2, "test", "ready", json.dumps(order), "{}", "now", "now")).lastrowid
+    html = panel.get(f"/dashboard/web-suppliers?job_id={job}").text
+    assert "<th>Кол-во</th>" in html and ">12 шт<" in html and ">40 м<" in html
+    assert "<td style='white-space:nowrap'>—</td>" in html
+    post(panel, "/dashboard/web-suppliers/groups", job, color_1=1, sel_1=1)
+    assert "Хомут Ду 25 — 12 шт" in panel.get(f"/dashboard/web-suppliers?job_id={job}").text
+
+
+RUBRIC_ITEMS = ("Фланец глухой стальной 1-100-16", "Труба стальная электросварная Ø57х3,5 ГОСТ 10704-91",
+                "Хомут спринклерный сталь Ду 25", "Краска масляная ПФ-115 зелёная", "Хомут спринклерный сталь Ду 32",
+                "Тройник сталь равнопроходной Дн 108х4,0")
+
+
+def test_positions_are_grouped_by_rubric_and_category_not_in_number_order(panel):
+    job = add_job(RUBRIC_ITEMS)
+    html = panel.get(f"/dashboard/web-suppliers?job_id={job}").text
+    table = html.split("Поиск по группам")[0]
+    assert "Трубопровод и соединительные детали" in table and "Крепёж и монтаж" in table and "Краски, отделка, строительные смеси" in table
+    # оба хомута (№3 и №5) стоят рядом в блоке «Крепёж», а не по порядку нумерации
+    assert table.index("Хомут спринклерный сталь Ду 25") < table.index("Хомут спринклерный сталь Ду 32") < table.index("Краска масляная")
+    assert table.index("Труба стальная") < table.index("Тройник сталь") < table.index("Хомут спринклерный сталь Ду 25")
+    # нераспознанная позиция (№1, фланец) идёт в самом конце, в блоке «Не определена»
+    assert table.index("Не определена") > table.index("Краска масляная") and table.index("Фланец глухой") > table.index("Не определена")
+    assert "class='dot block'" in table and "По порядку номеров" in table and "По рубрикам" in table
+
+
+def test_sequence_view_lists_positions_by_number_without_blocks(panel):
+    job = add_job(RUBRIC_ITEMS)
+    html = panel.get(f"/dashboard/web-suppliers?job_id={job}&view=seq").text
+    table = html.split("Поиск по группам")[0]
+    assert "class='dot block'" not in table and "tr class='hdr" not in table
+    positions = [table.index(name) for name in RUBRIC_ITEMS]
+    assert positions == sorted(positions)
+    # выбранный вид сохраняется после «Сохранить группы»
+    response = post(panel, "/dashboard/web-suppliers/groups", job, color_1=1, view="seq")
+    assert "view=seq" in response.headers["location"]
+
+
+def test_colouring_a_whole_block_is_just_the_same_colour_on_each_of_its_positions(panel):
+    job = add_job(RUBRIC_ITEMS)
+    table = panel.get(f"/dashboard/web-suppliers?job_id={job}").text.split("Поиск по группам")[0]
+    # у каждой строки блока есть класс блока, по которому точка заголовка красит всех сразу
+    assert re.search(r"data-sel='\.r(\d+)'", table) and len(re.findall(r"class='pos r\d+ c\d+_\d+'", table)) == len(RUBRIC_ITEMS)
+    post(panel, "/dashboard/web-suppliers/groups", job, color_3=2, color_5=2, phrase_3=1)
+    assert panel_module.build_groups(panel_module.load_marks(job, 6)) == {2: [3, 5]}
