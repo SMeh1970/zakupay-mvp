@@ -3027,7 +3027,8 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
             "<a class='button secondary' href='/dashboard/prices'>Прайсы</a>"
             "<a class='button secondary' href='/dashboard/catalog'>Наш каталог</a>"
             "<a class='button secondary' href='/dashboard/tiles'>Керамогранит</a>"
-            "<a class='button secondary' href='/dashboard/sniper'>Sniper Search</a></div>"
+            "<a class='button secondary' href='/dashboard/sniper'>Sniper Search</a>"
+            "<a class='button secondary' href='/dashboard/web-suppliers'>Поставщики в интернете</a></div>"
             + sync_report + filter_form(state)
             + ("<p class='muted'>Есть заявки в обработке. Обновите страницу, чтобы увидеть результат поиска.</p>" if has_processing else "")
             + ("".join(cards) if cards else "<p class='empty'>Нет заявок по выбранным фильтрам. Сбросьте фильтры, загрузите заявки из Закупай или добавьте заявку вручную.</p>")
