@@ -409,3 +409,16 @@ def test_find_emails_then_choose_which_to_copy_and_exclude_a_site(panel):
 
 def test_emails_route_needs_the_form_token(panel):
     assert panel.post("/dashboard/web-suppliers/emails", data={"listed": "a@b.ru"}).status_code in (400, 403)
+
+
+def test_positions_show_quantity_and_unit(panel):
+    order = {"name": "З", "orderItems": [{"goodName": "Хомут Ду 25", "count": 12, "unit": {"name": "шт"}},
+                                         {"goodName": "Труба 57х3,5", "quantity": "40", "unit": "м"}, {"goodName": "Краска"}]}
+    with pipeline._connect() as conn:
+        job = conn.execute("INSERT INTO automation_jobs (dedupe_key,order_id,event_type,status,order_json,result_json,created_at,updated_at) "
+                           "VALUES (?,?,?,?,?,?,?,?)", ("q", 2, "test", "ready", json.dumps(order), "{}", "now", "now")).lastrowid
+    html = panel.get(f"/dashboard/web-suppliers?job_id={job}").text
+    assert "<th>Кол-во</th>" in html and ">12 шт<" in html and ">40 м<" in html
+    assert "<td style='white-space:nowrap'>—</td>" in html
+    post(panel, "/dashboard/web-suppliers/groups", job, color_1=1, sel_1=1)
+    assert "Хомут Ду 25 — 12 шт" in panel.get(f"/dashboard/web-suppliers?job_id={job}").text

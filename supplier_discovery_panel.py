@@ -108,15 +108,28 @@ def form_start(request, action, extra=""):
 
 # ------------------------------------------------------------------ данные
 
-def order_positions(job_id):
+def order_details(job_id):
+    """Название заявки, названия позиций и их количество с единицей измерения («12 шт»)."""
     from automation_pipeline import _saved_order_snapshot
     with database() as conn:
         row = execute(conn, "SELECT * FROM automation_jobs WHERE id=?", (job_id,)).fetchone()
     if not row:
         raise HTTPException(404, "Заявка не найдена.")
     order = _saved_order_snapshot(row, json.loads(row["result_json"] or "{}")) or {}
-    names = [str(i.get("goodName") or i.get("name") or "").strip() for i in order.get("orderItems") or []]
-    return str(order.get("name") or row["subject"] or f"Заявка {job_id}"), names
+    items = order.get("orderItems") or []
+    names = [str(i.get("goodName") or i.get("name") or "").strip() for i in items]
+    quantities = []
+    for item in items:
+        count = item.get("count") if item.get("count") not in (None, "") else item.get("quantity")
+        unit = item.get("unit")
+        unit = unit.get("name") if isinstance(unit, dict) else unit
+        quantities.append(" ".join(str(v) for v in (count, unit) if v not in (None, "")))
+    return str(order.get("name") or row["subject"] or f"Заявка {job_id}"), names, quantities
+
+
+def order_positions(job_id):
+    title, names, _ = order_details(job_id)
+    return title, names
 
 
 def run_key(job_id, position, query):
@@ -358,7 +371,7 @@ def render_page(request, job_id, message, show_all, run="", seller="all", inc=()
     title, names, runs, domains = "Поиск без заявки", [], [], {}
     marks, groups = {}, {}
     if job_id:
-        title, names = order_positions(job_id)
+        title, names, quantities = order_details(job_id)
         runs, domains = aggregate(job_id, names)
         marks = load_marks(job_id, len(names))
         groups = build_groups(marks)
@@ -381,12 +394,12 @@ def render_page(request, job_id, message, show_all, run="", seller="all", inc=()
             rows += (f"<tr><td style='white-space:nowrap'><span class='mark'><input type='hidden' class='color' name='color_{number}' value='{color}'>"
                      f"<button type='button' class='dot' title='Нажимайте, чтобы сменить цвет группы' aria-label='Цвет группы позиции {number}'>{color or '·'}</button></span>"
                      f"<input type='checkbox' name='sel_{number}' value='1' {'checked' if selected else ''} aria-label='Искать позицию {number}'></td>"
-                     f"<td>{number}</td><td>{esc(name)}</td></tr>")
+                     f"<td>{number}</td><td>{esc(name)}</td><td style='white-space:nowrap'>{esc(quantities[number - 1]) or '—'}</td></tr>")
         body += (f"<section><h2>{esc(title)}: позиции</h2>"
                  "<p class='note'>Цветная точка — группа: нажимайте на неё, цвет меняется по кругу. Позиции одного цвета ищутся вместе одним запросом. "
                  "Галочка — искать позицию; без галочки позиция в поиск не попадает. Позиции без цвета образуют одну общую группу.</p>"
                  + form_start(request, "/dashboard/web-suppliers/groups", f"<input type='hidden' name='job_id' value='{job_id}'>")
-                 + "<div class='scroll'><table><tr><th>Группа · искать</th><th>№</th><th>Позиция</th></tr>"
+                 + "<div class='scroll'><table><tr><th>Группа · искать</th><th>№</th><th>Позиция</th><th>Кол-во</th></tr>"
                  f"{rows}</table></div><p><button>Сохранить группы</button></p></form></section>")
         keywords = load_keywords(job_id)
         group_cards = ""
@@ -407,7 +420,7 @@ def render_page(request, job_id, message, show_all, run="", seller="all", inc=()
                            + (f"<button>{label}</button>" if can_continue else "") + "</form>")
             contacts_form = (form_start(request, "/dashboard/web-suppliers/group-contacts", hidden_fields)
                              + "<button style='background:#5f6368'>Найти e-mail у сайтов группы</button></form>") if state and state["sites"] else ""
-            names_list = "".join(f"<li>{n}. {esc(names[n - 1])}</li>" for n in members[:8])
+            names_list = "".join(f"<li>{n}. {esc(names[n - 1])}" + (f" — {esc(quantities[n - 1])}" if quantities[n - 1] else "") + "</li>" for n in members[:8])
             more_names = f"<li class='note'>и ещё {len(members) - 8}</li>" if len(members) > 8 else ""
             group_cards += (f"<div class='group' style='border-left:8px solid {GROUP_COLORS[color]}'><b>{esc(group_title(color))}</b> · позиций: {len(members)}"
                             f"<ul>{names_list}{more_names}</ul>{search_form}<p>{status}{errors}</p>{contacts_form}</div>")
