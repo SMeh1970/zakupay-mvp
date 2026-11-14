@@ -44,6 +44,11 @@ def initialize_schema(conn, postgres):
         job_id BIGINT NOT NULL, position INTEGER NOT NULL, color INTEGER NOT NULL DEFAULT 0, selected INTEGER NOT NULL DEFAULT 1,
         updated_at TEXT NOT NULL, PRIMARY KEY (job_id, position)
     )""")
+    # v2: цвет = группа, phrase = позиция-«поисковая фраза» группы (раньше «искать»; старые отметки не переносятся, смысл другой)
+    conn.execute("""CREATE TABLE IF NOT EXISTS web_supplier_marks_v2 (
+        job_id BIGINT NOT NULL, position INTEGER NOT NULL, color INTEGER NOT NULL DEFAULT 0, phrase INTEGER NOT NULL DEFAULT 0,
+        updated_at TEXT NOT NULL, PRIMARY KEY (job_id, position)
+    )""")
     conn.execute("""CREATE TABLE IF NOT EXISTS web_supplier_groups (
         job_id BIGINT NOT NULL, color INTEGER NOT NULL, keyword TEXT NOT NULL, updated_at TEXT NOT NULL,
         PRIMARY KEY (job_id, color)
@@ -179,33 +184,72 @@ def excluded_domains():
 
 
 def load_marks(job_id, count):
-    """{номер позиции: (цвет, искать)}. Без сохранённой отметки позиция участвует в поиске и без цвета."""
+    """{номер позиции: (цвет, фраза)}. Цвет 0 — позиция ни в какой группе и в поиск не попадает."""
     with database() as conn:
-        rows = execute(conn, "SELECT position,color,selected FROM web_supplier_marks WHERE job_id=?", (job_id,)).fetchall()
-    saved = {r["position"]: (int(r["color"]), bool(r["selected"])) for r in rows}
-    return {n: saved.get(n, (0, True)) for n in range(1, count + 1)}
+        rows = execute(conn, "SELECT position,color,phrase FROM web_supplier_marks_v2 WHERE job_id=?", (job_id,)).fetchall()
+    saved = {r["position"]: (int(r["color"]), bool(r["phrase"])) for r in rows}
+    return {n: saved.get(n, (0, False)) for n in range(1, count + 1)}
 
 
 def save_marks(job_id, marks):
     stamp = now()
     with database() as conn:
-        for position, (color, selected) in marks.items():
-            execute(conn, """INSERT INTO web_supplier_marks(job_id,position,color,selected,updated_at) VALUES(?,?,?,?,?)
-                ON CONFLICT(job_id,position) DO UPDATE SET color=excluded.color,selected=excluded.selected,updated_at=excluded.updated_at""",
-                    (job_id, position, color, 1 if selected else 0, stamp))
+        for position, (color, phrase) in marks.items():
+            execute(conn, """INSERT INTO web_supplier_marks_v2(job_id,position,color,phrase,updated_at) VALUES(?,?,?,?,?)
+                ON CONFLICT(job_id,position) DO UPDATE SET color=excluded.color,phrase=excluded.phrase,updated_at=excluded.updated_at""",
+                    (job_id, position, color, 1 if phrase else 0, stamp))
 
 
 def build_groups(marks):
-    """{цвет: [номера позиций]} только по отмеченным «искать»; порядок — по цвету."""
+    """{цвет: [номера позиций]}: группа = все позиции этого цвета. Без цвета позиция в группу не входит."""
     groups = {}
-    for position, (color, selected) in sorted(marks.items()):
-        if selected:
+    for position, (color, _) in sorted(marks.items()):
+        if color:
             groups.setdefault(color, []).append(position)
     return dict(sorted(groups.items()))
 
 
+def group_phrases(marks, members):
+    """Позиции группы, отмеченные галочкой как поисковая фраза."""
+    return [n for n in members if marks[n][1]]
+
+
+# Рубрики собраны по существующему определителю категорий (product_characteristics): рубрика -> категории.
+RUBRICS = {
+    "Трубопровод и соединительные детали": ["Трубы", "Профильные трубы", "Отводы", "Переходы", "Тройники"],
+    "Крепёж и монтаж": ["Крепёж", "Подвесы"],
+    "Инструмент и оснастка": ["Сверла", "Зенковки", "Метчики", "Фрезы", "Измерительный инструмент", "Абразивные круги", "Подшипники"],
+    "Краски, отделка, строительные смеси": ["Краски и эмали", "Шпаклёвки", "Штукатурки", "Клеи", "Вяжущие", "Плёнки"],
+    "Сантехника": ["Дозаторы", "Инсталляции", "Писсуары", "Раковины", "Унитазы", "Смесители"],
+    "Электро и безопасность": ["Кабели", "Огнетушители"],
+    "Двери, панели, профили, фанера": ["Двери", "Панели", "Профили", "Фанера"],
+}
+UNKNOWN_CATEGORY = "Не определена"
+CATEGORY_RUBRIC = {c: r for r, cats in RUBRICS.items() for c in cats}
+
+
+def position_category(name):
+    try:
+        import product_characteristics
+        return product_characteristics.extract(name).get("category") or UNKNOWN_CATEGORY
+    except Exception:  # определитель не должен ронять страницу
+        return UNKNOWN_CATEGORY
+
+
+def position_blocks(names):
+    """[(рубрика, [(категория, [номера позиций])])]: блоки по порядку первого появления, «Не определена» в конце.
+    Внутри категории позиции идут по номерам; сквозной порядок нумерации не сохраняется."""
+    rubrics = {}
+    for number, name in enumerate(names, 1):
+        category = position_category(name)
+        rubric = CATEGORY_RUBRIC.get(category, "Без рубрики")
+        rubrics.setdefault(rubric, {}).setdefault(category, []).append(number)
+    ordered = sorted(rubrics.items(), key=lambda kv: kv[0] == "Без рубрики")
+    return [(rubric, sorted(cats.items(), key=lambda kv: kv[0] == UNKNOWN_CATEGORY)) for rubric, cats in ordered]
+
+
 def group_title(color):
-    return "Без цвета" if color == 0 else f"Группа {color}"
+    return f"Группа {color}"
 
 
 def load_keywords(job_id):
@@ -331,7 +375,7 @@ def recent_orders_section():
 STYLE = ("<style>.mark{display:inline-flex;align-items:center;margin-right:8px}.dot{width:30px;height:30px;border-radius:50%;padding:0;"
          "color:#fff;font-weight:bold;border:2px solid #fff;box-shadow:0 0 0 1px #5f6368;cursor:pointer;display:inline-block;text-align:center;line-height:26px}"
          ".dot.static{width:22px;height:22px;line-height:18px;cursor:default;font-size:12px}"
-         ".picks{list-style:none;padding:0;margin:8px 0}.group{background:#f8f9fa;padding:12px 16px;margin:12px 0;border-radius:8px}input[type=checkbox]{width:20px;height:20px;vertical-align:middle}"
+         ".members{margin:6px 0;padding-left:20px}.group.warn{background:#fff4e5}.warnline,.warnmark{color:#b45309;font-weight:bold}.warnmark{font-size:12px}tr.hdr td{background:#eef1f5}tr.hdr.rub td{background:#dfe6ef;font-size:16px}tr.hdr.cat td{padding-left:24px}tr.pos td:nth-child(3){padding-left:12px}.group{background:#f8f9fa;padding:12px 16px;margin:12px 0;border-radius:8px}input[type=checkbox]{width:20px;height:20px;vertical-align:middle}"
          ".notice{padding:14px;border:2px solid #1a73e8;border-radius:8px;margin:12px 0}"
          ".searchbar{display:flex;gap:10px;align-items:center;flex-wrap:wrap}.searchbar label{font-weight:bold;color:#5f6368}.searchbar input{flex:1;min-width:260px;font-size:16px}"
          ".chips{display:flex;gap:8px;flex-wrap:wrap}.chip{background:#e8f0fe;border-radius:14px;padding:4px 10px;text-decoration:none;font-size:13px}"
@@ -358,7 +402,7 @@ COPY_JS = ("var b=document.getElementById('copy-emails'),t=document.getElementBy
            "if(b&&t){b.addEventListener('click',function(){t.select();if(navigator.clipboard){navigator.clipboard.writeText(t.value);}else{document.execCommand('copy');}b.textContent='Скопировано';});}")
 
 
-def render_page(request, job_id, message, show_all, run="", seller="all", inc=(), exc=()):
+def render_page(request, job_id, message, show_all, run="", seller="all", inc=(), exc=(), view="cat"):
     if not job_id:
         return respond(render_search_page(request, run, message, seller, list(inc), list(exc), show_all), COPY_JS)
     cfg = settings()
@@ -383,54 +427,85 @@ def render_page(request, job_id, message, show_all, run="", seller="all", inc=()
             f"<p class='note'>{esc(keys_note)} Бюджет: до {cfg['max_requests']} запросов на позицию, "
             f"{cfg['pages_per_click']} страниц за одно нажатие, до {cfg['max_sites']} сайтов.</p></section>")
     if job_id:
+        view = "seq" if view == "seq" else "cat"
+
+        def position_row(number, name, classes=""):
+            color, phrase = marks[number]
+            warn = "<br><span class='warnmark'>⚠ галочка без цвета: позиция никуда не попадёт</span>" if phrase and not color else ""
+            return (f"<tr class='pos {classes}'><td style='white-space:nowrap'><span class='mark'><input type='hidden' class='color' name='color_{number}' value='{color}'>"
+                    f"<button type='button' class='dot' title='Нажимайте, чтобы сменить цвет группы' aria-label='Цвет группы позиции {number}'>{color or '·'}</button></span>"
+                    f"<input type='checkbox' name='phrase_{number}' value='1' {'checked' if phrase else ''} title='Эта позиция — поисковая фраза группы' aria-label='Поисковая фраза: позиция {number}'></td>"
+                    f"<td>{number}</td><td>{esc(name)}{warn}</td><td style='white-space:nowrap'>{esc(quantities[number - 1]) or '—'}</td></tr>")
+
+        def header_row(selector, label, count, level):
+            return (f"<tr class='hdr {level}'><td><span class='mark'><button type='button' class='dot block' data-sel='{selector}' "
+                    f"title='Цвет сразу всему блоку' aria-label='Цвет блока {esc(label)}'>·</button></span></td>"
+                    f"<td colspan='3'><b>{esc(label)}</b> <span class='note'>· позиций: {count}</span></td></tr>")
+
         rows = ""
-        for number, name in enumerate(names, 1):
-            color, selected = marks[number]
-            rows += (f"<tr><td style='white-space:nowrap'><span class='mark'><input type='hidden' class='color' name='color_{number}' value='{color}'>"
-                     f"<button type='button' class='dot' title='Нажимайте, чтобы сменить цвет группы' aria-label='Цвет группы позиции {number}'>{color or '·'}</button></span>"
-                     f"<input type='checkbox' name='sel_{number}' value='1' {'checked' if selected else ''} aria-label='Искать позицию {number}'></td>"
-                     f"<td>{number}</td><td>{esc(name)}</td><td style='white-space:nowrap'>{esc(quantities[number - 1]) or '—'}</td></tr>")
-        body += (f"<section><h2>{esc(title)}: позиции</h2>"
-                 "<p class='note'>Цветная точка — группа: нажимайте на неё, цвет меняется по кругу. Позиции одного цвета ищутся вместе одним запросом. "
-                 "Галочка — искать позицию; без галочки позиция в поиск не попадает. Позиции без цвета образуют одну общую группу.</p>"
-                 + form_start(request, "/dashboard/web-suppliers/groups", f"<input type='hidden' name='job_id' value='{job_id}'>")
-                 + "<div class='scroll'><table><tr><th>Группа · искать</th><th>№</th><th>Позиция</th><th>Кол-во</th></tr>"
+        if view == "seq":
+            rows = "".join(position_row(n, name) for n, name in enumerate(names, 1))
+        else:
+            for ri, (rubric, categories) in enumerate(position_blocks(names)):
+                rows += header_row(f".r{ri}", rubric, sum(len(m) for _, m in categories), "rub")
+                for ci, (category, members_of) in enumerate(categories):
+                    rows += header_row(f".c{ri}_{ci}", category, len(members_of), "cat")
+                    rows += "".join(position_row(n, names[n - 1], f"r{ri} c{ri}_{ci}") for n in members_of)
+        view_links = (f"<a class='tab{' on' if view == 'cat' else ''}' href='/dashboard/web-suppliers?{esc(urlencode({'job_id': job_id}))}'>По рубрикам</a>"
+                      f"<a class='tab{' on' if view == 'seq' else ''}' href='/dashboard/web-suppliers?{esc(urlencode({'job_id': job_id, 'view': 'seq'}))}'>По порядку номеров</a>")
+        body += (f"<section><h2>{esc(title)}: позиции</h2><div class='tabs'>{view_links}</div>"
+                 "<p class='note'><b>Цвет</b> (точка, нажатие меняет цвет по кругу; точка на заголовке рубрики или категории красит весь блок) — в какую группу идёт позиция. "
+                 "<b>Галочка</b> — эта позиция и есть поисковая фраза своей группы. "
+                 "Позиция без цвета никуда не попадает и не ищется.</p>"
+                 + form_start(request, "/dashboard/web-suppliers/groups", f"<input type='hidden' name='job_id' value='{job_id}'><input type='hidden' name='view' value='{view}'>")
+                 + "<div class='scroll'><table><tr><th>Группа · фраза</th><th>№</th><th>Позиция</th><th>Кол-во</th></tr>"
                  f"{rows}</table></div><p><button>Сохранить группы</button></p></form></section>")
         keywords = load_keywords(job_id)
         group_cards = ""
         for color, members in groups.items():
             key = group_run_key(job_id, color)
             row, state = load_run(key)
-            phrase = keywords.get(color, "")
+            saved_phrase = keywords.get(color, "")
+            ticked = group_phrases(marks, members)
             status = (f"{len(state['sites'])} сайтов · запросов {state['requests']} из {cfg['max_requests']} · {esc(sd.STOP_LABELS.get(state['reason'], state['reason']))}"
                       if state else "Не искали")
             if state and state["reason"] == "waiting" and waiting_note(state):
                 status += f" ({esc(waiting_note(state))})"
             errors = f"<br><span class='error'>{esc(state['errors'][-1])}</span>" if state and state["errors"] else ""
             can_continue = bool(state) and state["reason"] in ("paused", "economy", "credits", "error", "waiting")
-            hidden_fields = f"<input type='hidden' name='job_id' value='{job_id}'><input type='hidden' name='color' value='{color}'>"
-            picks = "".join(
-                f"<li><label><input type='radio' name='pick' value='{n}'> {n}. {esc(names[n - 1])}"
-                + (f" — {esc(quantities[n - 1])}" if quantities[n - 1] else "") + "</label></li>" for n in members)
+            hidden_fields = (f"<input type='hidden' name='job_id' value='{job_id}'><input type='hidden' name='color' value='{color}'>"
+                             f"<input type='hidden' name='view' value='{view}'>")
+            members_html = "".join(f"<li>{n}. {esc(names[n - 1])}" + (f" — {esc(quantities[n - 1])}" if quantities[n - 1] else "")
+                                   + (" <span class='tag'>фраза</span>" if n in ticked else "") + "</li>" for n in members)
+            if len(ticked) == 1:
+                phrase_line = f"<p>Поисковая фраза (отмечена галочкой): <b>«{esc(names[ticked[0] - 1])}»</b></p>"
+                warn = False
+            elif not ticked:
+                phrase_line = "<p class='warnline'>⚠ Введите поисковую фразу ниже или отметьте галочкой позицию этой группы и сохраните группы.</p>"
+                warn = True
+            else:
+                phrase_line = (f"<p class='warnline'>⚠ В группе отмечено фраз: {len(ticked)}. Оставьте одну галочку и сохраните группы "
+                               "или впишите свою фразу ниже.</p>")
+                warn = True
+            can_search = len(ticked) == 1
             search_form = (form_start(request, "/dashboard/web-suppliers/group-search", hidden_fields)
-                           + "<p class='note'>Поисковая фраза: отметьте позицию группы (её название уйдёт в поиск как есть) "
-                             "или впишите свою фразу. Если заполнено и то и другое, ищется ваша фраза.</p>"
-                           + f"<ul class='picks'>{picks}</ul>"
-                           + "<label>Своя поисковая фраза <input name='keyword' maxlength='300' size='50' placeholder='например: хомут спринклерный Ду 25'></label>"
+                           + f"<label>{'Своя фраза вместо отмеченной' if can_search else 'Поисковая фраза'} "
+                             f"<input name='keyword' maxlength='300' size='50' placeholder='например: хомут спринклерный Ду 25'></label>"
                            + f"<button>{'Найти сайты по новой фразе' if state else 'Найти сайты'}</button></form>")
-            continue_form = (form_start(request, "/dashboard/web-suppliers/group-search", hidden_fields + f"<input type='hidden' name='keyword' value='{esc(phrase)}'>")
-                             + f"<button class='secondary'>{'Забрать результат' if state['reason'] == 'waiting' else 'Искать ещё по этой фразе'}</button></form>") if can_continue and phrase else ""
+            continue_form = (form_start(request, "/dashboard/web-suppliers/group-search", hidden_fields + f"<input type='hidden' name='keyword' value='{esc(saved_phrase)}'>")
+                             + f"<button class='secondary'>{'Забрать результат' if state['reason'] == 'waiting' else 'Искать ещё по этой фразе'}</button></form>") if can_continue and saved_phrase else ""
             used = f"<p>Ищем по фразе: <b>«{esc(state['query'])}»</b></p>" if state else ""
             contacts_form = (form_start(request, "/dashboard/web-suppliers/group-contacts", hidden_fields)
                              + "<button style='background:#5f6368'>Найти e-mail у сайтов группы</button></form>") if state and state["sites"] else ""
-            group_cards += (f"<div class='group' style='border-left:8px solid {GROUP_COLORS[color]}'><b>{esc(group_title(color))}</b> · позиций: {len(members)}"
-                            f"{search_form}{used}<p>{status}{errors}</p><div class='actions'>{continue_form}{contacts_form}</div></div>")
+            group_cards += (f"<div class='group{' warn' if warn else ''}' style='border-left:8px solid {GROUP_COLORS[color]}'><b>{esc(group_title(color))}</b> · позиций: {len(members)}"
+                            f"<ul class='members'>{members_html}</ul>{phrase_line}{search_form}{used}<p>{status}{errors}</p>"
+                            f"<div class='actions'>{continue_form}{contacts_form}</div></div>")
         body += ("<section><h2>Поиск по группам</h2>"
-                 + (group_cards or "<p class='note'>Нет отмеченных позиций. Поставьте галочки и сохраните группы.</p>") + "</section>")
+                 + (group_cards or "<p class='note'>Групп нет. Выберите цвет у позиций (или у целого блока) и сохраните группы.</p>") + "</section>")
         visible = [d for d in domains.values() if show_all or records.get(d["domain"], {}).get("policy") != "excluded"]
         visible.sort(key=lambda d: (records.get(d["domain"], {}).get("policy") != "trusted", -len(d["positions"]),
                                     SELLER_RANK[d["seller"]], d["domain"]))
-        total = len(names)
+        total = sum(len(m) for m in groups.values()) or len(names)
         trs = ""
         for d in visible:
             record, policy = records.get(d["domain"]), records.get(d["domain"], {}).get("policy", "neutral")
@@ -461,8 +536,14 @@ def render_page(request, job_id, message, show_all, run="", seller="all", inc=()
                  f"{trs}</table></div></section>")
     colors_js = ("var C=" + json.dumps(GROUP_COLORS) + ";"
                  "function paint(b,n){b.style.background=C[n];b.textContent=n||'\\u00b7';}"
-                 "document.querySelectorAll('.mark').forEach(function(m){var i=m.querySelector('input.color'),b=m.querySelector('.dot');"
-                 "paint(b,parseInt(i.value)||0);b.addEventListener('click',function(){var n=((parseInt(i.value)||0)+1)%C.length;i.value=n;paint(b,n);});});")
+                 "function rows(sel){return document.querySelectorAll('tr.pos'+sel+' input.color');}"
+                 "function refresh(){document.querySelectorAll('tr.pos .mark').forEach(function(m){paint(m.querySelector('.dot'),parseInt(m.querySelector('input.color').value)||0);});"
+                 "document.querySelectorAll('.dot.block').forEach(function(b){var v=null,same=true;rows(b.getAttribute('data-sel')).forEach(function(i){if(v===null){v=i.value;}else if(v!==i.value){same=false;}});paint(b,same&&v!==null?(parseInt(v)||0):0);});}"
+                 "document.querySelectorAll('tr.pos .mark').forEach(function(m){var i=m.querySelector('input.color');"
+                 "m.querySelector('.dot').addEventListener('click',function(){i.value=((parseInt(i.value)||0)+1)%C.length;refresh();});});"
+                 "document.querySelectorAll('.dot.block').forEach(function(b){b.addEventListener('click',function(){"
+                 "var list=rows(b.getAttribute('data-sel')),cur=0;if(list.length){var same=true;list.forEach(function(i){if(i.value!==list[0].value){same=false;}});cur=same?(parseInt(list[0].value)||0):0;}"
+                 "var n=(cur+1)%C.length;list.forEach(function(i){i.value=n;});refresh();});});refresh();")
     return respond(body, colors_js)
 
 
@@ -716,8 +797,8 @@ def install_supplier_discovery(app):
 
     @router.get("")
     def dashboard(request: Request, job_id: int = 0, message: str = "", all: int = 0, run: str = "", seller: str = "all",
-                  inc: str = "", exc: str = ""):
-        return render_page(request, job_id, message[:500], bool(all), run[:80], seller, clean_words(inc), clean_words(exc))
+                  inc: str = "", exc: str = "", view: str = "cat"):
+        return render_page(request, job_id, message[:500], bool(all), run[:80], seller, clean_words(inc), clean_words(exc), view)
 
     @router.post("/search")
     async def search(request: Request):
@@ -780,6 +861,7 @@ def install_supplier_discovery(app):
     async def groups(request: Request):
         form = await checked_form(request)
         job_id = int(form.get("job_id") or 0)
+        view = "seq" if form.get("view") == "seq" else ""
         _, names = order_positions(job_id)
         marks = {}
         for number in range(1, len(names) + 1):
@@ -787,37 +869,46 @@ def install_supplier_discovery(app):
                 color = int(form.get(f"color_{number}") or 0)
             except ValueError:
                 color = 0
-            marks[number] = (min(max(color, 0), len(GROUP_COLORS) - 1), bool(form.get(f"sel_{number}")) and bool(names[number - 1]))
+            marks[number] = (min(max(color, 0), len(GROUP_COLORS) - 1), bool(form.get(f"phrase_{number}")))
         save_marks(job_id, marks)
-        return back(job_id, f"Группы сохранены. Групп для поиска: {len(build_groups(marks))}.")
+        built = build_groups(marks)
+        lost = [n for n, (color, phrase) in marks.items() if phrase and not color]
+        message = f"Группы сохранены. Групп: {len(built)}."
+        if lost:
+            message += f" Галочка без цвета у позиций {', '.join(map(str, lost))}: они никуда не попадут."
+        no_phrase = [c for c, members in built.items() if not group_phrases(marks, members)]
+        if no_phrase:
+            message += f" В группах {', '.join(map(str, no_phrase))} нет галочки: впишите поисковую фразу."
+        return back(job_id, message, view=view)
 
     @router.post("/group-search")
     async def group_search(request: Request):
         form = await checked_form(request)
         job_id, color = int(form.get("job_id") or 0), int(form.get("color") or 0)
+        view = "seq" if form.get("view") == "seq" else ""
         _, names = order_positions(job_id)
-        members = build_groups(load_marks(job_id, len(names))).get(color)
+        marks = load_marks(job_id, len(names))
+        members = build_groups(marks).get(color)
         if not members:
-            raise HTTPException(400, "В этой группе нет отмеченных позиций. Сохраните группы и повторите.")
+            raise HTTPException(400, "В этой группе нет позиций. Выберите цвет у позиций и сохраните группы.")
         keyword = " ".join(str(form.get("keyword", "")).split())
         if not keyword:
-            try:
-                pick = int(form.get("pick") or 0)
-            except ValueError:
-                pick = 0
-            if pick in members:
-                keyword = " ".join(names[pick - 1].split())
-        if not keyword:
-            return back(job_id, f"{group_title(color)}: отметьте позицию группы или впишите свою поисковую фразу.")
+            ticked = group_phrases(marks, members)
+            if len(ticked) == 1:
+                keyword = " ".join(names[ticked[0] - 1].split())
+            elif not ticked:
+                return back(job_id, f"{group_title(color)}: нет поисковой фразы. Впишите её или отметьте галочкой позицию группы и сохраните группы.", view=view)
+            else:
+                return back(job_id, f"{group_title(color)}: отмечено фраз {len(ticked)}. Оставьте одну галочку или впишите свою фразу.", view=view)
         try:
             query = sd.build_query(keyword)
         except ValueError as exc:
-            return back(job_id, str(exc))
+            return back(job_id, str(exc), view=view)
         save_keyword(job_id, color, keyword)
         state = await guarded_search(group_run_key(job_id, color), job_id, -(color + 1), keyword, query)
         if state is None:
-            return back(job_id, "Поиск по этой группе уже выполняется. Подождите и обновите страницу.")
-        return back(job_id, f"{group_title(color)}: {search_message(state)}")
+            return back(job_id, "Поиск по этой группе уже выполняется. Подождите и обновите страницу.", view=view)
+        return back(job_id, f"{group_title(color)}: {search_message(state)}", view=view)
 
     @router.post("/group-contacts")
     async def group_contacts(request: Request):
