@@ -1363,9 +1363,9 @@ function render(){
       const i=state.positions.indexOf(r.pos);
       const prev=state.positions[i-1], next=state.positions[i+1], nextTodo=order.find(id=>state.positions.findIndex(p=>p.id===id)>i)||order.find(id=>id!==r.pos.id);
       // A tick closes the row once a product is chosen (✓ cart): the position then shows in the table above as chosen.
-      const doneBox=()=>{const ok=r.st.code==='done';
-        return el('label',{class:'doneck'+(ok?'':' off'),title:ok?'Закрыть строку позиции':'Сначала выберите товар (корзинка)'},
-          el('input',{type:'checkbox',disabled:!ok,'aria-label':'Готово — закрыть строку',onchange:e=>{if(!e.target.checked)return;state.active=null;save();render();setTimeout(()=>document.getElementById('row-'+r.pos.id)?.scrollIntoView({block:'center'}),0)}}),'Готово — закрыть строку')};
+      const doneBox=()=>{
+        return el('label',{class:'doneck',title:'Закрыть строку позиции; выбор товара сохраняется отдельно'},
+          el('input',{type:'checkbox','aria-label':'Готово — закрыть строку',onchange:e=>{if(!e.target.checked)return;state.active=null;save();render();setTimeout(()=>document.getElementById('row-'+r.pos.id)?.scrollIntoView({block:'center'}),0)}}),'Готово — закрыть строку')};
       const nav=el('div',{class:'posnav'},
         el('button',{class:'btn',disabled:!prev,onclick:()=>prev&&go(prev.id)},'← Предыдущая'),
         el('button',{class:'btn',disabled:!next,onclick:()=>next&&go(next.id)},'Следующая →'),
