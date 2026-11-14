@@ -252,24 +252,21 @@ def group_title(color):
     return f"Группа {color}"
 
 
-def group_run_key(job_id, color, query):
-    """Одна группа может искаться по нескольким фразам: у каждой фразы свой поиск со своим бюджетом."""
-    return f"{job_id}:g{color}:" + hashlib.sha1(query.encode()).hexdigest()[:10]
-
-
-def safe_query(phrase):
-    try:
-        return sd.build_query(phrase)
-    except ValueError:
-        return phrase
-
-
-def group_runs(job_id, color):
-    """Поиски группы: [(ключ, фраза, состояние)] — и по фразам с галочкой, и по вписанным вручную."""
+def load_keywords(job_id):
     with database() as conn:
-        rows = execute(conn, "SELECT run_key,item_name,state_json FROM web_supplier_runs WHERE job_id=? AND position=? ORDER BY created_at",
-                       (job_id, -(color + 1))).fetchall()
-    return [(r["run_key"], r["item_name"], json.loads(r["state_json"])) for r in rows]
+        rows = execute(conn, "SELECT color,keyword FROM web_supplier_groups WHERE job_id=?", (job_id,)).fetchall()
+    return {int(r["color"]): r["keyword"] for r in rows}
+
+
+def save_keyword(job_id, color, keyword):
+    with database() as conn:
+        execute(conn, """INSERT INTO web_supplier_groups(job_id,color,keyword,updated_at) VALUES(?,?,?,?)
+            ON CONFLICT(job_id,color) DO UPDATE SET keyword=excluded.keyword,updated_at=excluded.updated_at""",
+                (job_id, color, keyword[:300], now()))
+
+
+def group_run_key(job_id, color):
+    return f"{job_id}:g{color}"
 
 
 def aggregate(job_id, names=None):
@@ -463,57 +460,46 @@ def render_page(request, job_id, message, show_all, run="", seller="all", inc=()
                  + form_start(request, "/dashboard/web-suppliers/groups", f"<input type='hidden' name='job_id' value='{job_id}'><input type='hidden' name='view' value='{view}'>")
                  + "<div class='scroll'><table><tr><th>Группа · фраза</th><th>№</th><th>Позиция</th><th>Кол-во</th></tr>"
                  f"{rows}</table></div><p><button>Сохранить группы</button></p></form></section>")
+        keywords = load_keywords(job_id)
         group_cards = ""
         for color, members in groups.items():
+            key = group_run_key(job_id, color)
+            row, state = load_run(key)
+            saved_phrase = keywords.get(color, "")
             ticked = group_phrases(marks, members)
+            status = (f"{len(state['sites'])} сайтов · запросов {state['requests']} из {cfg['max_requests']} · {esc(sd.STOP_LABELS.get(state['reason'], state['reason']))}"
+                      if state else "Не искали")
+            if state and state["reason"] == "waiting" and waiting_note(state):
+                status += f" ({esc(waiting_note(state))})"
+            errors = f"<br><span class='error'>{esc(state['errors'][-1])}</span>" if state and state["errors"] else ""
+            can_continue = bool(state) and state["reason"] in ("paused", "economy", "credits", "error", "waiting")
             hidden_fields = (f"<input type='hidden' name='job_id' value='{job_id}'><input type='hidden' name='color' value='{color}'>"
                              f"<input type='hidden' name='view' value='{view}'>")
             members_html = "".join(f"<li>{n}. {esc(names[n - 1])}" + (f" — {esc(quantities[n - 1])}" if quantities[n - 1] else "")
                                    + (" <span class='tag'>фраза</span>" if n in ticked else "") + "</li>" for n in members)
-            wanted = list(dict.fromkeys(" ".join(names[n - 1].split()) for n in ticked))
-            by_query = {safe_query(phrase): (key, phrase, state) for key, phrase, state in group_runs(job_id, color)}
-            listing = [(phrase, by_query.get(safe_query(phrase))) for phrase in wanted]
-            wanted_queries = {safe_query(phrase) for phrase in wanted}
-            listing += [(phrase, info) for query, info in by_query.items() for phrase in [info[1]] if query not in wanted_queries]
-            phrase_rows = ""
-            for phrase, run_info in listing:
-                state = run_info[2] if run_info else None
-                status = (f"{len(state['sites'])} сайтов · запросов {state['requests']} из {cfg['max_requests']} · {esc(sd.STOP_LABELS.get(state['reason'], state['reason']))}"
-                          if state else "Не искали")
-                if state and state["reason"] == "waiting" and waiting_note(state):
-                    status += f" ({esc(waiting_note(state))})"
-                if state and state["errors"]:
-                    status += f"<br><span class='error'>{esc(state['errors'][-1])}</span>"
-                can_run = not state or state["reason"] in ("paused", "economy", "credits", "error", "waiting")
-                label = "Найти сайты" if not state else "Забрать результат" if state["reason"] == "waiting" else "Искать ещё"
-                button = (form_start(request, "/dashboard/web-suppliers/group-search", hidden_fields + f"<input type='hidden' name='keyword' value='{esc(phrase)}'>")
-                          + f"<button class='secondary'>{label}</button></form>") if can_run else ""
-                origin = "галочка" if phrase in wanted else "вписана вручную"
-                phrase_rows += f"<tr><td><b>«{esc(phrase)}»</b><br><span class='note'>{origin}</span></td><td>{status}</td><td>{button}</td></tr>"
-            if not ticked:
-                warn = not listing
-                phrase_line = ("<p class='warnline'>⚠ Введите поисковую фразу ниже или отметьте галочкой позицию этой группы и сохраните группы.</p>"
-                               if warn else "")
-            elif len(ticked) == 1:
-                phrase_line = ""
+            if len(ticked) == 1:
+                phrase_line = f"<p>Поисковая фраза (отмечена галочкой): <b>«{esc(names[ticked[0] - 1])}»</b></p>"
                 warn = False
+            elif not ticked:
+                phrase_line = "<p class='warnline'>⚠ Введите поисковую фразу ниже или отметьте галочкой позицию этой группы и сохраните группы.</p>"
+                warn = True
             else:
-                phrase_line = (f"<p class='note'>Отмечено фраз: {len(ticked)}. Каждая фраза ищется отдельно и тратит свой бюджет запросов "
-                               f"(до {cfg['max_requests']} на фразу).</p>")
-                warn = False
-            table = ("<div class='scroll'><table><tr><th>Поисковая фраза</th><th>Поиск</th><th></th></tr>" + phrase_rows + "</table></div>") if phrase_rows else ""
-            runnable = [phrase for phrase, info in listing if phrase in wanted and (not info or info[2]["reason"] in ("paused", "economy", "credits", "error", "waiting"))]
-            all_button = (form_start(request, "/dashboard/web-suppliers/group-search", hidden_fields)
-                          + f"<button>Найти по {'всем отмеченным фразам' if len(wanted) > 1 else 'отмеченной фразе'}</button></form>") if runnable else ""
-            typed_form = (form_start(request, "/dashboard/web-suppliers/group-search", hidden_fields)
-                          + "<label>Своя поисковая фраза <input name='keyword' maxlength='300' size='50' placeholder='например: хомут спринклерный Ду 25'></label>"
-                          + "<button class='secondary'>Найти по своей фразе</button></form>")
-            any_sites = any(info and info[2]["sites"] for _, info in listing)
+                phrase_line = (f"<p class='warnline'>⚠ В группе отмечено фраз: {len(ticked)}. Оставьте одну галочку и сохраните группы "
+                               "или впишите свою фразу ниже.</p>")
+                warn = True
+            can_search = len(ticked) == 1
+            search_form = (form_start(request, "/dashboard/web-suppliers/group-search", hidden_fields)
+                           + f"<label>{'Своя фраза вместо отмеченной' if can_search else 'Поисковая фраза'} "
+                             f"<input name='keyword' maxlength='300' size='50' placeholder='например: хомут спринклерный Ду 25'></label>"
+                           + f"<button>{'Найти сайты по новой фразе' if state else 'Найти сайты'}</button></form>")
+            continue_form = (form_start(request, "/dashboard/web-suppliers/group-search", hidden_fields + f"<input type='hidden' name='keyword' value='{esc(saved_phrase)}'>")
+                             + f"<button class='secondary'>{'Забрать результат' if state['reason'] == 'waiting' else 'Искать ещё по этой фразе'}</button></form>") if can_continue and saved_phrase else ""
+            used = f"<p>Ищем по фразе: <b>«{esc(state['query'])}»</b></p>" if state else ""
             contacts_form = (form_start(request, "/dashboard/web-suppliers/group-contacts", hidden_fields)
-                             + "<button style='background:#5f6368'>Найти e-mail у сайтов группы</button></form>") if any_sites else ""
+                             + "<button style='background:#5f6368'>Найти e-mail у сайтов группы</button></form>") if state and state["sites"] else ""
             group_cards += (f"<div class='group{' warn' if warn else ''}' style='border-left:8px solid {GROUP_COLORS[color]}'><b>{esc(group_title(color))}</b> · позиций: {len(members)}"
-                            f"<ul class='members'>{members_html}</ul>{phrase_line}{table}"
-                            f"<div class='actions'>{all_button}{typed_form}{contacts_form}</div></div>")
+                            f"<ul class='members'>{members_html}</ul>{phrase_line}{search_form}{used}<p>{status}{errors}</p>"
+                            f"<div class='actions'>{continue_form}{contacts_form}</div></div>")
         body += ("<section><h2>Поиск по группам</h2>"
                  + (group_cards or "<p class='note'>Групп нет. Выберите цвет у позиций (или у целого блока) и сохраните группы.</p>") + "</section>")
         visible = [d for d in domains.values() if show_all or records.get(d["domain"], {}).get("policy") != "excluded"]
@@ -905,31 +891,24 @@ def install_supplier_discovery(app):
         members = build_groups(marks).get(color)
         if not members:
             raise HTTPException(400, "В этой группе нет позиций. Выберите цвет у позиций и сохраните группы.")
-        typed = " ".join(str(form.get("keyword", "")).split())
-        if typed:
-            phrases = [typed]
-        else:
+        keyword = " ".join(str(form.get("keyword", "")).split())
+        if not keyword:
             ticked = group_phrases(marks, members)
-            if not ticked:
+            if len(ticked) == 1:
+                keyword = " ".join(names[ticked[0] - 1].split())
+            elif not ticked:
                 return back(job_id, f"{group_title(color)}: нет поисковой фразы. Впишите её или отметьте галочкой позицию группы и сохраните группы.", view=view)
-            phrases = list(dict.fromkeys(" ".join(names[n - 1].split()) for n in ticked))
-        total_sites, busy, notes = 0, 0, []
-        for phrase in phrases:
-            try:
-                query = sd.build_query(phrase)
-            except ValueError as exc:
-                return back(job_id, str(exc), view=view)
-            state = await guarded_search(group_run_key(job_id, color, query), job_id, -(color + 1), phrase, query)
-            if state is None:
-                busy += 1
-                continue
-            total_sites += len(state["sites"])
-            notes.append(search_message(state))
-        if busy == len(phrases):
+            else:
+                return back(job_id, f"{group_title(color)}: отмечено фраз {len(ticked)}. Оставьте одну галочку или впишите свою фразу.", view=view)
+        try:
+            query = sd.build_query(keyword)
+        except ValueError as exc:
+            return back(job_id, str(exc), view=view)
+        save_keyword(job_id, color, keyword)
+        state = await guarded_search(group_run_key(job_id, color), job_id, -(color + 1), keyword, query)
+        if state is None:
             return back(job_id, "Поиск по этой группе уже выполняется. Подождите и обновите страницу.", view=view)
-        if len(phrases) == 1:
-            return back(job_id, f"{group_title(color)}: {notes[0]}", view=view)
-        return back(job_id, f"{group_title(color)}: фраз {len(phrases)}, сайтов по ним найдено {total_sites} (до объединения по доменам). Подробности у каждой фразы.", view=view)
+        return back(job_id, f"{group_title(color)}: {search_message(state)}", view=view)
 
     @router.post("/group-contacts")
     async def group_contacts(request: Request):
