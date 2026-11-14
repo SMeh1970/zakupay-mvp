@@ -208,11 +208,6 @@ def group_title(color):
     return "Без цвета" if color == 0 else f"Группа {color}"
 
 
-def default_keyword(names, members):
-    first = names[members[0] - 1] if members else ""
-    return " ".join(first.split()[:8])
-
-
 def load_keywords(job_id):
     with database() as conn:
         rows = execute(conn, "SELECT color,keyword FROM web_supplier_groups WHERE job_id=?", (job_id,)).fetchall()
@@ -336,7 +331,7 @@ def recent_orders_section():
 STYLE = ("<style>.mark{display:inline-flex;align-items:center;margin-right:8px}.dot{width:30px;height:30px;border-radius:50%;padding:0;"
          "color:#fff;font-weight:bold;border:2px solid #fff;box-shadow:0 0 0 1px #5f6368;cursor:pointer;display:inline-block;text-align:center;line-height:26px}"
          ".dot.static{width:22px;height:22px;line-height:18px;cursor:default;font-size:12px}"
-         ".group{background:#f8f9fa;padding:12px 16px;margin:12px 0;border-radius:8px}input[type=checkbox]{width:20px;height:20px;vertical-align:middle}"
+         ".picks{list-style:none;padding:0;margin:8px 0}.group{background:#f8f9fa;padding:12px 16px;margin:12px 0;border-radius:8px}input[type=checkbox]{width:20px;height:20px;vertical-align:middle}"
          ".notice{padding:14px;border:2px solid #1a73e8;border-radius:8px;margin:12px 0}"
          ".searchbar{display:flex;gap:10px;align-items:center;flex-wrap:wrap}.searchbar label{font-weight:bold;color:#5f6368}.searchbar input{flex:1;min-width:260px;font-size:16px}"
          ".chips{display:flex;gap:8px;flex-wrap:wrap}.chip{background:#e8f0fe;border-radius:14px;padding:4px 10px;text-decoration:none;font-size:13px}"
@@ -406,24 +401,30 @@ def render_page(request, job_id, message, show_all, run="", seller="all", inc=()
         for color, members in groups.items():
             key = group_run_key(job_id, color)
             row, state = load_run(key)
-            keyword = keywords.get(color) or default_keyword(names, members)
+            phrase = keywords.get(color, "")
             status = (f"{len(state['sites'])} сайтов · запросов {state['requests']} из {cfg['max_requests']} · {esc(sd.STOP_LABELS.get(state['reason'], state['reason']))}"
                       if state else "Не искали")
             if state and state["reason"] == "waiting" and waiting_note(state):
                 status += f" ({esc(waiting_note(state))})"
             errors = f"<br><span class='error'>{esc(state['errors'][-1])}</span>" if state and state["errors"] else ""
-            can_continue = not state or state["reason"] in ("paused", "economy", "credits", "error", "waiting")
-            label = "Найти сайты" if not state else "Забрать результат" if state["reason"] == "waiting" else "Искать ещё"
+            can_continue = bool(state) and state["reason"] in ("paused", "economy", "credits", "error", "waiting")
             hidden_fields = f"<input type='hidden' name='job_id' value='{job_id}'><input type='hidden' name='color' value='{color}'>"
+            picks = "".join(
+                f"<li><label><input type='radio' name='pick' value='{n}'> {n}. {esc(names[n - 1])}"
+                + (f" — {esc(quantities[n - 1])}" if quantities[n - 1] else "") + "</label></li>" for n in members)
             search_form = (form_start(request, "/dashboard/web-suppliers/group-search", hidden_fields)
-                           + f"<label>Ключевое слово группы <input name='keyword' value='{esc(keyword)}' maxlength='300' size='50' required></label>"
-                           + (f"<button>{label}</button>" if can_continue else "") + "</form>")
+                           + "<p class='note'>Поисковая фраза: отметьте позицию группы (её название уйдёт в поиск как есть) "
+                             "или впишите свою фразу. Если заполнено и то и другое, ищется ваша фраза.</p>"
+                           + f"<ul class='picks'>{picks}</ul>"
+                           + "<label>Своя поисковая фраза <input name='keyword' maxlength='300' size='50' placeholder='например: хомут спринклерный Ду 25'></label>"
+                           + f"<button>{'Найти сайты по новой фразе' if state else 'Найти сайты'}</button></form>")
+            continue_form = (form_start(request, "/dashboard/web-suppliers/group-search", hidden_fields + f"<input type='hidden' name='keyword' value='{esc(phrase)}'>")
+                             + f"<button class='secondary'>{'Забрать результат' if state['reason'] == 'waiting' else 'Искать ещё по этой фразе'}</button></form>") if can_continue and phrase else ""
+            used = f"<p>Ищем по фразе: <b>«{esc(state['query'])}»</b></p>" if state else ""
             contacts_form = (form_start(request, "/dashboard/web-suppliers/group-contacts", hidden_fields)
                              + "<button style='background:#5f6368'>Найти e-mail у сайтов группы</button></form>") if state and state["sites"] else ""
-            names_list = "".join(f"<li>{n}. {esc(names[n - 1])}" + (f" — {esc(quantities[n - 1])}" if quantities[n - 1] else "") + "</li>" for n in members[:8])
-            more_names = f"<li class='note'>и ещё {len(members) - 8}</li>" if len(members) > 8 else ""
             group_cards += (f"<div class='group' style='border-left:8px solid {GROUP_COLORS[color]}'><b>{esc(group_title(color))}</b> · позиций: {len(members)}"
-                            f"<ul>{names_list}{more_names}</ul>{search_form}<p>{status}{errors}</p>{contacts_form}</div>")
+                            f"{search_form}{used}<p>{status}{errors}</p><div class='actions'>{continue_form}{contacts_form}</div></div>")
         body += ("<section><h2>Поиск по группам</h2>"
                  + (group_cards or "<p class='note'>Нет отмеченных позиций. Поставьте галочки и сохраните группы.</p>") + "</section>")
         visible = [d for d in domains.values() if show_all or records.get(d["domain"], {}).get("policy") != "excluded"]
@@ -800,7 +801,14 @@ def install_supplier_discovery(app):
             raise HTTPException(400, "В этой группе нет отмеченных позиций. Сохраните группы и повторите.")
         keyword = " ".join(str(form.get("keyword", "")).split())
         if not keyword:
-            raise HTTPException(400, "Введите ключевое слово группы.")
+            try:
+                pick = int(form.get("pick") or 0)
+            except ValueError:
+                pick = 0
+            if pick in members:
+                keyword = " ".join(names[pick - 1].split())
+        if not keyword:
+            return back(job_id, f"{group_title(color)}: отметьте позицию группы или впишите свою поисковую фразу.")
         try:
             query = sd.build_query(keyword)
         except ValueError as exc:

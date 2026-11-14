@@ -283,19 +283,44 @@ def test_marks_make_groups_and_unchecked_positions_stay_out_of_search(panel):
 def test_group_without_selected_positions_cannot_be_searched(panel):
     job = add_job(("Профиль 60х27", "Саморез 4,2х16"))
     post(panel, "/dashboard/web-suppliers/groups", job, color_1=1, color_2=2, sel_2=1)
-    with patch.object(sd, "search_page", fake_search({})) as search:
+    search = fake_search({})
+    with patch.object(sd, "search_page", search):
         assert post(panel, "/dashboard/web-suppliers/group-search", job, color=1, keyword="Профиль").status_code == 400
-    assert not search.calls if hasattr(search, "calls") else True
-    assert post(panel, "/dashboard/web-suppliers/group-search", job, color=2, keyword="  ").status_code == 400
+    assert not search.calls
 
 
-def test_group_keyword_is_saved_and_shown_again(panel):
+def test_phrase_is_what_the_user_typed_or_the_position_they_ticked_and_nothing_is_invented(panel):
+    job = add_job(("Профиль потолочный 60*27", "Профиль направляющий 28*27"))
+    post(panel, "/dashboard/web-suppliers/groups", job, color_1=1, sel_1=1, color_2=1, sel_2=1)
+    html = panel.get(f"/dashboard/web-suppliers?job_id={job}").text
+    assert html.count("type='radio' name='pick'") == 2 and "Своя поисковая фраза" in html
+    assert "value='Профиль" not in html.split("Поиск по группам")[1]      # поле фразы пустое: ничего не подставлено за пользователя
+    search = fake_search({"Профиль направляющий 28х27": PROFILE, "Профиль потолочный 60х27": PROFILE, "гипсокартон лист": PROFILE})
+    with patch.object(sd, "search_page", search):
+        # ни фразы, ни отметки — поиск не запускается
+        response = post(panel, "/dashboard/web-suppliers/group-search", job, color=1)
+        assert response.status_code == 303 and not search.calls
+        assert "отметьте позицию группы или впишите" in panel.get(response.headers["location"]).text
+        # отмеченная позиция уходит в поиск своим названием
+        post(panel, "/dashboard/web-suppliers/group-search", job, color=1, pick=2)
+        assert {c[2] for c in search.calls} == {"Профиль направляющий 28х27"}
+        # своя фраза важнее отметки
+        post(panel, "/dashboard/web-suppliers/group-search", job, color=1, pick=1, keyword="гипсокартон лист")
+        assert search.calls[-1][2] == "гипсокартон лист"
+    # позиция вне группы отметкой выбрана быть не может
+    with patch.object(sd, "search_page", search):
+        before = len(search.calls)
+        post(panel, "/dashboard/web-suppliers/group-search", job, color=1, pick=9)
+        assert len(search.calls) == before
+
+
+def test_group_page_shows_the_phrase_it_searches_by(panel):
     job = add_job()
     post(panel, "/dashboard/web-suppliers/groups", job, color_1=3, sel_1=1)
     with patch.object(sd, "search_page", fake_search({"гипсокартон лист": PROFILE})):
         post(panel, "/dashboard/web-suppliers/group-search", job, color=3, keyword="гипсокартон лист")
-    assert "value=\"гипсокартон лист\"" in panel.get(f"/dashboard/web-suppliers?job_id={job}").text or \
-        "value='гипсокартон лист'" in panel.get(f"/dashboard/web-suppliers?job_id={job}").text
+    html = panel.get(f"/dashboard/web-suppliers?job_id={job}").text
+    assert "Ищем по фразе: <b>«гипсокартон лист»</b>" in html and "Найти сайты по новой фразе" in html
 
 
 def test_group_contacts_are_collected_for_sites_of_that_group_only(panel):
