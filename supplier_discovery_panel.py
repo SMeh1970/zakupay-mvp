@@ -242,7 +242,9 @@ def render_page(request, job_id, message, show_all):
                  "Google и Яндекс: ключ SerpAPI подключён." if serpapi_key else
                  "Ключ SerpAPI не задан (SERPAPI_API_KEY): работает только Firecrawl" + (" с ключом." if firecrawl_key else " без ключа, в пределах бесплатного лимита сервиса."))
     notice = f"<div role='status' style='padding:14px;border:2px solid #1a73e8;border-radius:8px;margin:12px 0'><b>{esc(message)}</b></div>" if message else ""
-    body = (f"<h1>Поставщики в интернете</h1>{notice}<section><p>Находит сайты профильных поставщиков по названию позиции. "
+    back_link = (f"<p><a href='/dashboard/automation/jobs/{int(job_id)}/review'>← К заявке</a> · "
+                 "<a href='/dashboard/automation'>Все заявки</a></p>") if job_id else "<p><a href='/dashboard/automation'>← Все заявки</a></p>"
+    body = (f"{back_link}<h1>Поставщики в интернете</h1>{notice}<section><p>Находит сайты профильных поставщиков по названию позиции. "
             "Цены с сайтов не читаются и в подбор или счёт не попадают. Найденный сайт — кандидат: профильность и работу с ним проверяет оператор.</p>"
             f"<p class='note'>{esc(keys_note)} Бюджет: до {cfg['max_requests']} запросов на позицию, "
             f"{cfg['pages_per_click']} страниц за одно нажатие, до {cfg['max_sites']} сайтов.</p></section>")

@@ -3148,6 +3148,13 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
             order = _saved_order_snapshot(row, result) or {}
             order_date, customer_name = _order_list_details(row, result)
             source_items = list(order.get("orderItems") or [])
+            from porcelain import is_tile as _is_tile_item
+            tiles_link_html = (
+                f"<p><a href='/dashboard/automation/jobs/{job_id}/tiles'>Подобрать наш керамогранит и подготовить предложение с доставкой</a></p>"
+                if any(_is_tile_item(str(item.get('goodName') or item.get('name') or '')) for item in source_items)
+                else ""
+            )
+            web_suppliers_link_html = f"<p><a href='/dashboard/web-suppliers?job_id={job_id}'>Поставщики в интернете: найти профильные сайты</a></p>"
             pending_rows = "".join(
                 "<tr>"
                 f"<td><input class='position-checkbox' type='checkbox' name='selected_position' value='{index}' checked></td>"
@@ -3169,8 +3176,8 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
                     f"{actuality_banner_for(script_nonce)}{navigation_notice}"
                     "<p><b>Поиск цен ещё не запускался.</b> Сначала проверьте состав заявки, затем запустите поиск для выбранных позиций.</p>"
                     f"<p><b>Дата заявки:</b> {html.escape(order_date)} · <b>Заказчик:</b> {html.escape(customer_name)}</p>"
-                    f"<p><a href='/dashboard/sniper?job_id={job_id}'>Найти поставщиков или подготовить рассылку через Sniper</a></p>"
-                    f"<p><a href='/dashboard/automation/jobs/{job_id}/tiles'>Подобрать наш керамогранит и подготовить предложение с доставкой</a></p>"
+                    f"{tiles_link_html}"
+                    f"{web_suppliers_link_html}"
                     f"<p><b>Адрес доставки:</b> {html.escape(str(order.get('deliveryAddress') or 'не передан'))}</p>"
                     f"<p>Получено и сохранено позиций: <b>{len(source_items)}</b>. Отметьте строки, для которых нужно найти цены и подготовить предложение.</p>"
                     f"<form method='post' action='/dashboard/automation/jobs/{job_id}/start'>"

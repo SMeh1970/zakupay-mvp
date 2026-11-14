@@ -114,6 +114,25 @@ class ManualPriceSearchTests(unittest.TestCase):
             build.assert_not_called()
             self.fetch.assert_not_called()
 
+    def test_pending_page_hides_sniper_link_and_shows_tiles_link_only_for_ceramic_granite(self):
+        tiles_text = "Подобрать наш керамогранит"
+        sniper_text = "Sniper"
+        plain = pipeline.process_api_order(copy.deepcopy(ORDER))
+        response = self.client.get(f"/dashboard/automation/jobs/{plain['job_id']}/start")
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn(sniper_text, response.text)
+        self.assertNotIn(tiles_text, response.text)
+        self.assertIn(f"/dashboard/web-suppliers?job_id={plain['job_id']}", response.text)
+
+        order = copy.deepcopy(ORDER)
+        order["id"] = str(order.get("id", "1")) + "9"
+        order["orderItems"].append({"goodName": "Керамогранит 600х600 серый матовый", "count": 10, "unit": {"name": "м2"}})
+        tiled = pipeline.process_api_order(order)
+        response = self.client.get(f"/dashboard/automation/jobs/{tiled['job_id']}/start")
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn(sniper_text, response.text)
+        self.assertIn(tiles_text, response.text)
+
     def test_expired_session_during_start_can_recover_and_search_selected_positions(self):
         import security
 
