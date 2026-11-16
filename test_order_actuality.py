@@ -175,6 +175,7 @@ def test_sync_updates_duplicate_actuality_without_overwriting_snapshot(panel):
         before = conn.execute('SELECT result_json FROM automation_jobs WHERE id=?',(job,)).fetchone()[0]
     fetch_all.return_value = [{**order, 'actualityStatus':'CLOSED', 'orderItems':[]}]
     client.post('/dashboard/automation/sync', follow_redirects=False)
+    p.wait_manual_sync()
     with closing(p._connect()) as conn:
         assert conn.execute('SELECT state FROM order_actuality WHERE order_id=123').fetchone()[0] == 'inactive'
         assert conn.execute('SELECT result_json FROM automation_jobs WHERE id=?',(job,)).fetchone()[0] == before
