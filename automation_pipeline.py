@@ -74,6 +74,17 @@ _schema_lock = threading.Lock()
 _initialized_database_key = None
 _poll_lock = threading.Lock()
 _last_api_poll_started = 0.0
+# Manual "Получить из Закупай" runs in a background thread: Zakupay can answer for minutes, and the
+# browser must not wait on the POST.  The state is kept per process (one web worker).
+_manual_sync_lock = threading.Lock()
+_manual_sync = {"thread": None, "started": None, "finished": None, "result": None, "error": None}
+
+
+def wait_manual_sync(timeout=30.0):
+    """Block until the background manual sync ends (used by tests)."""
+    thread = _manual_sync["thread"]
+    if thread is not None:
+        thread.join(timeout)
 logger = logging.getLogger("zakupay.automation")
 
 
@@ -2608,19 +2619,9 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
                      "Cache-Control": "no-store"},
         )
 
-    @app.post("/dashboard/automation/sync")
-    def automation_dashboard_sync():
-        """Operator-triggered import with a graceful fallback to saved data."""
-        if fetch_all_orders is None:
-            return Response(status_code=303, headers={"Location": "/dashboard/automation?sync_error=not_configured"})
-        try:
-            orders = fetch_all_orders(force=True)
-        except HTTPException as exc:
-            logger.warning("manual Zakupay sync unavailable: %s", exc.detail)
-            return Response(status_code=303, headers={"Location": "/dashboard/automation?sync_error=api_unavailable"})
-        except Exception as exc:
-            logger.exception("manual Zakupay sync failed: %s", exc)
-            return Response(status_code=303, headers={"Location": "/dashboard/automation?sync_error=api_unavailable"})
+    def _run_manual_sync():
+        """Import orders from Zakupay; returns counters or raises on upstream failure."""
+        orders = fetch_all_orders(force=True)
         added = duplicates = skipped = 0
         with _lock, _connect() as conn:
             for order in orders:
@@ -2644,10 +2645,36 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
                     duplicates += 1
                 else:
                     added += 1
-        return Response(
-            status_code=303,
-            headers={"Location": f"/dashboard/automation?added={added}&duplicates={duplicates}&skipped={skipped}"},
-        )
+        return {"added": added, "duplicates": duplicates, "skipped": skipped}
+
+    def _manual_sync_worker():
+        try:
+            result = _run_manual_sync()
+            error = None
+        except HTTPException as exc:
+            logger.warning("manual Zakupay sync unavailable: %s", exc.detail)
+            result, error = None, "api_unavailable"
+        except Exception as exc:
+            logger.exception("manual Zakupay sync failed: %s", exc)
+            result, error = None, "api_unavailable"
+        with _manual_sync_lock:
+            _manual_sync.update(finished=time.time(), result=result, error=error)
+
+    @app.post("/dashboard/automation/sync")
+    def automation_dashboard_sync():
+        """Operator-triggered import: starts in the background and returns at once."""
+        if fetch_all_orders is None:
+            return Response(status_code=303, headers={"Location": "/dashboard/automation?sync_error=not_configured"})
+        with _manual_sync_lock:
+            thread = _manual_sync["thread"]
+            if thread is not None and thread.is_alive():
+                return Response(status_code=303, headers={"Location": "/dashboard/automation?sync_notice=running",
+                                                          "Cache-Control": "no-store"})
+            thread = threading.Thread(target=_manual_sync_worker, name="zakupay-manual-sync", daemon=True)
+            _manual_sync.update(thread=thread, started=time.time(), finished=None, result=None, error=None)
+            thread.start()
+        return Response(status_code=303, headers={"Location": "/dashboard/automation?sync_notice=started",
+                                                  "Cache-Control": "no-store"})
 
     @app.api_route("/dashboard/automation/jobs/{job_id}/start", methods=["GET", "HEAD"])
     @app.api_route("/dashboard/automation/jobs/{job_id}/refresh", methods=["GET", "HEAD"])
@@ -2997,7 +3024,28 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
                 "Открытие этой страницы само по себе не запускает загрузку."
                 "</p>"
             )
-        if added or duplicates or skipped:
+        with _manual_sync_lock:
+            sync_snapshot = dict(_manual_sync)
+        sync_finished_ok = False
+        sync_running = sync_snapshot["thread"] is not None and sync_snapshot["thread"].is_alive()
+        refresh_meta = "<meta http-equiv='refresh' content='20'>" if sync_running else ""
+        if sync_running:
+            started_at = datetime.fromtimestamp(sync_snapshot["started"], ZoneInfo("Europe/Moscow")).strftime("%H:%M:%S")
+            sync_report += (
+                "<p style='padding:12px;background:#e8f0fe;border-radius:8px' role='status'>"
+                f"Загрузка из Закупай идёт в фоне (запущена в {started_at} МСК). Закупай может отвечать медленно; "
+                "страница обновится сама. Сохранённые заявки доступны ниже."
+                "</p>"
+            )
+        elif sync_snapshot["finished"] is not None and not (added or duplicates or skipped or sync_error):
+            if sync_snapshot["error"]:
+                sync_error = sync_snapshot["error"]
+            elif sync_snapshot["result"]:
+                sync_finished_ok = True
+                added = sync_snapshot["result"]["added"]
+                duplicates = sync_snapshot["result"]["duplicates"]
+                skipped = sync_snapshot["result"]["skipped"]
+        if added or duplicates or skipped or sync_finished_ok:
             sync_report += (
                 "<p style='padding:12px;background:#e6f4ea;border-radius:8px'>"
                 f"Обновление завершено: новых {added}, уже сохранённых {duplicates}, пропущено {skipped}."
@@ -3014,7 +3062,7 @@ def install_automation_pipeline(app, fetch_order_by_id, fetch_all_orders=None, h
         script_nonce = uuid.uuid4().hex
         response = Response(content=(
             "<!doctype html><html lang='ru'><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
-            "<title>Заявки — Закупай MVP</title><style>body{font-family:Arial;margin:0;background:#f4f6f8;color:#202124}main{max-width:1200px;margin:auto;padding:28px}"
+            "<title>Заявки — Закупай MVP</title>" + refresh_meta + "<style>body{font-family:Arial;margin:0;background:#f4f6f8;color:#202124}main{max-width:1200px;margin:auto;padding:28px}"
             ".filter-panel{background:#fff;border-radius:12px;padding:20px;margin-top:20px}.filters{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:14px;margin-bottom:18px}.filters label{display:block;color:#5f6368;font-size:14px}.filters input,.filters select{width:100%;box-sizing:border-box;margin-top:6px;padding:9px;border:1px solid #c9cdd3;border-radius:7px;background:#fff;color:#202124}details{margin-bottom:18px}summary{cursor:pointer;font-weight:bold;margin-bottom:14px}.pager{display:flex;justify-content:center;align-items:center;gap:18px;margin:22px 0;flex-wrap:wrap}.filter-error{color:#b3261e}.list-count{color:#5f6368}button.button{border:0;cursor:pointer}.empty{background:#fff;padding:24px;border-radius:12px}"
             ".card{display:flex;justify-content:space-between;gap:20px;background:#fff;border-left:7px solid #9aa0a6;border-radius:12px;padding:18px;margin:12px 0;box-shadow:0 2px 8px #0001}.card.read{background:#e9eef3}.card.unread{background:#fff}.card.ok{border-color:#188038}.card.warn{border-color:#f9ab00}.card.bad{border-color:#d93025}.card.processing{border-color:#1a73e8;background:#e8f0fe}.card.offer-created{background:#e6f4ea;border-color:#188038}.offer-badge,.source-badge{display:inline-block;margin-left:12px;padding:5px 9px;border-radius:12px;background:#188038;color:#fff;font-size:12px;font-weight:700;vertical-align:middle}.source-badge{background:#174ea6}.source-badge.manual{background:#7b1fa2}.progress{height:8px;max-width:460px;background:#c7d5ec;border-radius:5px;margin-top:9px;overflow:hidden}.progress span{display:block;height:100%;background:#1a73e8}"
             ".title{font-size:20px;font-weight:700;color:#174ea6;text-decoration:none}.card.read .title{color:#5f6368}.meta{margin-top:8px;color:#5f6368}.actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.button{background:#1a73e8;color:#fff;padding:10px 13px;border-radius:7px;text-decoration:none;font-weight:700}.secondary{background:#5f6368}.send{background:#188038}.sent{display:inline-block;padding:10px 13px;background:#e6f4ea;color:#137333;border-radius:7px;font-weight:700}.muted{color:#777}@media(max-width:760px){.card{display:block}.actions{margin-top:14px}}"

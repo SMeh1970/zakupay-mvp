@@ -82,12 +82,45 @@ class ManualPriceSearchTests(unittest.TestCase):
             self.fetch_all.assert_not_called()
             response = self.client.post("/dashboard/automation/sync", follow_redirects=False)
             self.assertEqual(response.status_code, 303)
+            pipeline.wait_manual_sync()
             self.fetch_all.assert_called_once_with(force=True)
             with pipeline._connect() as conn:
                 job = conn.execute("SELECT status,invoice_number FROM automation_jobs").fetchone()
             self.assertEqual(job["status"], "pending_search")
             self.assertIsNone(job["invoice_number"])
             build.assert_not_called()
+
+    def test_sync_post_returns_at_once_while_zakupay_is_slow(self):
+        import threading, time as _time
+        release = threading.Event()
+
+        def slow_fetch(force=False, api_filters=None):
+            release.wait(10)
+            return []
+        self.fetch_all.side_effect = slow_fetch
+        started = _time.monotonic()
+        response = self.client.post("/dashboard/automation/sync", follow_redirects=False)
+        self.assertLess(_time.monotonic() - started, 2)
+        self.assertEqual(response.status_code, 303)
+        self.assertIn("sync_notice=started", response.headers["location"])
+        again = self.client.post("/dashboard/automation/sync", follow_redirects=False)
+        self.assertIn("sync_notice=running", again.headers["location"])
+        self.assertEqual(self.fetch_all.call_count, 1)  # no second parallel import
+        page = self.client.get("/dashboard/automation")
+        self.assertIn("Загрузка из Закупай идёт в фоне", page.text)
+        self.assertIn("http-equiv='refresh'", page.text)
+        release.set()
+        pipeline.wait_manual_sync()
+        page = self.client.get("/dashboard/automation")
+        self.assertNotIn("идёт в фоне", page.text)
+        self.assertIn("Обновление завершено", page.text)
+
+    def test_sync_failure_in_background_is_reported_and_keeps_saved_orders(self):
+        from fastapi import HTTPException
+        self.fetch_all.side_effect = HTTPException(status_code=502, detail="timeout")
+        self.client.post("/dashboard/automation/sync", follow_redirects=False)
+        pipeline.wait_manual_sync()
+        self.assertIn("Закупай временно не отдал список заявок", self.client.get("/dashboard/automation").text)
 
     def test_get_and_head_on_search_actions_return_to_review_without_search(self):
         saved = pipeline.process_api_order(copy.deepcopy(ORDER))
@@ -207,6 +240,7 @@ class ManualPriceSearchTests(unittest.TestCase):
             self.assertIn("Найти цены по выбранным позициям", review.text)
             self.assertEqual(self.client.get(f"/dashboard/automation/jobs/{job_id}/invoice.xlsx").status_code, 409)
             self.client.post("/dashboard/automation/sync", follow_redirects=False)
+            pipeline.wait_manual_sync()
             build.assert_not_called()
             self.fetch.assert_not_called()  # Missing line IDs do not trigger an extra order lookup at intake.
 

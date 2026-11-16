@@ -434,7 +434,8 @@ class SavedDashboardTests(unittest.TestCase):
         with patch.object(pipeline, "build_vi_draft") as search:
             response = self.client.post("/dashboard/automation/sync", follow_redirects=False)
             self.assertEqual(response.status_code, 303)
-            self.assertIn("added=1", response.headers["location"])
+            pipeline.wait_manual_sync()
+            self.assertEqual(pipeline._manual_sync["result"]["added"], 1)
             self.assertEqual(len(self.ids(order_id="999")), 1)
             search.assert_not_called()
 
@@ -457,10 +458,14 @@ class SavedDashboardTests(unittest.TestCase):
     def test_repeat_import_preserves_viewed_state_and_does_not_duplicate_saved_requests(self):
         self.client.get(f"/dashboard/automation/jobs/{self.first['job_id']}/review")
         self.fetch_all.return_value = [copy.deepcopy(ORDER), {**copy.deepcopy(ORDER), "id": 777}]
-        first = self.client.post("/dashboard/automation/sync", follow_redirects=False)
-        second = self.client.post("/dashboard/automation/sync", follow_redirects=False)
-        self.assertIn("added=1&duplicates=1", first.headers["location"])
-        self.assertIn("added=0&duplicates=2", second.headers["location"])
+        self.client.post("/dashboard/automation/sync", follow_redirects=False)
+        pipeline.wait_manual_sync()
+        first = dict(pipeline._manual_sync["result"])
+        self.client.post("/dashboard/automation/sync", follow_redirects=False)
+        pipeline.wait_manual_sync()
+        second = dict(pipeline._manual_sync["result"])
+        self.assertEqual((first["added"], first["duplicates"]), (1, 1))
+        self.assertEqual((second["added"], second["duplicates"]), (0, 2))
         self.assertEqual(self.ids(viewed="yes"), [str(self.first["job_id"])])
         self.assertEqual(len(self.ids(order_id="777")), 1)
 
