@@ -313,11 +313,15 @@ const save=()=>{storeState();syncChosen()};
 const metaOf=(pos,p)=>pos.products[p.i]?.[3]||{};
 const isChosen=(pos,p)=>{if(state.chosen?.[pos.id]!==p.name)return false;const k=state.chosenKey?.[pos.id];return !k||!metaOf(pos,p).key||metaOf(pos,p).key===k};
 function chooseToggle(pos,p){
+  const was=isChosen(pos,p);
   state.chosen=state.chosen||{};state.chosenKey=state.chosenKey||{};
   if(isChosen(pos,p)){state.chosen[pos.id]=undefined;delete state.chosenKey[pos.id]}
   else{state.chosen[pos.id]=p.name;state.chosenKey[pos.id]=metaOf(pos,p).key}
   if(state.chosenKey[pos.id]!==syncedKey[pos.id]&&state.chosen[pos.id]!=null)synced[pos.id]=undefined; // другой товар с тем же названием
-  save();render();
+  save();
+  // The tick «после выбора — закрыть»: a product just chosen closes the position and opens the next one in the list.
+  if(!was&&state.autoNext){const i=state.positions.findIndex(x=>x.id===pos.id), nx=state.positions[i+1];state.active=nx?nx.id:null;save();render();setTimeout(()=>document.getElementById('row-'+(nx?nx.id:pos.id))?.scrollIntoView({block:'start',behavior:'smooth'}),0);return}
+  render();
 }
 // Поставщик мелкой строкой и фото по нажатию: картинка грузится с сайта поставщика только после нажатия.
 function productMeta(pos,p){
@@ -667,7 +671,7 @@ function model(pos){
   const marks=new Map(), skipped=new Set();
   for(const w of counts.keys()){
     const u=saved[w];
-    if(u==='only'||u==='also'||u==='rejected')marks.set(w,{s:u,by:'user'});
+    if(u==='only'||u==='also'||u==='rejected')marks.set(w,{s:u==='also'?'only':u,by:'user'}); // the «+» state is gone: an old «+» is read as ✓
   }
   const pick=s=>[...marks].filter(([,m])=>m.s===s).map(([w])=>w);
   // ✓ — the value must be there; + — products with this value are shown too, as an analog / replacement.
@@ -746,7 +750,8 @@ function model(pos){
         if(f==='Материал'&&[...ks].some(k=>labels.get(k)==='пластиковый')&&[...o].some(k=>PLASTICS.has(labels.get(k)))){same.push({f,want:[...ks],has:[...o]});continue} // a guess does not count as a difference
         ([...o].some(k=>ks.has(k))?same:diff).push({f,want:[...ks],has:[...o]});
       }
-      const analog=same.some(x=>x.has.some(k=>marks.get(k)?.s==='also')&&!x.has.some(k=>marks.get(k)?.s==='only'||reqKeys.includes(k)));
+      // Analog / replacement is set automatically: the rubric has an active value in the request, you ticked ✓ another value there, and the product has that value but not the request's one.
+      const analog=same.some(x=>x.has.some(k=>marks.get(k)?.by==='user'&&marks.get(k)?.s==='only'&&!reqKeys.includes(k))&&reqKeys.some(k=>k.startsWith('f|')&&fieldOf.get(k)===x.f&&marks.get(k)?.s==='only')&&!x.has.some(k=>reqKeys.includes(k)));
       const dReq=diff.filter(x=>!fromRef.has(x.f)), dRef=diff.filter(x=>fromRef.has(x.f));
       list.push({p,same,diff,dReq,dRef,unknown,total:same.length+diff.length,analog,anchor:p===ref});
     }
@@ -819,13 +824,12 @@ function renderPosition(pos){
   const helpBody=el('div',{class:'help-body'},el('button',{type:'button',class:'help-close','aria-label':'Закрыть пояснение',onclick:()=>{help.open=false}},'×'));
   help.append(helpBody);
   wp.append(el('div',{class:'panel-head'},el('h2',{},'Характеристики найденных товаров'),help));
-  helpBody.append(el('p',{class:'hint'},'✓ — показать товары с этим значением. + — показать также товары с этим значением как аналог / замену (идут после основных, с пометкой). В одной рубрике отмеченные значения — «или», разные рубрики — «и». ✕ — убрать товары с этим значением. Чтобы вернуть остальные товары, снимите отметки. У названия рубрики ✓ — только товары, где эта характеристика указана, ✕ — убрать их. Число в скобках — сколько оставшихся товаров содержат значение.'));
+  helpBody.append(el('p',{class:'hint'},'✓ — обязательно: показать товары с этим значением. В одной рубрике отмеченные значения — «или», разные рубрики — «и». Если в заявке в этой рубрике уже есть значение, а вы отметили ✓ другое, товары с ним идут после основных с пометкой «аналог / замена». ✕ — исключить: убрать товары с этим значением. Чтобы вернуть остальные товары, снимите отметки. У названия рубрики ✓ — только товары, где эта характеристика указана, ✕ — убрать их. Число в скобках — сколько оставшихся товаров содержат значение.'));
   // Legend: each state drawn exactly as the value looks in the list, with one line of meaning.
   const sample=(cls,text,n,pressed)=>{const b=(sym,on,extra='')=>el('button',{type:'button',tabindex:-1,'aria-hidden':'true',class:extra,'aria-pressed':String(on)},sym);
-    return el('span',{class:'w '+cls},text,el('span',{class:'n'},`(${n})`),b('✓',pressed==='only','bk'),b('+',pressed==='also','ba'),b('✕',pressed==='rejected','bx'))};
+    return el('span',{class:'w '+cls},text,el('span',{class:'n'},`(${n})`),b('✓',pressed==='only','bk'),b('✕',pressed==='rejected','bx'))};
   const legend=[
     [sample('mk mk-only','M8',4,'only'),'Рамка зелёная — вы отметили ✓: показаны товары с этим значением'],
-    [sample('mk mk-also','M10',1,'also'),'Рамка жёлтая — вы отметили +: такие товары показаны как аналог / замена'],
     [sample('mk mk-rejected','держатель',0,'rejected'),'Рамка красная — вы отметили ✕: товары с этим значением убраны'],
     [sample('s-only','шпилька',4,'only'),'Заливка — совпадает с заявкой (программа отобрала по нему сама)'],
     [sample('w cmp-diff','М12',1,null),'Оранжевая заливка — отличие при сравнении товаров'],
@@ -854,9 +858,9 @@ function renderPosition(pos){
     const fs=w.startsWith('w|')?(M.forms.get(w)||[]):[];
     const tip=[`${cap(what)} — ${stateWord(m)}`,isReq&&M.skipped.has(w)?'Есть в заявке, но не применено: с этим не остаётся ни одного товара':'',fs.length>1?'Формы: '+fs.join(', '):''].filter(Boolean).join('\n');
     const node=el('span',{class:cls,title:tip},text+(fs.length>1?'*':''),el('span',{class:'n'},`(${n})`),
-      el('button',{class:'bk',type:'button','aria-label':'Только товары, где '+what,title:s==='only'?'Снять выбор: '+what:'Показывать, где '+what,'aria-pressed':String(s==='only'||(m?.by==='auto')),onclick:()=>toggle(pos,w,'only',m,isReq)},'✓'));
-    if(!w.startsWith('r|'))node.append(el('button',{class:'ba',type:'button','aria-label':'Также, как аналог: '+what,title:s==='also'?'Снять выбор: '+what:'Показывать также, где '+what+' (аналог / замена)','aria-pressed':String(s==='also'),onclick:()=>toggle(pos,w,'also',m,isReq)},'+'));
-    node.append(el('button',{class:'bx',type:'button','aria-label':'Убрать товары, где '+what,title:s==='rejected'?'Снять выбор: '+what:'Не показывать, где '+what,'aria-pressed':String(s==='rejected'),onclick:()=>toggle(pos,w,'rejected',m,isReq)},'✕'));
+      el('button',{class:'bk',type:'button','aria-label':'Только товары, где '+what,title:'Обязательно','aria-pressed':String(s==='only'||(m?.by==='auto')),onclick:()=>toggle(pos,w,'only',m,isReq)},'✓'));
+    
+    node.append(el('button',{class:'bx',type:'button','aria-label':'Убрать товары, где '+what,title:'Исключить','aria-pressed':String(s==='rejected'),onclick:()=>toggle(pos,w,'rejected',m,isReq)},'✕'));
     return node;
   };
   // Only ✓ and ✕ beside a rubric name: products where it is stated / not stated.
@@ -969,8 +973,8 @@ function renderPosition(pos){
   pp.append(el('p',{class:'hint'},best?`Лучшая цена за ${unit(pos.unit)}: ${money(best.unitPrice)} — на ${num(pos.qty)} ${pos.unit} нужно купить ${num(best.buy)} ${best.unit}, сумма ${money(best.total)}.`:exact.length?`Подходящие есть, но цену за ${pos.unit} не посчитать: ${exact[0].p.note||'нет пересчёта единиц поставщика в единицы заявки'}.`:'Товаров со всеми характеристиками заявки нет — смотрите близкие ниже.'));
   const head=[el('tr',{class:'group'},el('th',{colspan:2,class:'g-start'},'Данные заявки'),el('th',{colspan:6,class:'g-start g-end'},'Данные поставщика'),el('th',{})),
     el('tr',{},el('th',{class:'g-start'},'Ед. изм.'),el('th',{},'Кол-во'),el('th',{class:'g-start'},'Товар'),el('th',{},'Ед. изм.'),el('th',{},'Кол-во'),el('th',{},'Цена'),sortHead('unit','Цена за ед. заявки'),sortHead('total','Сумма','g-end'),el('th',{},''))];
-  // Table values: quick presses — 1 ✓ green, 2 + yellow, 3 ✕ red, 4 no mark; applied 0.35 s after the last.
-  const BY_COUNT=['only','also','rejected','none'], SYM={only:'✓ ',also:'+ ',rejected:'✕ ',none:''};
+  // Table values: quick presses — 1 ✓ green, 2 ✕ red, 3 no mark; applied 0.35 s after the last.
+  const BY_COUNT=['only','rejected','none'], SYM={only:'✓ ',also:'+ ',rejected:'✕ ',none:''};
   const STATE={only:'выбрано мной',also:'аналог / замена',rejected:'исключено',none:'не выбрано'};
   // In the product name only the fill shows the mark — no ✓/+/✕ signs inside the text.
   const valueButton=(k,raw)=>{const lab=raw??M.label(k), sym=st=>raw!=null?'':SYM[st];
@@ -979,9 +983,9 @@ function renderPosition(pos){
     const cls=st=>'w cyc'+(isReq&&st!=='none'&&st!=='rejected'?' s-only':'')+(framed&&st!=='none'?' mk mk-'+st:'');
     let presses=0, timer=null;
     const button=el('button',{type:'button',class:cls(s),
-      title:`${M.fieldOf.get(k)?M.fieldOf.get(k)+' '+M.label(k):'Слово «'+M.label(k)+'»'} — ${stateWord(M.marks.get(k))}\nНажмите: 1 раз — выбрано мной, 2 — аналог / замена, 3 — исключить, 4 — снять выбор`,
+      title:'1 клик — обязательно, 2 клика — исключить. Снятие фильтра в боковой панели',
       'aria-label':`${M.named(k)}: ${STATE[s]}`,
-      onclick:()=>{presses=Math.min(presses+1,4);const st=BY_COUNT[presses-1];framed=true;
+      onclick:()=>{presses=Math.min(presses+1,3);const st=BY_COUNT[presses-1];framed=true;
         button.className=cls(st)+['inl','cmp-diff'].filter(c=>button.classList.contains(c)).map(c=>' '+c).join(''); // keep the look of a part of the namebutton.textContent=sym(st)+lab;
         clearTimeout(timer);timer=setTimeout(()=>setMark(pos,k,st==='none'?(isReq?'none':null):st),350);}},sym(s)+lab);
     return button;
@@ -1362,10 +1366,13 @@ function render(){
     if(open){
       const i=state.positions.indexOf(r.pos);
       const prev=state.positions[i-1], next=state.positions[i+1], nextTodo=order.find(id=>state.positions.findIndex(p=>p.id===id)>i)||order.find(id=>id!==r.pos.id);
-      // A tick closes the row once a product is chosen (✓ cart): the position then shows in the table above as chosen.
-      const doneBox=()=>{
-        return el('label',{class:'doneck',title:'Закрыть строку позиции; выбор товара сохраняется отдельно'},
-          el('input',{type:'checkbox','aria-label':'Готово — закрыть строку',onchange:e=>{if(!e.target.checked)return;state.active=null;save();render();setTimeout(()=>document.getElementById('row-'+r.pos.id)?.scrollIntoView({block:'center'}),0)}}),'Готово — закрыть строку')};
+      // The tick is a mode, kept for all positions: with it on, choosing a product (cart) closes the position and opens the next one, tick already on.
+      // Ticked after the product is already chosen — closes now and opens the next.
+      const doneBox=()=>el('label',{class:'doneck',title:'Поставьте галочку заранее: после выбора товара (корзинка) позиция закроется и откроется следующая'},
+          el('input',{type:'checkbox',checked:!!state.autoNext,'aria-label':'После выбора закрыть позицию и открыть следующую',onchange:e=>{
+            state.autoNext=e.target.checked;save();
+            if(state.autoNext&&r.st.code==='done'){const nx=state.positions[i+1];state.active=nx?nx.id:null;save();render();setTimeout(()=>document.getElementById('row-'+(nx?nx.id:r.pos.id))?.scrollIntoView({block:'start',behavior:'smooth'}),0);return}
+            render();}}),'После выбора — закрыть и открыть следующую');
       const nav=el('div',{class:'posnav'},
         el('button',{class:'btn',disabled:!prev,onclick:()=>prev&&go(prev.id)},'← Предыдущая'),
         el('button',{class:'btn',disabled:!next,onclick:()=>next&&go(next.id)},'Следующая →'),
