@@ -389,6 +389,8 @@ function unit(u){
   if(['шт','штука','штуки','штук'].includes(s))return 'шт';
   if(s.startsWith('упак'))return 'упак';
   if(s.startsWith('рулон'))return 'рулон';
+  // Price lists abbreviate a pair as «пар»: it is the same unit as the request's «пара».
+  if(['пар','пара','пары'].includes(s))return 'пара';
   return s;
 }
 // Pieces in one supplier unit: «(50 шт.)», «, 5 шт.», «(2шт)».
