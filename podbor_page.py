@@ -169,6 +169,15 @@ def ask_ai(payload):
         raise HTTPException(502, "ИИ вернул ответ не в формате JSON")
 
 
+def _known_brands():
+    """Brands the app already knows (the page adds its own list and what the person types)."""
+    try:
+        from vi_order_match import _KNOWN_BRANDS
+        return set(_KNOWN_BRANDS)
+    except Exception:  # noqa: BLE001 - the page works with its own list
+        return set()
+
+
 def install(app):
     from automation_pipeline import _connect, _execute, _lock
     from supplier_comparison import _csrf, _session, revision
@@ -220,6 +229,7 @@ def install(app):
             "revision": revision(row["result_json"]), "csrf": _csrf(request),
             "action_url": base + "/comparison/action", "state_url": base + "/podbor/state", "ai_url": base + "/podbor/ai",
             "best_url": "" if is_manual else base + "/podbor/best",
+            "brands": sorted(_known_brands()),
             "ai": _ai_enabled(),
             "links": [],
         }

@@ -27,6 +27,13 @@ h1{font-size:20px;font-weight:600;margin:0;text-wrap:balance}
 .pos-work>.req{position:sticky;top:0;z-index:15;box-shadow:0 2px 6px rgb(0 0 0 / .08)}
 /* The summary table is wrapped for horizontal scrolling; a scrolling wrapper would keep the sticky title from following the page. On wide screens the table fits, so no wrapper scroll. */
 @media (min-width:900px){.tablewrap.summary-wrap{overflow:visible}}
+.clean{display:grid;gap:8px;padding:12px 14px}
+.clean-head{display:flex;flex-wrap:wrap;gap:6px 12px;align-items:baseline}
+.clean-text{width:100%;box-sizing:border-box;font:13px/1.5 var(--mono);padding:8px;border:1px solid var(--line);border-radius:6px;resize:vertical}
+.clean-row{display:flex;gap:10px;align-items:center}
+.clean-label{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.clean-brands{flex:1;min-width:220px;padding:5px 8px;border:1px solid var(--line);border-radius:6px;font:inherit}
+.chip{margin:2px 4px 2px 0;padding:1px 8px;border:1px solid var(--line);border-radius:999px;background:var(--panel);cursor:pointer;font:inherit}
 .req .meta{color:var(--muted);font-family:var(--mono);font-size:13px}
 .grid{display:grid;grid-template-columns:fit-content(250px) minmax(0,1fr);gap:14px;align-items:start}
 /* Half a screen still shows filters and table side by side; one column only on a phone. */
@@ -1196,6 +1203,55 @@ function compareParse(name){
   const rk=new Set(rules.map(key)), ok=ai.filter(f=>!f.why&&f.field!=='Код / артикул'), ak=new Set(ok.map(key));
   return {same:rules.filter(f=>ak.has(key(f))),onlyRules:rules.filter(f=>!ak.has(key(f))),onlyAi:ok.filter(f=>!rk.has(key(f))),rejected:ai.filter(f=>f.why)};
 }
+/* ---------- Очистка: заявка без названий брендов (чтобы скопировать и искать товары в интернете) ---------- */
+// Brands are taken only from lists: the page's own list (BRANDS), the app's list (APP.brands) and what the person typed in «Свои бренды».
+// A brand that is in none of them stays in the text: it is listed under «Возможные бренды» to be added by one click.
+const brandPhrases=extra=>[...BRANDS,...(APP.brands||[]),...String(extra||'').split(/[,;\n]/)]
+  .map(b=>String(b).toLowerCase().replaceAll('ё','е').split(/\s+/).filter(Boolean)).filter(a=>a.length);
+function cleanName(name,extra){
+  const text=String(name||''), toks=[...text.matchAll(WORD)].map(m=>({w:m[0].toLowerCase().replaceAll('ё','е'),s:m.index,e:m.index+m[0].length}));
+  const phrases=brandPhrases(extra), cut=[], removed=[];
+  for(let i=0;i<toks.length;i++)for(const ph of phrases)
+    if(ph.every((x,j)=>toks[i+j]&&toks[i+j].w===x)){cut.push([toks[i].s,toks[i+ph.length-1].e]);removed.push(ph.join(' '))}
+  let out='',pos=0;
+  for(const[a,b]of cut.sort((x,y)=>x[0]-y[0])){if(a<pos)continue;out+=text.slice(pos,a);pos=b}
+  out+=text.slice(pos);
+  out=out.replace(/(«|"|\()\s*(»|"|\))/g,' ').replace(/\s{2,}/g,' ').replace(/\s+([,.;:)»])/g,'$1').replace(/([(«])\s+/g,'$1')
+    .replace(/^[\s,;:.\-–—]+|[\s,;:\-–—]+$/g,'').trim();
+  return {text:out,removed};
+}
+// Latin words that stay in the cleaned names: likely brands that no list knows yet.
+const NOT_BRAND=new Set(['din','iso','gost','hss','aisi','pvc','pe','pp','led','ip','ral','gp']);
+function possibleBrands(names,extra){
+  const known=new Set(brandPhrases(extra).flat()),seen=new Map();
+  for(const n of names)for(const m of cleanName(n,extra).text.matchAll(WORD)){
+    const w=m[0].toLowerCase();
+    if(/^[a-z]{3,}$/.test(w)&&!known.has(w)&&!NOT_BRAND.has(w)&&!seen.has(w))seen.set(w,m[0]);
+  }
+  return [...seen.values()];
+}
+function cleanPanel(rows){
+  const extra=state.brands||'', box=el('section',{class:'panel clean','aria-label':'Заявка без брендов'});
+  const names=rows.map(r=>r.pos.name), cleaned=rows.map(r=>({r,c:cleanName(r.pos.name,extra)}));
+  const text=cleaned.map(({r,c})=>`${r.n}. ${c.text}${r.pos.qty!=null?` — ${num(r.pos.qty)} ${r.pos.unit||''}`.trimEnd():''}`).join('\n');
+  const area=el('textarea',{class:'clean-text',readonly:true,rows:Math.min(18,rows.length+1),'aria-label':'Заявка без брендов'});area.value=text;
+  const msg=el('span',{class:'note',role:'status'});
+  const copy=el('button',{type:'button',class:'btn',onclick:async()=>{
+    let ok=false;try{await navigator.clipboard.writeText(text);ok=true}catch(e){area.select();try{ok=document.execCommand('copy')}catch(e2){}}
+    msg.textContent=ok?'Скопировано.':'Не удалось скопировать: выделите текст и скопируйте вручную.'}},'Копировать');
+  const input=el('input',{type:'text',class:'clean-brands',placeholder:'например: Hesler, Accurate, Berlin',value:extra,'aria-label':'Свои бренды через запятую',
+    onchange:e=>{state.brands=e.target.value;save();render()}});
+  const gone=[...new Set(cleaned.flatMap(x=>x.c.removed))], maybe=possibleBrands(names,extra);
+  box.append(el('div',{class:'clean-head'},el('b',{},'Заявка без брендов'),el('span',{class:'note'},'Скопируйте и ищите эти товары в интернете.'),
+      el('button',{type:'button',class:'btn',onclick:()=>{state.cleanOpen=false;save();render()}},'Закрыть')),
+    area,el('div',{class:'clean-row'},copy,msg),
+    el('label',{class:'clean-label'},'Свои бренды (через запятую): ',input),
+    el('p',{class:'note'},gone.length?`Убрано: ${gone.join(', ')}.`:'Ни одного бренда из списков в названиях не найдено.'),
+    maybe.length?el('div',{class:'note'},'Возможные бренды (латиницей, остались в тексте — нажмите, чтобы убрать): ',
+      ...maybe.map(w=>el('button',{type:'button',class:'chip',onclick:()=>{state.brands=(state.brands?state.brands+', ':'')+w;save();render()}},w))):null,
+    el('p',{class:'note'},'Бренд убирается только если он есть в списке известных или в «Своих брендах»: остальные остаются в названии.'));
+  return box;
+}
 function aiPanel(){
   const box=el('details',{class:'aipanel',open:!!state.aiOpen});
   box.addEventListener('toggle',()=>{state.aiOpen=box.open;save()});
@@ -1372,7 +1428,9 @@ function render(){
   const shown=rows.filter(r=>filter==='all'||r.st.code===filter);
   const done=rows.filter(r=>r.st.code==='done');
   const sum=done.reduce((s,r)=>s+(r.st.offer.total||0),0);
-  main.append(el('p',{class:'totals'},`Выбрано: ${done.length} из ${rows.length} · Итого по выбранным: `,el('b',{},money(sum))));
+  main.append(el('p',{class:'totals'},`Выбрано: ${done.length} из ${rows.length} · Итого по выбранным: `,el('b',{},money(sum)),' ',
+    el('button',{type:'button',class:'btn','aria-pressed':String(!!state.cleanOpen),title:'Показать заявку без названий брендов, чтобы скопировать',onclick:()=>{state.cleanOpen=!state.cleanOpen;save();render()}},'Очистка')));
+  if(state.cleanOpen)main.append(cleanPanel(rows));
   const order=rows.filter(r=>r.st.code==='todo').map(r=>r.pos.id);
   const go=id=>{state.active=id;save();render();setTimeout(()=>document.getElementById('row-'+id)?.scrollIntoView({block:'start',behavior:'smooth'}),0)};
   const tb=el('tbody');
