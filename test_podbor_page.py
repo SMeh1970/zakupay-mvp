@@ -46,6 +46,46 @@ class PodborPageTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.text)
         return json.loads(re.search(r'id="podbor-data">(.*?)</script>', response.text, re.S)[1]), response
 
+    def test_competitor_best_is_matched_by_order_item_id_only(self):
+        result = {"items": [{"position": 1, "order_item_id": 11}, {"position": 2, "order_item_id": 12},
+                            {"position": 3, "order_item_id": 13}, {"position": 4}]}
+        order = {"orderItems": [
+            {"id": 11, "bestOfferItem": " Скотч 48мм ", "companiesWithOffersCount": 3},
+            {"id": 12, "bestOfferItem": None, "companiesWithOffersCount": 0},
+            {"id": 13, "bestOfferItem": "Чужой", "companiesWithOffersCount": 2}]}
+        prices = {11: {"bestPrice": {"price": 29.7, "priceInDefaultCurrency": 29.7, "currency": "₽"}},
+                  12: {"bestPrice": None}, 14: {"bestPrice": {"price": 5, "priceInDefaultCurrency": 5}}}
+        out = podbor_page.competitor_best(result, order, prices)
+        self.assertEqual(out, {"p1": {"price": 29.7, "name": "Скотч 48мм", "offers": 3},
+                               "p2": {"price": None, "name": None, "offers": 0}})  # p3: no price; p4: no id; id 14 is not ours
+
+    def test_best_endpoint_gives_prices_names_and_never_breaks_the_page(self):
+        result = json.loads(json.dumps(self.result))
+        result["items"][0]["order_item_id"] = 77
+        with pipeline._connect() as conn:
+            conn.execute("UPDATE automation_jobs SET result_json=? WHERE id=?", (json.dumps(result), self.job))
+        data, _ = self.data()
+        self.assertTrue(data["best_url"].endswith("/podbor/best"))
+        row = {77: {"bestPrice": {"price": 240.75, "priceInDefaultCurrency": 240.75, "currency": "₽"}}}
+        live = {"orderItems": [{"id": 77, "bestOfferItem": "Грунтовка БС-321", "companiesWithOffersCount": 4}]}
+        with patch("browser_prices.fetch_best_prices", return_value={"ok": True, "enabled": True, "prices": row, "errors": []}) as fetch, \
+             patch("main.fetch_order_by_id", return_value=live):
+            body = self.client.get(self.url + "/best")
+        self.assertEqual(body.status_code, 200)
+        self.assertEqual(fetch.call_args.args[0], [77])
+        self.assertEqual(body.json()["items"], {"p1": {"price": 240.75, "name": "Грунтовка БС-321", "offers": 4}})
+        # live order unavailable: the price still shows, without a name
+        with patch("browser_prices.fetch_best_prices", return_value={"ok": True, "enabled": True, "prices": row, "errors": []}), \
+             patch("main.fetch_order_by_id", side_effect=RuntimeError("down")):
+            body = self.client.get(self.url + "/best").json()
+        self.assertEqual(body["items"]["p1"], {"price": 240.75, "name": None, "offers": None})
+        self.assertFalse(body["names"])
+        # source not configured / session expired: a note, no prices, no error
+        with patch("browser_prices.fetch_best_prices", return_value={"ok": False, "enabled": False, "prices": {}, "errors": ["not_configured"]}):
+            body = self.client.get(self.url + "/best").json()
+        self.assertEqual((body["ok"], body["items"]), (False, {}))
+        self.assertIn("не настроен", body["note"])
+
     def test_page_serves_the_stand_with_request_positions(self):
         data, response = self.data()
         self.assertTrue(response.text.startswith("<!doctype html>"))

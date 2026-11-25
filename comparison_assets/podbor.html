@@ -218,6 +218,8 @@ form.add textarea{min-height:180px;font-family:var(--mono);font-size:13px}
 (() => {
 /* APP: позиции заявки и сохранённые решения приходят из приложения (вместо примеров стенда). */
 const APP=JSON.parse(document.getElementById('podbor-data').textContent);
+// Best competitor offer per position from Zakupay (price per request unit, VAT included): {pid:{price,name,offers}}; filled after the page loads.
+let compBest={};
 const EXAMPLES=APP.positions;
 
 /* ---------- Storage (per viewer convenience) ---------- */
@@ -973,6 +975,9 @@ function renderPosition(pos){
   if(M.reference)pp.append(el('p',{class:'hint'},'Эталон: ',el('b',{},M.reference.name),' — его характеристики дополняют заявку при сравнении; характеристики заявки важнее. ',
     el('button',{class:'btn',onclick:()=>{delete state.anchor[pos.id];save();render()}},'Убрать эталон')));
   pp.append(el('p',{class:'hint'},best?`Лучшая цена за ${unit(pos.unit)}: ${money(best.unitPrice)} — на ${num(pos.qty)} ${pos.unit} нужно купить ${num(best.buy)} ${best.unit}, сумма ${money(best.total)}.`:exact.length?`Подходящие есть, но цену за ${pos.unit} не посчитать: ${exact[0].p.note||'нет пересчёта единиц поставщика в единицы заявки'}.`:'Товаров со всеми характеристиками заявки нет — смотрите близкие ниже.'));
+  {const c=compBest[pos.id];
+   if(c&&c.price!=null)pp.append(el('p',{class:'hint'},el('b',{},'Лучшая цена конкурента в Закупай: '),`${money(c.price)} за ${unit(pos.unit)} с НДС`,c.name?` — «${c.name}»`:'',c.offers?` · предложений: ${c.offers}`:''));
+   else if(c&&c.offers===0)pp.append(el('p',{class:'hint'},'В Закупай предложений конкурентов по этой позиции пока нет.'))}
   const head=[el('tr',{class:'group'},el('th',{colspan:2,class:'g-start'},'Данные заявки'),el('th',{colspan:6,class:'g-start g-end'},'Данные поставщика'),el('th',{})),
     el('tr',{},el('th',{class:'g-start'},'Ед. изм.'),el('th',{},'Кол-во'),el('th',{class:'g-start'},'Товар'),el('th',{},'Ед. изм.'),el('th',{},'Кол-во'),el('th',{},'Цена'),sortHead('unit','Цена за ед. заявки'),sortHead('total','Сумма','g-end'),el('th',{},''))];
   // Table values: quick presses — 1 ✓ green, 2 ✕ red, 3 no mark; applied 0.35 s after the last.
@@ -1395,5 +1400,6 @@ document.getElementById('app-title').textContent=APP.title;document.title=APP.ti
 if(APP.local){const sub=document.querySelector('header .sub');if(sub)sub.textContent='Стенд: та же страница «Подбор товаров», что в приложении, на примерах. Решения хранятся только в этом браузере, в счёт ничего не уходит.'}
 for(const[href,text]of APP.links){const a=document.createElement('a');a.href=href;a.textContent=text;document.getElementById('app-nav').append(a)}
 render();
+if(APP.best_url)fetch(APP.best_url,{credentials:'same-origin'}).then(r=>r.ok?r.json():null).then(d=>{if(d&&d.items){compBest=d.items;render()}}).catch(()=>{});
 })();
 </script>

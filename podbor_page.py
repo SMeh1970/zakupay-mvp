@@ -65,6 +65,32 @@ def positions(result, heading):
     return out, chosen, chosen_key
 
 
+def competitor_best(result, order, prices):
+    """Best competitor offer Zakupay shows for each request line: {pid: {price, name, offers}}.
+
+    Matched strictly by the Zakupay order-item id. `prices` is the getoffersdeviationpercent answer
+    (price per request unit, VAT included), `order` is the live order whose lines carry the name of
+    the offered product (`bestOfferItem`) and the number of competing offers. Nothing is guessed:
+    a line without a price or without a live order line keeps only what is really known."""
+    from browser_prices import best_price_value, _item_id
+    lines = {_item_id(line.get("id")): line for line in (order or {}).get("orderItems") or []}
+    out = {}
+    for item in result.get("items") or []:
+        oid = _item_id(item.get("order_item_id"))
+        if oid is None:
+            continue
+        line = lines.get(oid) or {}
+        offered = line.get("bestOfferItem")
+        if isinstance(offered, dict):
+            offered = next((offered[k] for k in ("goodName", "name", "productName", "offerName", "title") if isinstance(offered.get(k), str)), None)
+        entry = {"price": best_price_value((prices or {}).get(oid)),
+                 "name": offered.strip() if isinstance(offered, str) and offered.strip() else None,
+                 "offers": line.get("companiesWithOffersCount") if isinstance(line.get("companiesWithOffersCount"), int) else None}
+        if entry["price"] is not None or entry["offers"] == 0:
+            out[f"p{item.get('position')}"] = entry
+    return out
+
+
 def page_html(data, nonce, top=""):
     text = ASSET.read_text(encoding="utf-8")
     serialized = json.dumps(data, ensure_ascii=False, allow_nan=False).replace("<", "\\u003c").replace("&", "\\u0026")
@@ -193,6 +219,7 @@ def install(app):
             "state": json.loads(saved["state_json"]) if saved else None,
             "revision": revision(row["result_json"]), "csrf": _csrf(request),
             "action_url": base + "/comparison/action", "state_url": base + "/podbor/state", "ai_url": base + "/podbor/ai",
+            "best_url": "" if is_manual else base + "/podbor/best",
             "ai": _ai_enabled(),
             "links": [],
         }
@@ -206,6 +233,29 @@ def install(app):
             f"default-src 'none'; script-src 'nonce-{nonce}'; style-src 'unsafe-inline' https://fonts.googleapis.com; "
             "font-src https://fonts.gstatic.com; connect-src 'self'; img-src 'self' https:; form-action 'self'; "
             "base-uri 'none'; frame-ancestors 'none'")})
+
+    @app.get("/dashboard/automation/jobs/{job_id}/podbor/best")
+    def podbor_best(job_id: int, request: Request):
+        """Best competitor price per position from Zakupay. Loaded after the page: it never slows the page down."""
+        _session(request)
+        import browser_prices
+        with _connect() as conn:
+            row, result = load(job_id, conn)
+        headers = {"Cache-Control": "no-store"}
+        if row["event_type"] == "manual_order":
+            return JSONResponse({"ok": True, "items": {}}, headers=headers)
+        ids = [i for i in (browser_prices._item_id(x.get("order_item_id")) for x in result.get("items") or []) if i]
+        found = browser_prices.fetch_best_prices(ids)
+        if found["errors"]:
+            return JSONResponse({"ok": False, "items": {}, "note": browser_prices.price_state(found)}, headers=headers)
+        order = None
+        try:
+            import main
+            order = main.fetch_order_by_id(row["order_id"])
+        except Exception:  # noqa: BLE001 - the live order only adds names; prices still show
+            order = None
+        return JSONResponse({"ok": True, "items": competitor_best(result, order, found["prices"]),
+                             "names": order is not None}, headers=headers)
 
     @app.post("/dashboard/automation/jobs/{job_id}/podbor/state")
     async def podbor_state(job_id: int, request: Request):
