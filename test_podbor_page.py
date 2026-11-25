@@ -86,6 +86,15 @@ class PodborPageTests(unittest.TestCase):
         self.assertEqual((body["ok"], body["items"]), (False, {}))
         self.assertIn("не настроен", body["note"])
 
+    def test_summary_table_has_competitor_price_difference_columns(self):
+        _, page = self.data()
+        for title in ("Лучшая цена конкурента за ед.", "Разница, %", "Разница, ₽", "Товар конкурента по лучшей цене"):
+            self.assertIn(title, page.text)
+        # difference = our price per request unit minus the competitor's, never guessed without both prices
+        self.assertIn("function vsCompetitor(pos,o)", page.text)
+        self.assertIn("c.price==null", page.text)
+        self.assertIn("o.unitPrice==null", page.text)
+
     def test_page_serves_the_stand_with_request_positions(self):
         data, response = self.data()
         self.assertTrue(response.text.startswith("<!doctype html>"))

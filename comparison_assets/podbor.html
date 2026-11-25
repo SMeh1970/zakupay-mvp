@@ -189,6 +189,7 @@ form.add textarea{min-height:180px;font-family:var(--mono);font-size:13px}
 .row{display:flex;flex-wrap:wrap;gap:8px}
 .row>label{flex:1 1 140px}
 .note{font-size:12px;color:var(--muted)}
+td.worse{color:#b3261e}td.better{color:#1b7a3a}
 :focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 @media (prefers-reduced-motion: reduce){*{transition:none!important}}
 /* APP: строка ссылок и сообщения о сохранении; поставщик и фото под названием товара */
@@ -1326,6 +1327,15 @@ function aiPickPanel(pos,M){
 }
 
 // Status of a position in the whole request.
+// Our offer against the competitor's best price in Закупай (per request unit, with VAT). Positive = we are more expensive.
+// Nothing is guessed: no competitor price or no price of ours → no difference.
+function vsCompetitor(pos,o){
+  const c=compBest[pos.id];
+  if(!c||c.price==null||!(c.price>0)||!o||o.unitPrice==null)return null;
+  const d=o.unitPrice-c.price;
+  return {diff:d,pct:d/c.price*100,sum:pos.qty!=null?d*pos.qty:null};
+}
+const signed=(v,f)=>v==null?'—':(v>0?'+':v<0?'−':'')+f(Math.abs(v));
 function status(pos){
   if(!pos.products.length)return {code:'none',text:'Поиск не запускался'};
   const M=modelOf(pos);
@@ -1369,7 +1379,12 @@ function render(){
       el('td',{class:'num'},String(r.n)),el('td',{},el('span',{class:'caret'},open?'▾ ':'▸ '),r.pos.name),el('td',{class:'num'},num(r.pos.qty)),el('td',{},r.pos.unit),
       el('td',{},el('span',{class:'pill '+r.st.code},r.st.text)),
       el('td',{},o?o.name:'—',o&&r.st.recommended?el('div',{class:'note'},r.st.closeOnly?'точного нет, ближайший по характеристикам':'рекомендовано: лучшая цена'):o&&r.st.noPrice?el('div',{class:'note'},'найдено, но цену за единицу заявки не посчитать: нет пересчёта единиц'):null),
-      el('td',{class:'num'},o?money(o.unitPrice):'—'),el('td',{class:'num'},o?money(o.total):'—')));
+      el('td',{class:'num'},o?money(o.unitPrice):'—'),el('td',{class:'num'},o?money(o.total):'—'),
+      ...(()=>{const c=compBest[r.pos.id],v=vsCompetitor(r.pos,o),cls=v?(v.diff>0?' worse':v.diff<0?' better':''):'';
+        return [el('td',{class:'num'},c&&c.price!=null?money(c.price):'—'),
+          el('td',{class:'num'+cls},v?signed(v.pct,x=>x.toLocaleString('ru-RU',{maximumFractionDigits:1})+' %'):'—'),
+          el('td',{class:'num'+cls},v?signed(v.sum,money):'—'),
+          el('td',{},c&&c.name?c.name:'—',c&&c.offers?el('div',{class:'note'},`предложений: ${c.offers}`):null)]})()));
     if(open){
       const i=state.positions.indexOf(r.pos);
       const prev=state.positions[i-1], next=state.positions[i+1], nextTodo=order.find(id=>state.positions.findIndex(p=>p.id===id)>i)||order.find(id=>id!==r.pos.id);
@@ -1387,11 +1402,11 @@ function render(){
         doneBox(),
         r.pos.example?el('span',{class:'note'},r.pos.example):el('button',{class:'btn',onclick:()=>{state.positions=state.positions.filter(p=>p.id!==r.pos.id);delete state.marks[r.pos.id];state.active=null;save();render()}},'Удалить позицию'));
       const work=r.pos.products.length?renderPosition(r.pos):el('p',{class:'note'},'Товаров нет: поиск по этой позиции не запускался. Когда приложение снова получит доступ к базе, сюда попадут найденные товары.');
-      tb.append(el('tr',{class:'workrow'},el('td',{colspan:8},nav,work,r.pos.products.length?doneBox():null)));
+      tb.append(el('tr',{class:'workrow'},el('td',{colspan:12},nav,work,r.pos.products.length?doneBox():null)));
     }
   }
   main.append(el('div',{class:'tablewrap'},el('table',{class:'summary-table'},
-    el('thead',{},el('tr',{},...['№','Наименование заявки','Кол-во','Ед.','Статус','Предложение','Цена за ед. заявки','Сумма'].map(h=>el('th',{},h)))),tb)));
+    el('thead',{},el('tr',{},...['№','Наименование заявки','Кол-во','Ед.','Статус','Предложение','Цена за ед. заявки','Сумма','Лучшая цена конкурента за ед.','Разница, %','Разница, ₽','Товар конкурента по лучшей цене'].map(h=>el('th',{},h)))),tb)));
 }
 /* APP: заголовок и ссылки приложения */
 // «…/podbor#p5» opens position 5 (links from the request and the invoice pages).
