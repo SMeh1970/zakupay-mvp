@@ -557,6 +557,16 @@ function extract(name){
   const text=String(name||''), toks=[], found=[], covered=[];
   for(const m of text.matchAll(WORD)){
     let w=m[0].toLowerCase().replaceAll('ё','е');
+    // «Тройник/чугун», «чугун-ТФ», «ВЧШГ-чугун», «чугун.ТФ»: letters glued by «/», «-», «.» are one word to the pattern above.
+    // If a part is a known characteristic word (material, colour, coating), the parts are separate words.
+    // Abbreviations («б/у», «п/привар») and models («Анкер-LS») have no such part and stay whole.
+    if(/^[a-zа-яё]+(?:[./-][a-zа-яё]+)+$/i.test(m[0])){
+      const parts=[...m[0].matchAll(/[a-zа-яё]+/gi)];
+      if(parts.some(q=>q[0].length>=3&&lookup(q[0].toLowerCase().replaceAll('ё','е')))){
+        for(const q of parts)toks.push({w:q[0].toLowerCase().replaceAll('ё','е'),o:q[0],s:m.index+q.index,e:m.index+q.index+q[0].length});
+        continue;
+      }
+    }
     if(/\d/.test(w))w=[...w].map(c=>{const i=CYR.indexOf(c);return i<0?c:LAT[i]}).join('');
     toks.push({w,o:m[0],s:m.index,e:m.index+m[0].length});
   }
@@ -638,6 +648,9 @@ function lookup(w){
 /* ---------- Model of one position ---------- */
 // A position is recomputed only when its own inputs change (marks, anchor, dictionary, products);
 // the other positions of the request reuse what was computed before.
+// «Close» product: up to two differences, no other product type, and either two matching values or the same type as requested
+// (a tee of the right type with unknown size is closer than a valve of the right size).
+const isNear=r=>!r.typeDiff&&r.dReq.length<=2&&(r.same.length>=2||r.same.some(x=>x.f==='Тип товара'));
 const modelCache=new Map();
 function modelOf(pos){
   const key=JSON.stringify([pos.name,pos.qty,pos.unit,pos.products.length,state.marks?.[pos.id]||{},state.anchor?.[pos.id]||null,state.dict||{},state.conv?.[pos.id]||{}]);
@@ -768,10 +781,12 @@ function model(pos){
       // Analog / replacement is set automatically: the rubric has an active value in the request, you ticked ✓ another value there, and the product has that value but not the request's one.
       const analog=same.some(x=>x.has.some(k=>marks.get(k)?.by==='user'&&marks.get(k)?.s==='only'&&!reqKeys.includes(k))&&reqKeys.some(k=>k.startsWith('f|')&&fieldOf.get(k)===x.f&&marks.get(k)?.s==='only')&&!x.has.some(k=>reqKeys.includes(k)));
       const dReq=diff.filter(x=>!fromRef.has(x.f)), dRef=diff.filter(x=>fromRef.has(x.f));
-      list.push({p,same,diff,dReq,dRef,unknown,total:same.length+diff.length,analog,anchor:p===ref});
+      // A different product type (valve instead of a tee) is a critical difference: such a product is never «close», however many other values match.
+      const typeDiff=dReq.some(x=>x.f==='Тип товара');
+      list.push({p,same,diff,dReq,dRef,unknown,typeDiff,total:same.length+diff.length,analog,anchor:p===ref});
     }
     const weight=c=>c.dReq.reduce((s,x)=>s+(NUMERIC.has(x.f)?2:1),0);
-    return list.sort((a,b)=>b.anchor-a.anchor||a.dReq.length-b.dReq.length||weight(a)-weight(b)||a.dRef.length-b.dRef.length||a.analog-b.analog||b.same.length-a.same.length||a.unknown.length-b.unknown.length||(a.p.unitPrice??Infinity)-(b.p.unitPrice??Infinity));
+    return list.sort((a,b)=>b.anchor-a.anchor||a.typeDiff-b.typeDiff||a.dReq.length-b.dReq.length||weight(a)-weight(b)||a.dRef.length-b.dRef.length||a.analog-b.analog||b.same.length-a.same.length||a.unknown.length-b.unknown.length||(a.p.unitPrice??Infinity)-(b.p.unitPrice??Infinity));
   };
   const refName=state.anchor?.[pos.id];
   const reference=products.find(p=>p.name===refName)||null;
@@ -823,7 +838,7 @@ function renderPosition(pos){
   // so a value that close products have is not hidden as «0».
   const shownCount=new Map();
   {const hid=new Set((state.hidden||{})[pos.id]||[]);
-   for(const r of M.ranked())if(!hid.has(r.p.name)&&r.same.length>0&&r.dReq.length<=2&&(r.dReq.length===0||r.same.length>=2))
+   for(const r of M.ranked())if(!hid.has(r.p.name)&&r.same.length>0&&(r.dReq.length===0||isNear(r)))
      for(const w of r.p.words)shownCount.set(w,(shownCount.get(w)||0)+1);}
   const main=el('div',{class:'pos-work'});
   main.append(el('div',{class:'req'},
@@ -954,7 +969,7 @@ function renderPosition(pos){
   const hidden=new Set((state.hidden||{})[pos.id]||[]);
   const ranked=M.ranked().filter(r=>!hidden.has(r.p.name));
   const exact=ranked.filter(r=>r.dReq.length===0&&r.same.length>0);
-  const near=ranked.filter(r=>!exact.includes(r)&&r.dReq.length<=2&&r.same.length>=2);
+  const near=ranked.filter(r=>!exact.includes(r)&&isNear(r));
   const rest=ranked.filter(r=>!exact.includes(r)&&!near.includes(r));
   // Sorting by price (header click): inside each group — suitable, close, the rest — so the cheapest of
   // fifty equal offers is on top without mixing in products that do not fit.
@@ -1402,11 +1417,11 @@ function status(pos){
   if(chosen)return {code:'done',text:'Выбрано',offer:chosen};
   const ranked=M.ranked(), fit=ranked.filter(r=>r.dReq.length===0&&r.same.length>0&&r.p.unitPrice!=null), cheap=l=>[...l].sort((a,b)=>a.p.unitPrice-b.p.unitPrice)[0]?.p;
   const best=cheap(fit.filter(r=>!r.unknown.length))||cheap(fit);
-  const near=ranked.find(r=>r.dReq.length<=2&&r.same.length>=2&&r.p.unitPrice!=null)?.p;
+  const near=ranked.find(r=>isNear(r)&&r.p.unitPrice!=null)?.p;
   if(best)return {code:'todo',text:'Нужно решение',offer:best,recommended:true};
   if(near)return {code:'todo',text:'Нужно решение',offer:near,recommended:true,closeOnly:true};
   // Suitable or close products without a price per request unit (no unit conversion) are still found.
-  const any=ranked.find(r=>r.dReq.length===0&&r.same.length>0)||ranked.find(r=>r.dReq.length<=2&&r.same.length>=2);
+  const any=ranked.find(r=>r.dReq.length===0&&r.same.length>0)||ranked.find(isNear);
   return any?{code:'todo',text:'Нужно решение',offer:any.p,noPrice:true}:{code:'miss',text:'Не найдено'};
 }
 const STATUS_ORDER=[['all','Все'],['todo','Нужно решение'],['done','Выбрано'],['miss','Не найдено'],['none','Поиск не запускался']];
