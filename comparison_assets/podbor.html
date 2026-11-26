@@ -34,7 +34,7 @@ h1{font-size:20px;font-weight:600;margin:0;text-wrap:balance}
 .clean-label{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
 .clean-brands{flex:1;min-width:220px;padding:5px 8px;border:1px solid var(--line);border-radius:6px;font:inherit}
 .chip{margin:2px 4px 2px 0;padding:1px 8px;border:1px solid var(--line);border-radius:999px;background:var(--panel);cursor:pointer;font:inherit}
-.site-cell{white-space:nowrap}.site-in{width:150px;padding:4px 6px;border:1px solid var(--line);border-radius:6px;font:inherit}.site-fill{margin-left:4px;padding:2px 8px}
+.site-cell{white-space:nowrap}.site-in{width:150px;padding:4px 6px;border:1px solid var(--line);border-radius:6px;font:inherit}.site-fill,.site-find{margin-left:4px;padding:2px 8px}.site-find{text-decoration:none;display:inline-block}
 .req .meta{color:var(--muted);font-family:var(--mono);font-size:13px}
 .grid{display:grid;grid-template-columns:fit-content(250px) minmax(0,1fr);gap:14px;align-items:start}
 /* Half a screen still shows filters and table side by side; one column only on a phone. */
@@ -1427,8 +1427,15 @@ function status(pos){
 }
 const STATUS_ORDER=[['all','Все'],['todo','Нужно решение'],['done','Выбрано'],['miss','Не найдено'],['none','Поиск не запускался']];
 // «Сайт для поиска»: a column of the person's own notes, one site per position. Typing a site shows «↓»: it puts the same site into every position below.
+// Yandex search of the position on the given site: «site:домен название без брендов». A site written as a name, not an address, goes into the query as a word.
+function yandexUrl(pos,site){
+  const typed=String(site||'').trim(), host=typed.replace(/^https?:\/\//i,'').replace(/^www\./i,'').split(/[\/?#\s]/)[0].toLowerCase();
+  const isDomain=/^[a-zа-яё0-9-]+(\.[a-zа-яё0-9-]+)+$/i.test(host);
+  return 'https://yandex.ru/search/?text='+encodeURIComponent((isDomain?'site:'+host:typed)+' '+(cleanName(pos.name,state.brands).text||pos.name));
+}
 function siteCell(r,shown){
   const v0=(state.sites?.[r.pos.id]||'').trim();
+  const find=el('a',{class:'btn site-find',href:yandexUrl(r.pos,v0),target:'_blank',rel:'noopener noreferrer',hidden:!v0,title:'Искать эту позицию в Яндексе на этом сайте (название без брендов)',onclick:e=>e.stopPropagation()},'Яндекс');
   const fill=el('button',{type:'button',class:'btn site-fill',hidden:!v0,title:'Подставить этот сайт во все позиции ниже','aria-label':'Подставить этот сайт во все позиции ниже',onclick:e=>{
     e.stopPropagation();
     const v=input.value.trim();if(!v)return;
@@ -1437,10 +1444,10 @@ function siteCell(r,shown){
     save();render();
   }},'↓ вниз');
   const input=el('input',{type:'text',class:'site-in',value:v0,placeholder:'сайт','aria-label':'Сайт для поиска: '+r.pos.name,
-    oninput:e=>{fill.hidden=!e.target.value.trim()},
+    oninput:e=>{fill.hidden=find.hidden=!e.target.value.trim();find.href=yandexUrl(r.pos,e.target.value)},
     onchange:e=>{state.sites=state.sites||{};state.sites[r.pos.id]=e.target.value.trim();save()},
     onclick:e=>e.stopPropagation(),onkeydown:e=>e.stopPropagation()});
-  return el('td',{class:'site-cell',onclick:e=>e.stopPropagation()},input,fill);
+  return el('td',{class:'site-cell',onclick:e=>e.stopPropagation()},input,fill,find);
 }
 function render(){
   const main=document.getElementById('main');main.replaceChildren();

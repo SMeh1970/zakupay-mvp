@@ -143,6 +143,9 @@ class PodborPageTests(unittest.TestCase):
         self.assertIn("for(const x of shown.slice(shown.indexOf(r)+1))state.sites[x.pos.id]=v;", page.text)
         self.assertIn("state.siteCol?siteCell(r,shown):null", page.text)
         self.assertIn("colspan:state.siteCol?13:12", page.text)
+        # «Яндекс» button: site:домен + название позиции без брендов; a site given as a name goes in as a word
+        self.assertIn("function yandexUrl(pos,site)", page.text)
+        self.assertIn("'https://yandex.ru/search/?text='+encodeURIComponent((isDomain?'site:'+host:typed)+' '+(cleanName(pos.name,state.brands).text||pos.name))", page.text)
 
     def test_page_serves_the_stand_with_request_positions(self):
         data, response = self.data()
