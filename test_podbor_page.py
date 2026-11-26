@@ -95,6 +95,13 @@ class PodborPageTests(unittest.TestCase):
         self.assertIn("c.price==null", page.text)
         self.assertIn("o.unitPrice==null", page.text)
 
+    def test_position_title_is_pinned_to_the_top_of_the_screen(self):
+        _, page = self.data()
+        self.assertIn(".pos-work>.req{position:sticky;top:0", page.text)
+        # a scrolling wrapper around the summary table would stop the sticky title on wide screens
+        self.assertIn("@media (min-width:900px){.tablewrap.summary-wrap{overflow:visible}}", page.text)
+        self.assertIn("tablewrap summary-wrap", page.text)
+
     def test_page_serves_the_stand_with_request_positions(self):
         data, response = self.data()
         self.assertTrue(response.text.startswith("<!doctype html>"))

@@ -24,6 +24,9 @@ h1{font-size:20px;font-weight:600;margin:0;text-wrap:balance}
 .tab.add{color:var(--accent)}
 .req{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:12px 14px;display:flex;flex-wrap:wrap;gap:6px 18px;align-items:baseline}
 .req b{font-size:17px}
+.pos-work>.req{position:sticky;top:0;z-index:15;box-shadow:0 2px 6px rgb(0 0 0 / .08)}
+/* The summary table is wrapped for horizontal scrolling; a scrolling wrapper would keep the sticky title from following the page. On wide screens the table fits, so no wrapper scroll. */
+@media (min-width:900px){.tablewrap.summary-wrap{overflow:visible}}
 .req .meta{color:var(--muted);font-family:var(--mono);font-size:13px}
 .grid{display:grid;grid-template-columns:fit-content(250px) minmax(0,1fr);gap:14px;align-items:start}
 /* Half a screen still shows filters and table side by side; one column only on a phone. */
@@ -1405,7 +1408,7 @@ function render(){
       tb.append(el('tr',{class:'workrow'},el('td',{colspan:12},nav,work,r.pos.products.length?doneBox():null)));
     }
   }
-  main.append(el('div',{class:'tablewrap'},el('table',{class:'summary-table'},
+  main.append(el('div',{class:'tablewrap summary-wrap'},el('table',{class:'summary-table'},
     el('thead',{},el('tr',{},...['№','Наименование заявки','Кол-во','Ед.','Статус','Предложение','Цена за ед. заявки','Сумма','Лучшая цена конкурента за ед.','Разница, %','Разница, ₽','Товар конкурента по лучшей цене'].map(h=>el('th',{},h)))),tb)));
 }
 /* APP: заголовок и ссылки приложения */
