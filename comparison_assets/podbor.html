@@ -34,6 +34,7 @@ h1{font-size:20px;font-weight:600;margin:0;text-wrap:balance}
 .clean-label{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
 .clean-brands{flex:1;min-width:220px;padding:5px 8px;border:1px solid var(--line);border-radius:6px;font:inherit}
 .chip{margin:2px 4px 2px 0;padding:1px 8px;border:1px solid var(--line);border-radius:999px;background:var(--panel);cursor:pointer;font:inherit}
+.site-cell{white-space:nowrap}.site-in{width:150px;padding:4px 6px;border:1px solid var(--line);border-radius:6px;font:inherit}.site-fill,.site-find{margin-left:4px;padding:2px 8px}.site-find{text-decoration:none;display:inline-block}
 .req .meta{color:var(--muted);font-family:var(--mono);font-size:13px}
 .grid{display:grid;grid-template-columns:fit-content(250px) minmax(0,1fr);gap:14px;align-items:start}
 /* Half a screen still shows filters and table side by side; one column only on a phone. */
@@ -1425,6 +1426,29 @@ function status(pos){
   return any?{code:'todo',text:'Нужно решение',offer:any.p,noPrice:true}:{code:'miss',text:'Не найдено'};
 }
 const STATUS_ORDER=[['all','Все'],['todo','Нужно решение'],['done','Выбрано'],['miss','Не найдено'],['none','Поиск не запускался']];
+// «Сайт для поиска»: a column of the person's own notes, one site per position. Typing a site shows «↓»: it puts the same site into every position below.
+// Yandex search of the position on the given site: «site:домен название без брендов». A site written as a name, not an address, goes into the query as a word.
+function yandexUrl(pos,site){
+  const typed=String(site||'').trim(), host=typed.replace(/^https?:\/\//i,'').replace(/^www\./i,'').split(/[\/?#\s]/)[0].toLowerCase();
+  const isDomain=/^[a-zа-яё0-9-]+(\.[a-zа-яё0-9-]+)+$/i.test(host);
+  return 'https://yandex.ru/search/?text='+encodeURIComponent((isDomain?'site:'+host:typed)+' '+(cleanName(pos.name,state.brands).text||pos.name));
+}
+function siteCell(r,shown){
+  const v0=(state.sites?.[r.pos.id]||'').trim();
+  const find=el('a',{class:'btn site-find',href:yandexUrl(r.pos,v0),target:'_blank',rel:'noopener noreferrer',hidden:!v0,title:'Искать эту позицию в Яндексе на этом сайте (название без брендов)',onclick:e=>e.stopPropagation()},'Яндекс');
+  const fill=el('button',{type:'button',class:'btn site-fill',hidden:!v0,title:'Подставить этот сайт во все позиции ниже','aria-label':'Подставить этот сайт во все позиции ниже',onclick:e=>{
+    e.stopPropagation();
+    const v=input.value.trim();if(!v)return;
+    state.sites=state.sites||{};state.sites[r.pos.id]=v;
+    for(const x of shown.slice(shown.indexOf(r)+1))state.sites[x.pos.id]=v;
+    save();render();
+  }},'↓ вниз');
+  const input=el('input',{type:'text',class:'site-in',value:v0,placeholder:'сайт','aria-label':'Сайт для поиска: '+r.pos.name,
+    oninput:e=>{fill.hidden=find.hidden=!e.target.value.trim();find.href=yandexUrl(r.pos,e.target.value)},
+    onchange:e=>{state.sites=state.sites||{};state.sites[r.pos.id]=e.target.value.trim();save()},
+    onclick:e=>e.stopPropagation(),onkeydown:e=>e.stopPropagation()});
+  return el('td',{class:'site-cell',onclick:e=>e.stopPropagation()},input,fill,find);
+}
 function render(){
   const main=document.getElementById('main');main.replaceChildren();
   const tabs=document.getElementById('tabs');tabs.replaceChildren();
@@ -1444,7 +1468,8 @@ function render(){
   const done=rows.filter(r=>r.st.code==='done');
   const sum=done.reduce((s,r)=>s+(r.st.offer.total||0),0);
   main.append(el('p',{class:'totals'},`Выбрано: ${done.length} из ${rows.length} · Итого по выбранным: `,el('b',{},money(sum)),' ',
-    el('button',{type:'button',class:'btn','aria-pressed':String(!!state.cleanOpen),title:'Показать заявку без названий брендов, чтобы скопировать',onclick:()=>{state.cleanOpen=!state.cleanOpen;save();render()}},'Очистка')));
+    el('button',{type:'button',class:'btn','aria-pressed':String(!!state.cleanOpen),title:'Показать заявку без названий брендов, чтобы скопировать',onclick:()=>{state.cleanOpen=!state.cleanOpen;save();render()}},'Очистка'),' ',
+    el('label',{class:'doneck',title:'Добавить столбец «Сайт для поиска»: для каждой позиции можно вписать сайт'},el('input',{type:'checkbox',checked:!!state.siteCol,onchange:e=>{state.siteCol=e.target.checked;save();render()}}),'Сайт для поиска')));
   if(state.cleanOpen)main.append(cleanPanel(rows));
   const order=rows.filter(r=>r.st.code==='todo').map(r=>r.pos.id);
   const go=id=>{state.active=id;save();render();setTimeout(()=>document.getElementById('row-'+id)?.scrollIntoView({block:'start',behavior:'smooth'}),0)};
@@ -1460,7 +1485,8 @@ function render(){
         return [el('td',{class:'num'},c&&c.price!=null?money(c.price):'—'),
           el('td',{class:'num'+cls},v?signed(v.pct,x=>x.toLocaleString('ru-RU',{maximumFractionDigits:1})+' %'):'—'),
           el('td',{class:'num'+cls},v?signed(v.sum,money):'—'),
-          el('td',{},c&&c.name?c.name:'—',c&&c.offers?el('div',{class:'note'},`предложений: ${c.offers}`):null)]})()));
+          el('td',{},c&&c.name?c.name:'—',c&&c.offers?el('div',{class:'note'},`предложений: ${c.offers}`):null)]})(),
+      state.siteCol?siteCell(r,shown):null));
     if(open){
       const i=state.positions.indexOf(r.pos);
       const prev=state.positions[i-1], next=state.positions[i+1], nextTodo=order.find(id=>state.positions.findIndex(p=>p.id===id)>i)||order.find(id=>id!==r.pos.id);
@@ -1478,11 +1504,11 @@ function render(){
         doneBox(),
         r.pos.example?null:el('button',{class:'btn',onclick:()=>{state.positions=state.positions.filter(p=>p.id!==r.pos.id);delete state.marks[r.pos.id];state.active=null;save();render()}},'Удалить позицию'));
       const work=r.pos.products.length?renderPosition(r.pos):el('p',{class:'note'},'Товаров нет: поиск по этой позиции не запускался. Когда приложение снова получит доступ к базе, сюда попадут найденные товары.');
-      tb.append(el('tr',{class:'workrow'},el('td',{colspan:12},nav,work,r.pos.products.length?doneBox():null)));
+      tb.append(el('tr',{class:'workrow'},el('td',{colspan:state.siteCol?13:12},nav,work,r.pos.products.length?doneBox():null)));
     }
   }
   main.append(el('div',{class:'tablewrap summary-wrap'},el('table',{class:'summary-table'},
-    el('thead',{},el('tr',{},...['№','Наименование заявки','Кол-во','Ед.','Статус','Предложение','Цена за ед. заявки','Сумма','Лучшая цена конкурента за ед.','Разница, %','Разница, ₽','Товар конкурента по лучшей цене'].map(h=>el('th',{},h)))),tb)));
+    el('thead',{},el('tr',{},...['№','Наименование заявки','Кол-во','Ед.','Статус','Предложение','Цена за ед. заявки','Сумма','Лучшая цена конкурента за ед.','Разница, %','Разница, ₽','Товар конкурента по лучшей цене',...(state.siteCol?['Сайт для поиска']:[])].map(h=>el('th',{},h)))),tb)));
 }
 /* APP: заголовок и ссылки приложения */
 // «…/podbor#p5» opens position 5 (links from the request and the invoice pages).

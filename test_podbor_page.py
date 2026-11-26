@@ -135,6 +135,18 @@ class PodborPageTests(unittest.TestCase):
         self.assertIn("if(/^[a-zа-яё]+(?:[./-][a-zа-яё]+)+$/i.test(m[0]))", page.text)
         self.assertIn("parts.some(q=>q[0].length>=3&&lookup(", page.text)
 
+    def test_site_column_with_fill_down(self):
+        _, page = self.data()
+        # own checkbox → extra column; typing a site shows «↓», which puts it into the positions below
+        self.assertIn("Сайт для поиска", page.text)
+        self.assertIn("function siteCell(r,shown)", page.text)
+        self.assertIn("for(const x of shown.slice(shown.indexOf(r)+1))state.sites[x.pos.id]=v;", page.text)
+        self.assertIn("state.siteCol?siteCell(r,shown):null", page.text)
+        self.assertIn("colspan:state.siteCol?13:12", page.text)
+        # «Яндекс» button: site:домен + название позиции без брендов; a site given as a name goes in as a word
+        self.assertIn("function yandexUrl(pos,site)", page.text)
+        self.assertIn("'https://yandex.ru/search/?text='+encodeURIComponent((isDomain?'site:'+host:typed)+' '+(cleanName(pos.name,state.brands).text||pos.name))", page.text)
+
     def test_page_serves_the_stand_with_request_positions(self):
         data, response = self.data()
         self.assertTrue(response.text.startswith("<!doctype html>"))
