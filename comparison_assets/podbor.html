@@ -444,7 +444,7 @@ function tokens(name){
     return w;
   });
 }
-const FIELDS=['Тип товара','Резьба','Условный проход','Давление','Длина','Ширина','Толщина','Диаметр','Посадка','Конструкция','Размеры','Размер','Сечение','Напряжение','Мощность','Ток','Объём','Масса','Температура','Защита IP','Обороты','Момент','Площадь','Зернистость','Угол','Угол резьбы','Класс прочности','Марка стали','Стандарт','Материал','Покрытие','Цвет','Фасовка','Бренд','Код / артикул'];
+const FIELDS=['Тип товара','Раздел каталога','Резьба','Условный проход','Давление','Длина','Ширина','Толщина','Диаметр','Посадка','Конструкция','Размеры','Размер','Сечение','Напряжение','Мощность','Ток','Объём','Масса','Температура','Защита IP','Обороты','Момент','Площадь','Зернистость','Угол','Угол резьбы','Класс прочности','Марка стали','Стандарт','Материал','Покрытие','Цвет','Фасовка','Бренд','Код / артикул'];
 const BRANDS=new Set(['starfix','aurafort','креп-комп','опм','messer','мастак','rtp','ремоколор','mw','zitar','fischer','sormat','mungo','hilti','зубр','makita','bosch','gp','askaynak','alfamag','valtti','руссиз','tikkurila','knauf','ceresit','tytan','penosil','dewalt','metabo','интерскол']);
 const CLASSES=new Set(['4.6','4.8','5.6','5.8','6.8','8.8','10.9','12.9']);
 const NUM=/^\d+(?:[.,]\d+)?$/, numv=s=>parseFloat(String(s).replace(',','.'));
@@ -663,7 +663,8 @@ function modelOf(pos){
   return M;
 }
 function model(pos){
-  const products=pos.products.map((p,i)=>{const x=extract(p[0]);return {i,name:p[0],price:+p[1]||0,unit:p[2]||'шт',found:x.found,raw:x.rest,spans:x.spans}});
+  // «Раздел каталога»: the rubrics the supplier gives the product (site breadcrumbs, price-list group). Not read from the name, so it has no place in it.
+  const products=pos.products.map((p,i)=>{const x=extract(p[0]);const cat=Array.isArray(p[3]?.cat)?p[3].cat:[];return {i,name:p[0],price:+p[1]||0,unit:p[2]||'шт',found:[...x.found,...cat.map(v=>({field:'Раздел каталога',value:String(v),n:null}))],raw:x.rest,spans:x.spans}});
   const reqX=extract(pos.name), reqRaw=[...reqX.rest];
   // Heap words: one key per word with its forms (same stem, or stems one letter apart).
   const freq=new Map();
@@ -947,7 +948,7 @@ function renderPosition(pos){
     const sec=el('div',{class:'rubric'},el('div',{class:'rubric-head'},el('b',{},`Прочие слова (${heap.length})`),el('span',{class:'note',title:'Не попали ни в одну рубрику; формы одного слова объединены (*). Кнопка ⤴ относит слово к рубрике — дальше это работает во всех позициях.'},'ⓘ')));
     if(assigning&&heap.includes(assigning)){
       const word=M.label(assigning);
-      const sel=el('select',{id:'assign-field'},[...new Set([...FIELDS.filter(f=>!['Тип товара','Код / артикул'].includes(f)),...Object.values(state.dict||{}).map(d=>d.field)])].map(f=>el('option',{value:f},f)),el('option',{value:'__new'},'Новая рубрика…'));
+      const sel=el('select',{id:'assign-field'},[...new Set([...FIELDS.filter(f=>!['Тип товара','Код / артикул','Раздел каталога'].includes(f)),...Object.values(state.dict||{}).map(d=>d.field)])].map(f=>el('option',{value:f},f)),el('option',{value:'__new'},'Новая рубрика…'));
       const custom=el('input',{id:'assign-new',placeholder:'Название новой рубрики',hidden:true});
       sel.onchange=()=>{custom.hidden=sel.value!=='__new'};
       sec.append(el('div',{class:'assign'},el('span',{},`Отнести «${word}» к рубрике`),sel,custom,
@@ -1180,7 +1181,7 @@ async function runAi(){
   const names=all.slice(from,from+20);
   aiError=`Разобрано ${from} из ${all.length}…`;render();
   const prompt=`Ты разбираешь наименования строительных и промышленных товаров на характеристики.
-Рубрики (используй только их; если значение не подходит ни к одной — пропусти его): ${FIELDS.join('; ')}.
+Рубрики (используй только их; если значение не подходит ни к одной — пропусти его): ${FIELDS.filter(f=>f!=='Раздел каталога').join('; ')}.
 Правила: значение пиши коротко с единицей (например «10 мм», «M8», «1 м», «AISI 304L», «FFP2»). Для каждого значения дай evidence — точный кусок исходного наименования, из которого оно взято, символ в символ. Ничего не придумывай: если в названии нет — не пиши. «Тип товара» — существительное, что это за товар (в именительном падеже, ед. числе).
 Ответь только JSON-массивом той же длины и порядка: [{"i":0,"fields":[{"field":"Резьба","value":"M8","evidence":"М8"}]}].
 Наименования:
@@ -1191,7 +1192,7 @@ ${names.map((n,i)=>i+'. '+n.name).join('\n')}`;
       const text=squash(n.name);
       out[n.name]=(Array.isArray(r.fields)?r.fields:[]).map(f=>{
         const field=String(f?.field||''), value=String(f?.value||''), ev=String(f?.evidence||'');
-        const why=!FIELDS.includes(field)?'рубрики нет в списке':!ev||!text.includes(squash(ev))?'нет в тексте названия':'';
+        const why=field==='Раздел каталога'||!FIELDS.includes(field)?'рубрики нет в списке':!ev||!text.includes(squash(ev))?'нет в тексте названия':'';
         return {field,value,evidence:ev,why};
       });
     }

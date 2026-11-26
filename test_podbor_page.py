@@ -135,6 +135,28 @@ class PodborPageTests(unittest.TestCase):
         self.assertIn("if(/^[a-zа-яё]+(?:[./-][a-zа-яё]+)+$/i.test(m[0]))", page.text)
         self.assertIn("parts.some(q=>q[0].length>=3&&lookup(", page.text)
 
+    def test_supplier_rubrics_reach_the_page_as_a_filter(self):
+        # rubrics: breadcrumbs without «Главная» and the product's own name, last three; else the price-list category; nothing given -> none
+        self.assertEqual(podbor_page.rubric({"name": "Тройник 1", "breadcrumbs": ["Главная", "Сантехника", "Фитинги", "Тройники", "Тройник 1"]}),
+                         ["Сантехника", "Фитинги", "Тройники"])
+        self.assertEqual(podbor_page.rubric({"name": "x", "breadcrumbs": ["А", "Б", "В", "Г"]}), ["Б", "В", "Г"])
+        self.assertEqual(podbor_page.rubric({"name": "x", "breadcrumbs": "Каталог"}), [])
+        self.assertEqual(podbor_page.rubric({"name": "x", "category": "Тройники"}), ["Тройники"])
+        self.assertEqual(podbor_page.rubric({"name": "x", "category": "Не определена"}), [])
+        self.assertEqual(podbor_page.rubric({"name": "x"}), [])
+        result = json.loads(json.dumps(self.result))
+        item = result["items"][0]
+        for candidate in [item.get("selected")] + list(item.get("candidates") or []) + list(item.get("rejected_candidates") or []) + list(item.get("catalog_candidates") or []):
+            if candidate:
+                candidate["breadcrumbs"] = ["Главная", "Сантехника", "Тройники"]
+        with pipeline._connect() as conn:
+            conn.execute("UPDATE automation_jobs SET result_json=? WHERE id=?", (json.dumps(result), self.job))
+        data, page = self.data()
+        self.assertIn(["Сантехника", "Тройники"], [p[3]["cat"] for p in data["positions"][0]["products"]])
+        # the page turns them into the rubric «Раздел каталога» (✓/✕ like the others), but never into a rubric for the AI to fill from names
+        self.assertIn("field:'Раздел каталога',value:String(v)", page.text)
+        self.assertIn("FIELDS.filter(f=>f!=='Раздел каталога').join('; ')", page.text)
+
     def test_site_column_with_fill_down(self):
         _, page = self.data()
         # own checkbox → extra column; typing a site shows «↓», which puts it into the positions below

@@ -31,6 +31,20 @@ def _number(value):
     return number if number == number and number not in (float("inf"), float("-inf")) else None
 
 
+def rubric(candidate):
+    """Rubrics the supplier gives the product, most specific last: site breadcrumbs, a supplier category,
+    or the price list's category. Not guessed: nothing given -> empty list."""
+    crumbs = candidate.get("breadcrumbs")
+    if isinstance(crumbs, str):
+        crumbs = [crumbs]
+    parts = [str(x).strip() for x in crumbs or [] if str(x).strip()]
+    if not parts:
+        own = str(candidate.get("category") or "").strip()
+        parts = [own] if own and own != "Не определена" else []
+    name = str(candidate.get("name") or "").strip().lower()
+    return [x[:80] for x in parts if x.lower() not in ("главная", "каталог", name)][-3:]
+
+
 def positions(result, heading):
     """Request positions in the stand's format: [name, price, unit, {key, supplier, url, image_url}] per product."""
     from supplier_comparison import candidates, quote_key, safe_url
@@ -48,7 +62,7 @@ def positions(result, heading):
                 str(candidate.get("unit") or "шт"),
                 {"key": quote_key(candidate), "supplier": str(candidate.get("supplier") or "ВсеИнструменты.ру"),
                  "url": safe_url(candidate.get("url") or candidate.get("source_url")) or "",
-                 "image_url": safe_url(candidate.get("image_url")) or ""},
+                 "image_url": safe_url(candidate.get("image_url")) or "", "cat": rubric(candidate)},
             ])
         out.append({
             "id": pid, "app": True, "position": position,
