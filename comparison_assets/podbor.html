@@ -24,6 +24,7 @@ h1{font-size:20px;font-weight:600;margin:0;text-wrap:balance}
 .tab.add{color:var(--accent)}
 .req{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:12px 14px;display:flex;flex-wrap:wrap;gap:6px 18px;align-items:baseline}
 .req b{font-size:17px}
+.req>.posnav{flex:0 0 100%;margin:0}
 .pos-work>.req{position:sticky;top:0;z-index:15;box-shadow:0 2px 6px rgb(0 0 0 / .08)}
 /* The summary table is wrapped for horizontal scrolling; a scrolling wrapper would keep the sticky title from following the page. On wide screens the table fits, so no wrapper scroll. */
 @media (min-width:900px){.tablewrap.summary-wrap{overflow:visible}}
@@ -834,7 +835,7 @@ function renderTabs(){
   tabs.append(el('button',{class:'tab add',role:'tab','aria-selected':String(state.active==='new'),onclick:()=>{state.active='new';render()}},'+ Своя позиция'));
 }
 
-function renderPosition(pos){
+function renderPosition(pos,nav){
   const M=modelOf(pos);
   // Counts in the filter column are of the products shown in the table — suitable and close ones —
   // so a value that close products have is not hidden as «0».
@@ -844,9 +845,9 @@ function renderPosition(pos){
      for(const w of r.p.words)shownCount.set(w,(shownCount.get(w)||0)+1);}
   const main=el('div',{class:'pos-work'});
   main.append(el('div',{class:'req'},
+    nav||null,
     el('b',{},pos.name), el('span',{class:'meta'},`${num(pos.qty)} ${pos.unit}`),
-    pos.example?el('span',{class:'note'},pos.example):null,
-    !pos.example?el('button',{class:'btn',onclick:()=>{state.positions=state.positions.filter(p=>p.id!==pos.id);delete state.marks[pos.id];state.active=state.positions[0]?.id||'new';save();render()}},'Удалить позицию'):null));
+    !pos.example&&!nav?el('button',{class:'btn',onclick:()=>{state.positions=state.positions.filter(p=>p.id!==pos.id);delete state.marks[pos.id];state.active=state.positions[0]?.id||'new';save();render()}},'Удалить позицию'):null));
 
   // Characteristics panel: rubrics with values, then the heap of words that fit no rubric.
   const wp=el('section',{class:'panel','aria-label':'Характеристики и слова найденных товаров'});
@@ -1130,7 +1131,7 @@ function renderPosition(pos){
   }
   pp.append(el('div',{class:'tablewrap'},el('table',{class:'offers'},el('thead',{},head),tb)));
   pp.append(el('p',{class:'note'},'Наличие и дату цены проверьте на этапе «Счёт» перед выставлением.'));
-  main.append(aiPickPanel(pos,M));
+  const aiPick=aiPickPanel(pos,M); if(aiPick)main.append(aiPick);
   main.append(el('div',{class:'grid'},wp,pp));
   return main;
 }
@@ -1371,8 +1372,9 @@ function askBlock(pos,M){
 function aiPickPanel(pos,M){
   const box=el('section',{class:'panel aipick','aria-label':'Подбор ИИ'});
   const saved=state.aiPick?.[pos.id], busy=pickBusy.has(pos.id);
+  if(!sampleFn&&!saved)return null;
   box.append(el('div',{class:'posnav'},el('b',{},'Подбор ИИ'),
-    sampleFn?el('button',{class:'btn',disabled:busy,onclick:()=>runPick(pos)},busy?'ИИ оценивает товары… (до минуты)':saved?'Подобрать заново':'Подобрать ИИ'):el('span',{class:'note'},'ИИ не подключён: на сервере не задан ключ ANTHROPIC_API_KEY.'),
+    sampleFn?el('button',{class:'btn',disabled:busy,onclick:()=>runPick(pos)},busy?'ИИ оценивает товары… (до минуты)':saved?'Подобрать заново':'Подобрать ИИ'):null,
     busy?el('button',{class:'btn',onclick:()=>pickCtl[pos.id]?.abort()},'Остановить'):null,
     pickErr[pos.id]?el('span',{class:'note'},pickErr[pos.id]):null,
     saved?el('span',{class:'note'},`от ${saved.at} · числа и размеры заявки проверяются правилами`):null));
@@ -1504,8 +1506,8 @@ function render(){
         el('button',{class:'btn',disabled:!nextTodo,onclick:()=>nextTodo&&go(nextTodo)},'Следующая нерешённая →'),
         doneBox(),
         r.pos.example?null:el('button',{class:'btn',onclick:()=>{state.positions=state.positions.filter(p=>p.id!==r.pos.id);delete state.marks[r.pos.id];state.active=null;save();render()}},'Удалить позицию'));
-      const work=r.pos.products.length?renderPosition(r.pos):el('p',{class:'note'},'Товаров нет: поиск по этой позиции не запускался. Когда приложение снова получит доступ к базе, сюда попадут найденные товары.');
-      tb.append(el('tr',{class:'workrow'},el('td',{colspan:state.siteCol?13:12},nav,work,r.pos.products.length?doneBox():null)));
+      const work=r.pos.products.length?renderPosition(r.pos,nav):el('p',{class:'note'},'Товаров нет: поиск по этой позиции не запускался. Когда приложение снова получит доступ к базе, сюда попадут найденные товары.');
+      tb.append(el('tr',{class:'workrow'},el('td',{colspan:state.siteCol?13:12},r.pos.products.length?null:nav,work,r.pos.products.length?doneBox():null)));
     }
   }
   main.append(el('div',{class:'tablewrap summary-wrap'},el('table',{class:'summary-table'},

@@ -157,6 +157,20 @@ class PodborPageTests(unittest.TestCase):
         self.assertIn("field:'Раздел каталога',value:String(v)", page.text)
         self.assertIn("FIELDS.filter(f=>f!=='Раздел каталога').join('; ')", page.text)
 
+    def test_pinned_card_holds_navigation_and_title_without_order_line_or_ai_notice(self):
+        _, page = self.data()
+        # navigation row goes into the pinned title card (above the name), so both stay on screen together
+        self.assertIn("function renderPosition(pos,nav){", page.text)
+        self.assertIn("el('div',{class:'req'},\n    nav||null,\n    el('b',{},pos.name)", page.text)
+        self.assertIn("renderPosition(r.pos,nav)", page.text)
+        self.assertIn("r.pos.products.length?null:nav,work", page.text)
+        self.assertIn(".req>.posnav{flex:0 0 100%;margin:0}", page.text)
+        # the card shows name and quantity only: no «Заявка Закупай № … · позиция N» line there
+        self.assertNotIn("pos.example?el('span',{class:'note'},pos.example)", page.text)
+        # the «Подбор ИИ» bar is not drawn at all while AI is not connected and nothing was saved; no key-missing notice in it
+        self.assertIn("if(!sampleFn&&!saved)return null;", page.text)
+        self.assertIn("const aiPick=aiPickPanel(pos,M); if(aiPick)main.append(aiPick);", page.text)
+
     def test_site_column_with_fill_down(self):
         _, page = self.data()
         # own checkbox → extra column; typing a site shows «↓», which puts it into the positions below
