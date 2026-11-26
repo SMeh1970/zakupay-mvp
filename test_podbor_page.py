@@ -102,6 +102,16 @@ class PodborPageTests(unittest.TestCase):
         self.assertIn("@media (min-width:900px){.tablewrap.summary-wrap{overflow:visible}}", page.text)
         self.assertIn("tablewrap summary-wrap", page.text)
 
+    def test_clean_button_shows_request_without_brands(self):
+        data, page = self.data()
+        self.assertIn("makita", data["brands"])  # the app's own brand list goes to the page
+        self.assertIn("function cleanName(name,extra)", page.text)
+        self.assertIn("'Очистка'", page.text)
+        self.assertIn("Заявка без брендов", page.text)
+        # a brand is removed only from the lists or from what the person typed; the rest is only suggested
+        self.assertIn("function possibleBrands(names,extra)", page.text)
+        self.assertIn("Свои бренды (через запятую)", page.text)
+
     def test_page_serves_the_stand_with_request_positions(self):
         data, response = self.data()
         self.assertTrue(response.text.startswith("<!doctype html>"))
