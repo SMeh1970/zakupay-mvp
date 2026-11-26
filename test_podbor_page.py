@@ -112,6 +112,13 @@ class PodborPageTests(unittest.TestCase):
         self.assertIn("function possibleBrands(names,extra)", page.text)
         self.assertIn("Свои бренды (через запятую)", page.text)
 
+    def test_navigation_row_has_only_the_checkbox_with_a_hint(self):
+        _, page = self.data()
+        # the text is a hint, the request line is not repeated next to the buttons
+        self.assertIn("title:'После выбора — закрыть и открыть следующую. Поставьте галочку заранее", page.text)
+        self.assertNotIn("render();}}),'После выбора — закрыть и открыть следующую')", page.text)
+        self.assertIn("r.pos.example?null:el('button'", page.text)
+
     def test_other_product_type_is_never_close_and_same_type_is(self):
         _, page = self.data()
         # valve instead of a tee: critical difference, goes to «Остальные» and is not recommended

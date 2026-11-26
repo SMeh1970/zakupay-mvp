@@ -1466,17 +1466,17 @@ function render(){
       const prev=state.positions[i-1], next=state.positions[i+1], nextTodo=order.find(id=>state.positions.findIndex(p=>p.id===id)>i)||order.find(id=>id!==r.pos.id);
       // The tick is a mode, kept for all positions: with it on, choosing a product (cart) closes the position and opens the next one, tick already on.
       // Ticked after the product is already chosen — closes now and opens the next.
-      const doneBox=()=>el('label',{class:'doneck',title:'Поставьте галочку заранее: после выбора товара (корзинка) позиция закроется и откроется следующая'},
+      const doneBox=()=>el('label',{class:'doneck',title:'После выбора — закрыть и открыть следующую. Поставьте галочку заранее: после выбора товара (корзинка) позиция закроется и откроется следующая'},
           el('input',{type:'checkbox',checked:!!state.autoNext,'aria-label':'После выбора закрыть позицию и открыть следующую',onchange:e=>{
             state.autoNext=e.target.checked;save();
             if(state.autoNext&&r.st.code==='done'){const nx=state.positions[i+1];state.active=nx?nx.id:null;save();render();setTimeout(()=>document.getElementById('row-'+(nx?nx.id:r.pos.id))?.scrollIntoView({block:'start',behavior:'smooth'}),0);return}
-            render();}}),'После выбора — закрыть и открыть следующую');
+            render();}}));
       const nav=el('div',{class:'posnav'},
         el('button',{class:'btn',disabled:!prev,onclick:()=>prev&&go(prev.id)},'← Предыдущая'),
         el('button',{class:'btn',disabled:!next,onclick:()=>next&&go(next.id)},'Следующая →'),
         el('button',{class:'btn',disabled:!nextTodo,onclick:()=>nextTodo&&go(nextTodo)},'Следующая нерешённая →'),
         doneBox(),
-        r.pos.example?el('span',{class:'note'},r.pos.example):el('button',{class:'btn',onclick:()=>{state.positions=state.positions.filter(p=>p.id!==r.pos.id);delete state.marks[r.pos.id];state.active=null;save();render()}},'Удалить позицию'));
+        r.pos.example?null:el('button',{class:'btn',onclick:()=>{state.positions=state.positions.filter(p=>p.id!==r.pos.id);delete state.marks[r.pos.id];state.active=null;save();render()}},'Удалить позицию'));
       const work=r.pos.products.length?renderPosition(r.pos):el('p',{class:'note'},'Товаров нет: поиск по этой позиции не запускался. Когда приложение снова получит доступ к базе, сюда попадут найденные товары.');
       tb.append(el('tr',{class:'workrow'},el('td',{colspan:12},nav,work,r.pos.products.length?doneBox():null)));
     }
