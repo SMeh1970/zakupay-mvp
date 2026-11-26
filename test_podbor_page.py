@@ -122,6 +122,12 @@ class PodborPageTests(unittest.TestCase):
         self.assertEqual(page.text.count("isNear("), 3)
         self.assertIn("ranked.find(isNear)", page.text)
 
+    def test_words_glued_by_slash_hyphen_or_dot_are_split_when_one_is_a_known_characteristic(self):
+        _, page = self.data()
+        # «Тройник/чугун», «чугун-ТФ», «ВЧШГ-чугун»: the parts are separate words; abbreviations and models stay whole
+        self.assertIn("if(/^[a-zа-яё]+(?:[./-][a-zа-яё]+)+$/i.test(m[0]))", page.text)
+        self.assertIn("parts.some(q=>q[0].length>=3&&lookup(", page.text)
+
     def test_page_serves_the_stand_with_request_positions(self):
         data, response = self.data()
         self.assertTrue(response.text.startswith("<!doctype html>"))

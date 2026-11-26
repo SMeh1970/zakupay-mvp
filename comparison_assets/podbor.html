@@ -557,6 +557,16 @@ function extract(name){
   const text=String(name||''), toks=[], found=[], covered=[];
   for(const m of text.matchAll(WORD)){
     let w=m[0].toLowerCase().replaceAll('ё','е');
+    // «Тройник/чугун», «чугун-ТФ», «ВЧШГ-чугун», «чугун.ТФ»: letters glued by «/», «-», «.» are one word to the pattern above.
+    // If a part is a known characteristic word (material, colour, coating), the parts are separate words.
+    // Abbreviations («б/у», «п/привар») and models («Анкер-LS») have no such part and stay whole.
+    if(/^[a-zа-яё]+(?:[./-][a-zа-яё]+)+$/i.test(m[0])){
+      const parts=[...m[0].matchAll(/[a-zа-яё]+/gi)];
+      if(parts.some(q=>q[0].length>=3&&lookup(q[0].toLowerCase().replaceAll('ё','е')))){
+        for(const q of parts)toks.push({w:q[0].toLowerCase().replaceAll('ё','е'),o:q[0],s:m.index+q.index,e:m.index+q.index+q[0].length});
+        continue;
+      }
+    }
     if(/\d/.test(w))w=[...w].map(c=>{const i=CYR.indexOf(c);return i<0?c:LAT[i]}).join('');
     toks.push({w,o:m[0],s:m.index,e:m.index+m[0].length});
   }
